@@ -1,0 +1,166 @@
+<!--
+Sora License Manager for Blogger Theme
+
+How to use:
+1. Deploy your license server first, for example:
+   https://YOUR-RENDER-DOMAIN.onrender.com
+2. Replace every YOUR-RENDER-DOMAIN.onrender.com below with your real domain.
+3. Paste this block into:
+   - Blogger > Layout > Add a Gadget > HTML/JavaScript
+   or
+   - Blogger > Theme > Edit HTML
+-->
+
+<div class='sora-license-theme-root'>
+<style type='text/css'>
+  .sora-license-shell {
+    max-width: 1180px;
+    margin: 28px auto;
+    padding: 22px;
+    border-radius: 22px;
+    border: 1px solid #e7dccb;
+    background:
+      radial-gradient(circle at top left, rgba(255, 243, 210, 0.9), transparent 34%),
+      linear-gradient(180deg, #fffdf8 0%, #f8f3ea 100%);
+    box-shadow: 0 18px 36px rgba(15, 23, 42, 0.08);
+  }
+
+  .sora-license-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 18px;
+    margin-bottom: 16px;
+    flex-wrap: wrap;
+  }
+
+  .sora-license-title {
+    margin: 0;
+    font: 700 30px/1.1 "Segoe UI", Arial, sans-serif;
+    color: #1f2937;
+  }
+
+  .sora-license-sub {
+    margin: 8px 0 0;
+    max-width: 760px;
+    font: 400 15px/1.6 "Segoe UI", Arial, sans-serif;
+    color: #6b7280;
+  }
+
+  .sora-license-actions {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+
+  .sora-license-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 11px 16px;
+    border-radius: 12px;
+    text-decoration: none;
+    font: 700 14px/1 "Segoe UI", Arial, sans-serif;
+    border: 0;
+    cursor: pointer;
+  }
+
+  .sora-license-btn.primary {
+    background: #0f766e;
+    color: #fff;
+  }
+
+  .sora-license-btn.secondary {
+    background: #374151;
+    color: #fff;
+  }
+
+  .sora-license-frame-wrap {
+    overflow: hidden;
+    border-radius: 18px;
+    border: 1px solid #e7dccb;
+    background: #fff;
+  }
+
+  .sora-license-frame {
+    width: 100%;
+    min-height: 920px;
+    border: 0;
+    display: block;
+    background: #fff;
+  }
+
+  .sora-license-note {
+    margin-top: 12px;
+    font: 400 13px/1.6 "Segoe UI", Arial, sans-serif;
+    color: #6b7280;
+  }
+
+  @media (max-width: 768px) {
+    .sora-license-shell {
+      margin: 18px auto;
+      padding: 16px;
+      border-radius: 18px;
+    }
+
+    .sora-license-title {
+      font-size: 24px;
+    }
+
+    .sora-license-frame {
+      min-height: 980px;
+    }
+
+    .sora-license-actions {
+      width: 100%;
+    }
+
+    .sora-license-btn {
+      flex: 1 1 100%;
+    }
+  }
+</style>
+
+<div class="sora-license-shell">
+  <div class="sora-license-head">
+    <div>
+      <h2 class="sora-license-title">Sora License Manager</h2>
+      <p class="sora-license-sub">
+        Use this panel to generate keys, activate one-computer licenses, validate them,
+        and manage revoke, reset, or unrevoke from your Blogger site.
+      </p>
+    </div>
+
+    <div class="sora-license-actions">
+      <a
+        class="sora-license-btn primary"
+        href="https://YOUR-RENDER-DOMAIN.onrender.com/manager"
+        target="_blank"
+        rel="noopener noreferrer">
+        Open Manager
+      </a>
+      <a
+        class="sora-license-btn secondary"
+        href="https://YOUR-RENDER-DOMAIN.onrender.com/admin"
+        target="_blank"
+        rel="noopener noreferrer">
+        Open Admin
+      </a>
+    </div>
+  </div>
+
+  <div class="sora-license-frame-wrap">
+    <iframe
+      class="sora-license-frame"
+      src="https://YOUR-RENDER-DOMAIN.onrender.com/manager"
+      loading="lazy"
+      referrerpolicy="strict-origin-when-cross-origin">
+    </iframe>
+  </div>
+
+  <div class="sora-license-note">
+    If the panel does not show inside Blogger, use the <strong>Open Manager</strong> button above.
+    Blogger theme pages can embed the manager UI, but the real license server must still run on your public host.
+  </div>
+</div>
+</div>

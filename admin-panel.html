@@ -1,0 +1,355 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Sora License Admin</title>
+  <style>
+    :root {
+      --bg: #f7f7f2;
+      --panel: #fffdf7;
+      --ink: #1f2937;
+      --muted: #6b7280;
+      --line: #e5dccf;
+      --brand: #0f766e;
+      --danger: #b91c1c;
+      --warn: #b45309;
+    }
+    body {
+      margin: 0;
+      font-family: "SF Pro Text", "Helvetica Neue", Arial, sans-serif;
+      background:
+        radial-gradient(circle at top left, #fff5d6 0%, transparent 28%),
+        linear-gradient(180deg, #fffaf0 0%, var(--bg) 100%);
+      color: var(--ink);
+    }
+    .wrap {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 28px 18px 40px;
+    }
+    .hero {
+      margin-bottom: 18px;
+    }
+    h1 {
+      margin: 0 0 8px 0;
+      font-size: 30px;
+    }
+    .sub {
+      color: var(--muted);
+      line-height: 1.5;
+      max-width: 760px;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: 360px 1fr;
+      gap: 18px;
+    }
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      padding: 18px;
+      box-shadow: 0 12px 28px rgba(15, 23, 42, 0.05);
+    }
+    .label {
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      font-weight: 700;
+      color: var(--muted);
+      margin: 0 0 6px 0;
+    }
+    input, textarea {
+      width: 100%;
+      box-sizing: border-box;
+      border-radius: 12px;
+      border: 1px solid #d8cfbf;
+      padding: 12px 13px;
+      font-size: 14px;
+      background: white;
+      color: var(--ink);
+      outline: none;
+    }
+    textarea {
+      min-height: 120px;
+      resize: vertical;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+    input:focus, textarea:focus {
+      border-color: var(--brand);
+      box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.12);
+    }
+    .row {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-top: 12px;
+    }
+    button {
+      border: 0;
+      border-radius: 12px;
+      padding: 11px 14px;
+      font-weight: 700;
+      cursor: pointer;
+      color: white;
+      background: #111827;
+    }
+    button.brand { background: var(--brand); }
+    button.warn { background: var(--warn); }
+    button.danger { background: var(--danger); }
+    button.secondary { background: #4b5563; }
+    .meta {
+      margin-top: 12px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.5;
+    }
+    .status {
+      margin-top: 12px;
+      padding: 12px 14px;
+      border-radius: 12px;
+      background: #f4efe4;
+      border: 1px solid var(--line);
+      font-size: 14px;
+      line-height: 1.5;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .status.ok { border-color: #9dd6b8; background: #eef9f0; }
+    .status.bad { border-color: #efb4b4; background: #fff2f2; }
+    .table {
+      margin-top: 14px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      overflow: hidden;
+      background: white;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+    th, td {
+      padding: 11px 10px;
+      border-bottom: 1px solid #eee5d7;
+      text-align: left;
+      vertical-align: top;
+    }
+    th {
+      background: #faf4e7;
+      font-size: 12px;
+      text-transform: uppercase;
+      color: var(--muted);
+      letter-spacing: 0.05em;
+    }
+    tr:last-child td {
+      border-bottom: 0;
+    }
+    .pill {
+      display: inline-block;
+      padding: 4px 8px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 700;
+      background: #ecfdf5;
+      color: #047857;
+    }
+    .pill.bad {
+      background: #fef2f2;
+      color: #b91c1c;
+    }
+    .empty {
+      padding: 18px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+    @media (max-width: 900px) {
+      .grid {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="hero">
+      <h1>Sora License Admin</h1>
+      <div class="sub">Manage license status from the browser. Add your admin token, paste a license key, then use status, revoke, unrevoke, or reset. You can also list all server records.</div>
+    </div>
+
+    <div class="grid">
+      <div class="panel">
+        <div class="label">Admin Token</div>
+        <input id="adminToken" type="text" placeholder="Enter admin token" />
+
+        <div class="label" style="margin-top: 14px;">License Key</div>
+        <textarea id="licenseKey" placeholder="Paste full license key here"></textarea>
+
+        <div class="row">
+          <button class="brand" data-action="status">Status</button>
+          <button class="warn" data-action="reset">Reset</button>
+          <button class="danger" data-action="revoke">Revoke</button>
+          <button class="secondary" data-action="unrevoke">Unrevoke</button>
+        </div>
+
+        <div class="row">
+          <button class="secondary" id="listAll">List All</button>
+          <button class="secondary" id="clearStatus">Clear</button>
+        </div>
+
+        <div class="meta">
+          Tip: if you started the server with `ADMIN_TOKEN=YOUR_SECRET ...`, use the same secret here.
+        </div>
+
+        <div id="statusBox" class="status">Ready.</div>
+      </div>
+
+      <div class="panel">
+        <div class="label">Server Records</div>
+        <div class="table">
+          <table>
+            <thead>
+              <tr>
+                <th>Key Hash</th>
+                <th>Device</th>
+                <th>Expires</th>
+                <th>Validated</th>
+                <th>State</th>
+              </tr>
+            </thead>
+            <tbody id="recordsBody">
+              <tr><td colspan="5" class="empty">No records loaded yet.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const adminTokenInput = document.getElementById('adminToken');
+    const licenseKeyInput = document.getElementById('licenseKey');
+    const statusBox = document.getElementById('statusBox');
+    const recordsBody = document.getElementById('recordsBody');
+
+    function setStatus(text, ok = null) {
+      statusBox.textContent = text;
+      statusBox.classList.remove('ok', 'bad');
+      if (ok === true) statusBox.classList.add('ok');
+      if (ok === false) statusBox.classList.add('bad');
+    }
+
+    function getHeaders() {
+      const token = String(adminTokenInput.value || '').trim();
+      return token ? { 'X-Admin-Token': token } : {};
+    }
+
+    async function api(url, options = {}) {
+      const response = await fetch(url, {
+        ...options,
+        headers: {
+          ...(options.headers || {}),
+          ...getHeaders()
+        }
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || data.ok === false) {
+        throw new Error(data.message || 'Request failed.');
+      }
+      return data;
+    }
+
+    function renderRecords(records) {
+      const list = Array.isArray(records) ? records : [];
+      if (!list.length) {
+        recordsBody.innerHTML = '<tr><td colspan="5" class="empty">No records found.</td></tr>';
+        return;
+      }
+
+      recordsBody.innerHTML = list.map(record => {
+        const state = record.revoked
+          ? '<span class="pill bad">Revoked</span>'
+          : '<span class="pill">Active</span>';
+        return `
+          <tr>
+            <td>${escapeHtml(record.keyHash || '')}</td>
+            <td>${escapeHtml(record.deviceId || '')}</td>
+            <td>${escapeHtml(record.expiresAt || '')}</td>
+            <td>${escapeHtml(record.lastValidatedAt || '')}</td>
+            <td>${state}</td>
+          </tr>
+        `;
+      }).join('');
+    }
+
+    function escapeHtml(value) {
+      return String(value || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    async function handleStatus() {
+      const licenseKey = String(licenseKeyInput.value || '').trim();
+      if (!licenseKey) {
+        setStatus('Paste a license key first.', false);
+        return;
+      }
+      try {
+        const data = await api(`/api/admin/status?licenseKey=${encodeURIComponent(licenseKey)}`);
+        setStatus(JSON.stringify(data.record, null, 2), true);
+      } catch (error) {
+        setStatus(error.message || 'Could not read license status.', false);
+      }
+    }
+
+    async function handleAdminChange(action) {
+      const licenseKey = String(licenseKeyInput.value || '').trim();
+      if (!licenseKey) {
+        setStatus('Paste a license key first.', false);
+        return;
+      }
+      try {
+        const data = await api(`/api/admin/${action}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ licenseKey })
+        });
+        setStatus(JSON.stringify(data.record || data, null, 2), true);
+        await handleListAll();
+      } catch (error) {
+        setStatus(error.message || `Could not ${action} license.`, false);
+      }
+    }
+
+    async function handleListAll() {
+      try {
+        const data = await api('/api/admin/list');
+        renderRecords(data.records || []);
+        setStatus(`Loaded ${Array.isArray(data.records) ? data.records.length : 0} record(s).`, true);
+      } catch (error) {
+        setStatus(error.message || 'Could not list license records.', false);
+      }
+    }
+
+    document.querySelectorAll('[data-action]').forEach(button => {
+      button.addEventListener('click', () => {
+        const action = button.getAttribute('data-action');
+        if (action === 'status') {
+          handleStatus();
+          return;
+        }
+        handleAdminChange(action);
+      });
+    });
+
+    document.getElementById('listAll').addEventListener('click', handleListAll);
+    document.getElementById('clearStatus').addEventListener('click', () => {
+      setStatus('Ready.');
+    });
+  </script>
+</body>
+</html>

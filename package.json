@@ -1,0 +1,11 @@
+{
+  "name": "sora-license-server",
+  "private": true,
+  "type": "module",
+  "version": "1.0.0",
+  "description": "Public license activation server for Sora All In One",
+  "scripts": {
+    "start": "node server.mjs",
+    "dev": "node server.mjs"
+  }
+}

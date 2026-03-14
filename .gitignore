@@ -1,0 +1,8 @@
+.DS_Store
+.env
+data/licenses.json
+data/manager-prefill-token.txt
+server.pid
+node_modules/
+*.log
+*.tmp

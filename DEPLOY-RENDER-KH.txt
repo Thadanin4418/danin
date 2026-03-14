@@ -1,0 +1,49 @@
+Deploy Sora License Server ទៅ Render ដោយឥតគិតថ្លៃ
+
+អ្វីដែលអ្នកត្រូវការតែប៉ុណ្ណោះ:
+1. GitHub account
+2. Render account
+
+Files រួចស្រាប់:
+- /Users/nin/Downloads/sora_license_server
+- /Users/nin/Downloads/sora_license_server.zip
+- /Users/nin/Downloads/sora_license_server/render.yaml
+
+ជំហានខ្លីៗ:
+
+1. បង្កើត GitHub repo ថ្មីមួយ
+- ឈ្មោះអាចដាក់: sora-license-server
+
+2. Upload folder នេះទៅ GitHub repo
+- /Users/nin/Downloads/sora_license_server
+
+3. ចូល Render
+- ចុច New
+- ជ្រើស Blueprint
+- ជ្រើស GitHub repo ដែលអ្នកទើបបង្កើត
+
+4. នៅពេល Render សួរ env values ដាក់តែ 3 អោយបាន:
+- PUBLIC_BASE_URL = https://YOUR-APP.onrender.com
+- ADMIN_TOKEN = mysecret123
+- LICENSE_PRIVATE_KEY_PEM_BASE64 = ទុកសិនបាន ប៉ុន្តែល្អបំផុតត្រូវដាក់ពេលក្រោយ
+
+5. ចុច Deploy
+
+6. ក្រោយ deploy ចប់ អ្នកនឹងបាន URL មួយ
+- ឧទាហរណ៍: https://sora-license-server.onrender.com
+
+7. បើក URLs ទាំងនេះ
+- https://YOUR-APP.onrender.com/health
+- https://YOUR-APP.onrender.com/manager
+- https://YOUR-APP.onrender.com/admin
+
+8. ទៅ extension popup
+- ប្តូរ License Server URL ពី http://127.0.0.1:8787
+- ទៅជា https://YOUR-APP.onrender.com
+
+សំខាន់:
+- Free Render អាច sleep បើមិនប្រើ 15 នាទី
+- ពេលបើកលើកដំបូង វាអាចយឺតបន្តិច
+- Blogger មិនអាចរត់ server បានទេ, តែអាច embed /manager page បាន
+
+បើអ្នកឃើញ public URL រួច សូមផ្ញើ URL នោះមក ខ្ញុំនឹងប្រាប់អ្នកជំហានចុងក្រោយសម្រាប់ extension និង Blogger។

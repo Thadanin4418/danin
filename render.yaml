@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: sora-license-server
+    runtime: node
+    plan: free
+    region: singapore
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: HOST
+        value: 0.0.0.0
+      - key: PORT
+        value: 10000
+      - key: DATA_DIR
+        value: ./data
+      - key: PUBLIC_BASE_URL
+        sync: false
+      - key: ADMIN_TOKEN
+        sync: false
+      - key: LICENSE_PRIVATE_KEY_PEM_BASE64
+        sync: false

@@ -1,0 +1,588 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Sora License Manager</title>
+  <style>
+    :root {
+      --bg: #f6f3ea;
+      --panel: #fffdf8;
+      --line: #ddd2c2;
+      --ink: #1f2937;
+      --muted: #6b7280;
+      --brand: #0f766e;
+      --danger: #b91c1c;
+      --warn: #b45309;
+      --dark: #374151;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      font-family: "SF Pro Text", "Helvetica Neue", Arial, sans-serif;
+      background:
+        radial-gradient(circle at top left, #fff6dc 0%, transparent 32%),
+        linear-gradient(180deg, #fffcf5 0%, var(--bg) 100%);
+    }
+    .wrap {
+      max-width: 1220px;
+      margin: 0 auto;
+      padding: 24px 16px 40px;
+    }
+    .hero {
+      margin-bottom: 16px;
+    }
+    h1 {
+      margin: 0 0 6px;
+      font-size: 32px;
+      line-height: 1.1;
+    }
+    .sub {
+      color: var(--muted);
+      max-width: 860px;
+      line-height: 1.55;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: 380px 1fr;
+      gap: 16px;
+    }
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 20px;
+      padding: 18px;
+      box-shadow: 0 12px 28px rgba(15, 23, 42, 0.05);
+    }
+    .label {
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: .06em;
+      font-weight: 700;
+      color: var(--muted);
+      margin: 0 0 6px;
+    }
+    input, textarea {
+      width: 100%;
+      border-radius: 12px;
+      border: 1px solid #d8cfbf;
+      background: white;
+      padding: 12px 13px;
+      font-size: 14px;
+      color: var(--ink);
+      outline: none;
+    }
+    textarea {
+      min-height: 120px;
+      resize: vertical;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      line-height: 1.45;
+    }
+    input:focus, textarea:focus {
+      border-color: var(--brand);
+      box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.12);
+    }
+    .row {
+      display: grid;
+      grid-template-columns: 1fr 120px;
+      gap: 10px;
+    }
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 12px;
+    }
+    .inline-input-row {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 10px;
+      align-items: stretch;
+    }
+    button, a.button {
+      border: 0;
+      border-radius: 12px;
+      padding: 11px 14px;
+      font-weight: 700;
+      font-size: 14px;
+      color: white;
+      background: #111827;
+      cursor: pointer;
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+    button.brand { background: var(--brand); }
+    button.warn { background: var(--warn); }
+    button.danger { background: var(--danger); }
+    button.secondary, a.button.secondary { background: var(--dark); }
+    .status {
+      margin-top: 14px;
+      padding: 13px 14px;
+      border-radius: 14px;
+      border: 1px solid var(--line);
+      background: #f7f1e5;
+      white-space: pre-wrap;
+      word-break: break-word;
+      line-height: 1.55;
+      min-height: 120px;
+    }
+    .status.ok { background: #eef9f0; border-color: #a9d8b5; }
+    .status.bad { background: #fff1f1; border-color: #efb4b4; }
+    .meta {
+      margin-top: 12px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.5;
+    }
+    .table {
+      margin-top: 14px;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      overflow: auto;
+      background: white;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+    th, td {
+      padding: 11px 10px;
+      border-bottom: 1px solid #eee4d5;
+      text-align: left;
+      vertical-align: top;
+    }
+    th {
+      background: #faf4e7;
+      color: var(--muted);
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: .05em;
+    }
+    tr:last-child td { border-bottom: 0; }
+    .pill {
+      display: inline-block;
+      padding: 4px 8px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 700;
+      background: #ecfdf5;
+      color: #047857;
+    }
+    .pill.bad {
+      background: #fef2f2;
+      color: #b91c1c;
+    }
+    .empty {
+      padding: 18px;
+      color: var(--muted);
+    }
+    .topbar {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      align-items: center;
+      margin-bottom: 10px;
+      flex-wrap: wrap;
+    }
+    .health {
+      color: var(--muted);
+      font-size: 13px;
+    }
+    @media (max-width: 980px) {
+      .grid {
+        grid-template-columns: 1fr;
+      }
+      .row {
+        grid-template-columns: 1fr;
+      }
+      .inline-input-row {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="hero">
+      <h1>Sora License Manager</h1>
+      <div class="sub">Use this local manager to generate a key, activate it for one computer, validate it, and run server actions like revoke, unrevoke, reset, or list all records. This page is designed to be easier than the old admin page.</div>
+    </div>
+
+    <div class="grid">
+      <div class="panel">
+        <div class="label">Admin Token</div>
+        <input id="adminToken" type="text" placeholder="Enter admin token used to start the server" />
+
+        <div class="label" style="margin-top:14px;">Device ID</div>
+        <div class="inline-input-row">
+          <input id="deviceId" type="text" placeholder="Paste Device ID from the extension popup" />
+          <button class="secondary" id="pasteDeviceBtn" type="button">Paste Device ID</button>
+        </div>
+
+        <div class="row" style="margin-top:14px;">
+          <div>
+            <div class="label">Days</div>
+            <input id="days" type="number" min="1" value="30" />
+          </div>
+          <div>
+            <div class="label">Server</div>
+            <input id="serverUrl" type="text" value="" readonly />
+          </div>
+        </div>
+
+        <div class="actions">
+          <button class="brand" id="generateBtn">Generate Key</button>
+          <button class="secondary" id="copyKeyBtn">Copy Key</button>
+          <button class="secondary" id="healthBtn">Health</button>
+        </div>
+
+        <div class="label" style="margin-top:16px;">License Key</div>
+        <textarea id="licenseKey" placeholder="Generated or pasted license key"></textarea>
+        <div class="actions" style="margin-top:10px;">
+          <button class="secondary" id="copyLicenseBoxBtn" type="button">Copy License Key</button>
+        </div>
+
+        <div class="actions">
+          <button class="brand" id="activateBtn">Activate</button>
+          <button class="secondary" id="validateBtn">Validate</button>
+          <button class="secondary" id="statusBtn">Status</button>
+        </div>
+
+        <div class="actions">
+          <button class="danger" id="revokeBtn">Revoke</button>
+          <button class="secondary" id="unrevokeBtn">Unrevoke</button>
+          <button class="warn" id="resetBtn">Reset</button>
+        </div>
+
+        <div class="actions">
+          <button class="secondary" id="listBtn">List All</button>
+          <button class="secondary" id="clearBtn">Clear Result</button>
+          <a class="button secondary" href="/admin" target="_blank" rel="noreferrer">Open Old Admin</a>
+        </div>
+
+        <div id="statusBox" class="status">Ready.</div>
+        <div class="meta">Tip: the same license key can be activated in multiple Chrome profiles on the same computer, but not on another computer.</div>
+      </div>
+
+      <div class="panel">
+        <div class="topbar">
+          <div>
+            <div class="label">Server Records</div>
+            <div class="health" id="summaryText">No records loaded yet.</div>
+          </div>
+        </div>
+
+        <div class="table">
+          <table>
+            <thead>
+              <tr>
+                <th>Key Hash</th>
+                <th>Licensed Device</th>
+                <th>Active Device</th>
+                <th>Expires</th>
+                <th>Validated</th>
+                <th>State</th>
+              </tr>
+            </thead>
+            <tbody id="recordsBody">
+              <tr><td colspan="6" class="empty">No records loaded yet.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const STORAGE_KEY = 'sora-license-manager-settings';
+    const DEFAULT_ADMIN_TOKEN = 'mysecret123';
+
+    const adminTokenInput = document.getElementById('adminToken');
+    const deviceIdInput = document.getElementById('deviceId');
+    const daysInput = document.getElementById('days');
+    const serverUrlInput = document.getElementById('serverUrl');
+    const licenseKeyInput = document.getElementById('licenseKey');
+    const statusBox = document.getElementById('statusBox');
+    const recordsBody = document.getElementById('recordsBody');
+    const summaryText = document.getElementById('summaryText');
+
+    serverUrlInput.value = window.location.origin;
+
+    function setStatus(text, ok = null) {
+      statusBox.textContent = text;
+      statusBox.classList.remove('ok', 'bad');
+      if (ok === true) statusBox.classList.add('ok');
+      if (ok === false) statusBox.classList.add('bad');
+    }
+
+    function saveSettings() {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({
+        adminToken: adminTokenInput.value || '',
+        deviceId: deviceIdInput.value || '',
+        days: daysInput.value || '30',
+        licenseKey: licenseKeyInput.value || ''
+      }));
+    }
+
+    function loadSettings() {
+      try {
+        const data = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
+        adminTokenInput.value = String(data.adminToken || DEFAULT_ADMIN_TOKEN);
+        deviceIdInput.value = String(data.deviceId || '');
+        daysInput.value = String(data.days || '30');
+        licenseKeyInput.value = String(data.licenseKey || '');
+      } catch {
+        adminTokenInput.value = DEFAULT_ADMIN_TOKEN;
+      }
+    }
+
+    async function loadPrefillAdminToken() {
+      try {
+        const response = await fetch('/api/admin/prefill-token');
+        const data = await response.json().catch(() => ({}));
+        const token = String(data.token || '').trim();
+        if (!token) return;
+        adminTokenInput.value = token;
+        saveSettings();
+      } catch {}
+    }
+
+    function getHeaders(includeJson = false) {
+      const headers = {};
+      const token = String(adminTokenInput.value || '').trim();
+      if (token) headers['X-Admin-Token'] = token;
+      if (includeJson) headers['Content-Type'] = 'application/json';
+      return headers;
+    }
+
+    async function api(url, options = {}) {
+      const response = await fetch(url, {
+        ...options,
+        headers: {
+          ...(options.headers || {}),
+          ...getHeaders(options.body != null)
+        }
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || data.ok === false) {
+        throw new Error(data.message || 'Request failed.');
+      }
+      return data;
+    }
+
+    function escapeHtml(value) {
+      return String(value || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    function getLicenseKey() {
+      return String(licenseKeyInput.value || '').trim();
+    }
+
+    function getDeviceId() {
+      return String(deviceIdInput.value || '').trim().toUpperCase();
+    }
+
+    function renderRecords(records) {
+      const list = Array.isArray(records) ? records : [];
+      if (!list.length) {
+        recordsBody.innerHTML = '<tr><td colspan="6" class="empty">No records found.</td></tr>';
+        summaryText.textContent = 'No records loaded yet.';
+        return;
+      }
+      summaryText.textContent = `Loaded ${list.length} record(s).`;
+      recordsBody.innerHTML = list.map((record) => {
+        const state = record.revoked
+          ? '<span class="pill bad">Revoked</span>'
+          : '<span class="pill">Active</span>';
+        return `
+          <tr>
+            <td>${escapeHtml(record.keyHash || '')}</td>
+            <td>${escapeHtml(record.licensedDeviceId || '')}</td>
+            <td>${escapeHtml(record.deviceId || '')}</td>
+            <td>${escapeHtml(record.expiresAt || '')}</td>
+            <td>${escapeHtml(record.lastValidatedAt || '')}</td>
+            <td>${state}</td>
+          </tr>
+        `;
+      }).join('');
+    }
+
+    async function doGenerate() {
+      const deviceId = getDeviceId();
+      const days = Math.max(1, Number.parseInt(String(daysInput.value || '30'), 10) || 30);
+      if (!deviceId) {
+        setStatus('Paste Device ID first.', false);
+        return;
+      }
+      try {
+        const data = await api('/api/admin/generate', {
+          method: 'POST',
+          body: JSON.stringify({ deviceId, days })
+        });
+        licenseKeyInput.value = data.licenseKey || '';
+        saveSettings();
+        setStatus(JSON.stringify(data, null, 2), true);
+      } catch (error) {
+        setStatus(error.message || 'Could not generate key.', false);
+      }
+    }
+
+    async function doActivate() {
+      const licenseKey = getLicenseKey();
+      const deviceId = getDeviceId();
+      if (!licenseKey || !deviceId) {
+        setStatus('Paste license key and Device ID first.', false);
+        return;
+      }
+      try {
+        const data = await api('/api/activate', {
+          method: 'POST',
+          body: JSON.stringify({ licenseKey, deviceId })
+        });
+        saveSettings();
+        setStatus(JSON.stringify(data, null, 2), true);
+      } catch (error) {
+        setStatus(error.message || 'Could not activate license.', false);
+      }
+    }
+
+    async function doValidate() {
+      const licenseKey = getLicenseKey();
+      const deviceId = getDeviceId();
+      if (!licenseKey || !deviceId) {
+        setStatus('Paste license key and Device ID first.', false);
+        return;
+      }
+      try {
+        const data = await api('/api/validate', {
+          method: 'POST',
+          body: JSON.stringify({ licenseKey, deviceId })
+        });
+        saveSettings();
+        setStatus(JSON.stringify(data, null, 2), true);
+      } catch (error) {
+        setStatus(error.message || 'Could not validate license.', false);
+      }
+    }
+
+    async function doStatus() {
+      const licenseKey = getLicenseKey();
+      if (!licenseKey) {
+        setStatus('Paste license key first.', false);
+        return;
+      }
+      try {
+        const data = await api(`/api/admin/status?licenseKey=${encodeURIComponent(licenseKey)}`);
+        setStatus(JSON.stringify(data.record || data, null, 2), true);
+      } catch (error) {
+        setStatus(error.message || 'Could not get status.', false);
+      }
+    }
+
+    async function doAdminChange(action) {
+      const licenseKey = getLicenseKey();
+      if (!licenseKey) {
+        setStatus('Paste license key first.', false);
+        return;
+      }
+      try {
+        const data = await api(`/api/admin/${action}`, {
+          method: 'POST',
+          body: JSON.stringify({ licenseKey })
+        });
+        setStatus(JSON.stringify(data.record || data, null, 2), true);
+        await doList();
+      } catch (error) {
+        setStatus(error.message || `Could not ${action} license.`, false);
+      }
+    }
+
+    async function doList() {
+      try {
+        const data = await api('/api/admin/list');
+        renderRecords(data.records || []);
+        setStatus(`Loaded ${Array.isArray(data.records) ? data.records.length : 0} record(s).`, true);
+      } catch (error) {
+        setStatus(error.message || 'Could not list records.', false);
+      }
+    }
+
+    async function doHealth() {
+      try {
+        const data = await api('/health');
+        setStatus(JSON.stringify(data, null, 2), true);
+      } catch (error) {
+        setStatus(error.message || 'Health check failed.', false);
+      }
+    }
+
+    document.getElementById('generateBtn').addEventListener('click', doGenerate);
+    document.getElementById('pasteDeviceBtn').addEventListener('click', async () => {
+      try {
+        const text = String(await navigator.clipboard.readText() || '').trim().toUpperCase();
+        if (!text) {
+          setStatus('Clipboard does not contain a Device ID.', false);
+          return;
+        }
+        deviceIdInput.value = text;
+        saveSettings();
+        setStatus('Pasted Device ID from clipboard.', true);
+      } catch {
+        setStatus('Could not read clipboard for Device ID.', false);
+      }
+    });
+    document.getElementById('copyKeyBtn').addEventListener('click', async () => {
+      const licenseKey = getLicenseKey();
+      if (!licenseKey) {
+        setStatus('No license key to copy.', false);
+        return;
+      }
+      try {
+        await navigator.clipboard.writeText(licenseKey);
+        setStatus('License key copied.', true);
+      } catch {
+        setStatus('Could not copy license key.', false);
+      }
+    });
+    document.getElementById('copyLicenseBoxBtn').addEventListener('click', async () => {
+      const licenseKey = getLicenseKey();
+      if (!licenseKey) {
+        setStatus('No license key to copy.', false);
+        return;
+      }
+      try {
+        await navigator.clipboard.writeText(licenseKey);
+        setStatus('License key copied from the box.', true);
+      } catch {
+        setStatus('Could not copy license key from the box.', false);
+      }
+    });
+    document.getElementById('healthBtn').addEventListener('click', doHealth);
+    document.getElementById('activateBtn').addEventListener('click', doActivate);
+    document.getElementById('validateBtn').addEventListener('click', doValidate);
+    document.getElementById('statusBtn').addEventListener('click', doStatus);
+    document.getElementById('revokeBtn').addEventListener('click', () => doAdminChange('revoke'));
+    document.getElementById('unrevokeBtn').addEventListener('click', () => doAdminChange('unrevoke'));
+    document.getElementById('resetBtn').addEventListener('click', () => doAdminChange('reset'));
+    document.getElementById('listBtn').addEventListener('click', doList);
+    document.getElementById('clearBtn').addEventListener('click', () => setStatus('Ready.'));
+
+    [adminTokenInput, deviceIdInput, daysInput, licenseKeyInput].forEach((node) => {
+      node.addEventListener('input', saveSettings);
+      node.addEventListener('change', saveSettings);
+    });
+
+    loadSettings();
+    loadPrefillAdminToken();
+  </script>
+</body>
+</html>
