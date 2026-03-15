@@ -53,6 +53,12 @@ const LICENSE_VERSION = 1;
 const DEFAULT_LICENSE_DAYS = Math.max(1, Number.parseInt(String(process.env.LICENSE_DURATION_DAYS || '30'), 10) || 30);
 const LICENSE_PRICE_USD = parseMoney(process.env.LICENSE_PRICE_USD, 35);
 const LICENSE_PRICE_KHR = parseMoney(process.env.LICENSE_PRICE_KHR, null);
+const BUY_PRICE_3M_USD = parseMoney(process.env.BUY_PRICE_3M_USD, LICENSE_PRICE_USD);
+const BUY_PRICE_3M_KHR = parseMoney(process.env.BUY_PRICE_3M_KHR, null);
+const BUY_PRICE_LIFETIME_USD = parseMoney(process.env.BUY_PRICE_LIFETIME_USD, 250);
+const BUY_PRICE_LIFETIME_KHR = parseMoney(process.env.BUY_PRICE_LIFETIME_KHR, null);
+const BUY_3M_DAYS = Math.max(1, Number.parseInt(String(process.env.BUY_3M_DAYS || '90'), 10) || 90);
+const BUY_LIFETIME_DAYS = Math.max(3650, Number.parseInt(String(process.env.BUY_LIFETIME_DAYS || '36500'), 10) || 36500);
 const BAKONG_API_TOKEN = String(process.env.BAKONG_API_TOKEN || '').trim();
 const BAKONG_ACCOUNT_ID = String(process.env.BAKONG_ACCOUNT_ID || '').trim();
 const BAKONG_MERCHANT_NAME = String(process.env.BAKONG_MERCHANT_NAME || '').trim();
@@ -481,6 +487,9 @@ function sanitizeOrderRecord(record, options = {}) {
     orderId: String(record.orderId || '').trim().toUpperCase(),
     deviceId: String(record.deviceId || '').trim().toUpperCase(),
     status: String(record.status || 'pending').trim().toLowerCase(),
+    planId: String(record.planId || '').trim(),
+    planLabel: String(record.planLabel || '').trim(),
+    requestedDays: Number.isFinite(record.requestedDays) ? record.requestedDays : null,
     amountUsd: Number.isFinite(record.amountUsd) ? record.amountUsd : null,
     amountUsdLabel: Number.isFinite(record.amountUsd) ? formatUsd(record.amountUsd) : '',
     amountKhr: Number.isFinite(record.amountKhr) ? record.amountKhr : null,
@@ -501,20 +510,61 @@ function sanitizeOrderRecord(record, options = {}) {
   };
 }
 
+function getBuyPlans() {
+  const plans = [];
+
+  if (Number.isFinite(BUY_PRICE_3M_USD) || Number.isFinite(BUY_PRICE_3M_KHR)) {
+    plans.push({
+      id: '3m',
+      label: '3 Months',
+      description: `${formatCountLabel(Math.round(BUY_3M_DAYS / 30), 'month')} access for one computer`,
+      days: BUY_3M_DAYS,
+      amountUsd: Number.isFinite(BUY_PRICE_3M_USD) ? BUY_PRICE_3M_USD : null,
+      amountUsdLabel: Number.isFinite(BUY_PRICE_3M_USD) ? formatUsd(BUY_PRICE_3M_USD) : '',
+      amountKhr: Number.isFinite(BUY_PRICE_3M_KHR) ? BUY_PRICE_3M_KHR : null,
+      amountKhrLabel: Number.isFinite(BUY_PRICE_3M_KHR) ? formatKhr(BUY_PRICE_3M_KHR) : ''
+    });
+  }
+
+  if (Number.isFinite(BUY_PRICE_LIFETIME_USD) || Number.isFinite(BUY_PRICE_LIFETIME_KHR)) {
+    plans.push({
+      id: 'lifetime',
+      label: 'Lifetime',
+      description: 'One computer lifetime access',
+      days: BUY_LIFETIME_DAYS,
+      lifetime: true,
+      amountUsd: Number.isFinite(BUY_PRICE_LIFETIME_USD) ? BUY_PRICE_LIFETIME_USD : null,
+      amountUsdLabel: Number.isFinite(BUY_PRICE_LIFETIME_USD) ? formatUsd(BUY_PRICE_LIFETIME_USD) : '',
+      amountKhr: Number.isFinite(BUY_PRICE_LIFETIME_KHR) ? BUY_PRICE_LIFETIME_KHR : null,
+      amountKhrLabel: Number.isFinite(BUY_PRICE_LIFETIME_KHR) ? formatKhr(BUY_PRICE_LIFETIME_KHR) : ''
+    });
+  }
+
+  return plans;
+}
+
+function getBuyPlanById(planId) {
+  const normalized = String(planId || '').trim().toLowerCase();
+  const plans = getBuyPlans();
+  return plans.find(plan => plan.id === normalized) || plans[0] || null;
+}
+
 function getBuyConfig() {
+  const plans = getBuyPlans();
   return {
-    enabled: Boolean(BAKONG_ACCOUNT_ID && (Number.isFinite(LICENSE_PRICE_USD) || Number.isFinite(LICENSE_PRICE_KHR))),
+    enabled: Boolean(BAKONG_ACCOUNT_ID && plans.length),
     paymentMode: 'manual-bakong',
     bakongAccountId: BAKONG_ACCOUNT_ID,
     merchantName: BAKONG_MERCHANT_NAME,
     merchantId: BAKONG_MERCHANT_ID,
     acquiringBank: BAKONG_ACQUIRING_BANK,
-    amountUsd: Number.isFinite(LICENSE_PRICE_USD) ? LICENSE_PRICE_USD : null,
-    amountUsdLabel: Number.isFinite(LICENSE_PRICE_USD) ? formatUsd(LICENSE_PRICE_USD) : '',
-    amountKhr: Number.isFinite(LICENSE_PRICE_KHR) ? LICENSE_PRICE_KHR : null,
-    amountKhrLabel: Number.isFinite(LICENSE_PRICE_KHR) ? formatKhr(LICENSE_PRICE_KHR) : '',
+    amountUsd: plans[0]?.amountUsd ?? null,
+    amountUsdLabel: plans[0]?.amountUsdLabel || '',
+    amountKhr: plans[0]?.amountKhr ?? null,
+    amountKhrLabel: plans[0]?.amountKhrLabel || '',
     defaultLicenseDays: DEFAULT_LICENSE_DAYS,
-    hasBakongApiToken: Boolean(BAKONG_API_TOKEN)
+    hasBakongApiToken: Boolean(BAKONG_API_TOKEN),
+    plans
   };
 }
 
@@ -546,6 +596,10 @@ function buildPaymentNote(order) {
     `Order ID: ${order.orderId}`,
     `Device ID: ${order.deviceId}`
   ];
+
+  if (order.planLabel) {
+    lines.push(`Plan: ${order.planLabel}`);
+  }
 
   if (Number.isFinite(order.amountUsd)) {
     lines.push(`Amount (USD): ${formatUsd(order.amountUsd)}`);
@@ -1130,6 +1184,7 @@ async function buyConfig(req, res) {
 async function createBuyRequest(req, res, body) {
   const deviceId = normalizeDeviceId(body?.deviceId || '');
   const requestedDeviceIds = getRequestedDeviceIds(body);
+  const requestedPlanId = String(body?.planId || '').trim().toLowerCase();
   if (!deviceId) {
     return jsonResponse(res, 400, { ok: false, message: 'deviceId is required.' });
   }
@@ -1142,9 +1197,21 @@ async function createBuyRequest(req, res, body) {
     });
   }
 
+  const selectedPlan = getBuyPlanById(requestedPlanId);
+  if (!selectedPlan) {
+    return jsonResponse(res, 400, { ok: false, message: 'Selected buy plan is invalid.' });
+  }
+
   try {
     const db = await readDb();
     let order = findExistingOrderByDeviceId(db, requestedDeviceIds);
+
+    if (order && String(order.status || '').trim().toLowerCase() === 'approved') {
+      order = null;
+    }
+    if (order && String(order.planId || '').trim().toLowerCase() !== selectedPlan.id) {
+      order = null;
+    }
 
     if (order && normalizeDeviceId(order.deviceId || '') !== deviceId) {
       mergeRecordDeviceAliases(order, deviceId, requestedDeviceIds);
@@ -1163,9 +1230,12 @@ async function createBuyRequest(req, res, body) {
         orderId: createOrderId(),
         deviceId,
         aliasDeviceIds: normalizeDeviceIdList(requestedDeviceIds, deviceId).filter(value => value !== deviceId),
+        planId: selectedPlan.id,
+        planLabel: selectedPlan.label,
+        requestedDays: selectedPlan.days,
         status: 'pending',
-        amountUsd: config.amountUsd,
-        amountKhr: config.amountKhr,
+        amountUsd: selectedPlan.amountUsd,
+        amountKhr: selectedPlan.amountKhr,
         bakongAccountId: config.bakongAccountId,
         merchantName: config.merchantName,
         merchantId: config.merchantId,
@@ -1183,6 +1253,15 @@ async function createBuyRequest(req, res, body) {
         orderId: order.orderId,
         deviceId
       }));
+      db.orders[order.orderId] = order;
+      await writeDb(db);
+    } else if (order) {
+      order.planId = selectedPlan.id;
+      order.planLabel = selectedPlan.label;
+      order.requestedDays = selectedPlan.days;
+      order.amountUsd = selectedPlan.amountUsd;
+      order.amountKhr = selectedPlan.amountKhr;
+      order.paymentNote = buildPaymentNote(order);
       db.orders[order.orderId] = order;
       await writeDb(db);
     }
@@ -1375,7 +1454,6 @@ async function adminApproveOrder(req, res, body) {
   try {
     ensureAdmin(req);
     const orderId = String(body?.orderId || '').trim().toUpperCase();
-    const days = Math.max(1, Number.parseInt(String(body?.days || DEFAULT_LICENSE_DAYS), 10) || DEFAULT_LICENSE_DAYS);
     if (!orderId) {
       return jsonResponse(res, 400, { ok: false, message: 'orderId is required.' });
     }
@@ -1393,9 +1471,10 @@ async function adminApproveOrder(req, res, body) {
       });
     }
 
+    const orderDays = Math.max(1, Number.parseInt(String(order.requestedDays || DEFAULT_LICENSE_DAYS), 10) || DEFAULT_LICENSE_DAYS);
     const licenseKey = generateLicenseKey({
       deviceId: order.deviceId,
-      days
+      days: orderDays
     });
     const verified = verifyLicenseToken(licenseKey);
     const resolved = await getOrCreateRecordFromLicenseKey(db, licenseKey, {
@@ -1417,7 +1496,9 @@ async function adminApproveOrder(req, res, body) {
     order.lastIp = getClientIp(req);
     ensureHistory(order).push(createHistoryEntry('approve-order', req, {
       orderId,
-      deviceId: order.deviceId
+      deviceId: order.deviceId,
+      planId: order.planId || '',
+      requestedDays: orderDays
     }));
     db.orders[orderId] = order;
 
