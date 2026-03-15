@@ -49,6 +49,7 @@ let writeQueue = Promise.resolve();
 
 const PRODUCT_CODE = 'sora-all-in-one';
 const LICENSE_VERSION = 1;
+const TRIAL_DURATION_MS = 60 * 60 * 1000;
 const DEFAULT_PRIVATE_KEY_PEM = `-----BEGIN PRIVATE KEY-----
 MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgvlr8EllTMXS3A+9x
 Vu65elQ7R3sjpSA1oan+QUnKq4ehRANCAARHfFvbeGuSCzJVwS4E5vEtMYdyy4UK
@@ -79,7 +80,8 @@ const EMPTY_DB = {
   version: 1,
   createdAt: null,
   updatedAt: null,
-  licenses: {}
+  licenses: {},
+  trials: {}
 };
 
 function jsonResponse(res, statusCode, payload) {
@@ -265,6 +267,9 @@ function normalizeDb(db) {
     ...db,
     licenses: db?.licenses && typeof db.licenses === 'object'
       ? db.licenses
+      : {},
+    trials: db?.trials && typeof db.trials === 'object'
+      ? db.trials
       : {}
   };
 }
@@ -338,6 +343,19 @@ function sanitizeRecord(record) {
   };
 }
 
+function sanitizeTrialRecord(record) {
+  if (!record) return null;
+  return {
+    deviceId: String(record.deviceId || '').trim().toUpperCase(),
+    startedAt: record.startedAt || '',
+    endsAt: record.endsAt || '',
+    active: Boolean(record.active),
+    expired: Boolean(record.expired),
+    lastIp: record.lastIp || '',
+    historyCount: Array.isArray(record.history) ? record.history.length : 0
+  };
+}
+
 function createEmptyRecordFromVerified(verified, keyHash, options = {}) {
   return {
     keyHash,
@@ -405,6 +423,52 @@ function findAutoActivatableRecord(db, deviceId) {
     .sort((a, b) => Date.parse(String(b?.expiresAt || '')) - Date.parse(String(a?.expiresAt || '')));
 
   return records[0] || null;
+}
+
+async function trialStatus(req, res, body) {
+  const deviceId = String(body?.deviceId || '').trim().toUpperCase();
+  if (!deviceId) {
+    return jsonResponse(res, 400, { ok: false, message: 'deviceId is required.' });
+  }
+
+  try {
+    const db = await readDb();
+    const nowMs = Date.now();
+    const nowIso = new Date(nowMs).toISOString();
+    let record = db.trials[deviceId];
+
+    if (!record) {
+      record = {
+        deviceId,
+        startedAt: nowIso,
+        endsAt: new Date(nowMs + TRIAL_DURATION_MS).toISOString(),
+        lastIp: getClientIp(req),
+        history: [createHistoryEntry('trial-start', req, { deviceId })]
+      };
+      db.trials[deviceId] = record;
+      await writeDb(db);
+    }
+
+    const endsAtMs = Date.parse(String(record.endsAt || ''));
+    const active = Number.isFinite(endsAtMs) && nowMs < endsAtMs;
+    const expired = !active;
+
+    return jsonResponse(res, 200, {
+      ok: true,
+      trial: {
+        ...sanitizeTrialRecord({
+          ...record,
+          active,
+          expired
+        }),
+        expiresAtLabel: Number.isFinite(endsAtMs)
+          ? new Date(endsAtMs).toLocaleString()
+          : 'Unknown'
+      }
+    });
+  } catch (error) {
+    return jsonResponse(res, 400, { ok: false, message: error?.message || 'Could not check trial status.' });
+  }
 }
 
 async function readJsonBody(req) {
@@ -807,6 +871,10 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && req.url === '/api/auto-activate') {
       const body = await readJsonBody(req);
       return await autoActivateLicense(req, res, body);
+    }
+    if (req.method === 'POST' && req.url === '/api/trial-status') {
+      const body = await readJsonBody(req);
+      return await trialStatus(req, res, body);
     }
     if (req.method === 'POST' && req.url === '/api/validate') {
       const body = await readJsonBody(req);
