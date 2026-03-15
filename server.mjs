@@ -675,13 +675,16 @@ function buildPaymentNote(order) {
 async function generateBakongKhqrForOrder(order) {
   const { BakongKHQR, khqrData, IndividualInfo } = await loadBakongSdk();
   const config = getBuyConfig();
+  const currencyCode = Number.isFinite(order.amountUsd) ? khqrData.currency.usd : khqrData.currency.khr;
   const optionalData = {
-    currency: Number.isFinite(order.amountUsd) ? khqrData.currency.usd : khqrData.currency.khr,
+    currency: currencyCode,
     amount: Number.isFinite(order.amountUsd) ? order.amountUsd : order.amountKhr,
     billNumber: order.orderId,
     storeLabel: 'Sora License',
     terminalLabel: 'Chrome',
-    purposeOfTransaction: order.planLabel || 'Sora License'
+    purposeOfTransaction: order.planLabel || 'Sora License',
+    // Dynamic KHQR with amount should expire to avoid reusing an old payment session.
+    expirationTimestamp: Date.now() + (15 * 60 * 1000)
   };
   if (BAKONG_ACQUIRING_BANK) {
     optionalData.acquiringBank = BAKONG_ACQUIRING_BANK;
@@ -689,6 +692,7 @@ async function generateBakongKhqrForOrder(order) {
 
   const individualInfo = new IndividualInfo(
     config.bakongAccountId,
+    currencyCode,
     config.merchantName || getBakongMerchantName(),
     config.merchantCity || BAKONG_MERCHANT_CITY,
     optionalData
