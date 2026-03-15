@@ -59,6 +59,8 @@ const BUY_PRICE_LIFETIME_USD = parseMoney(process.env.BUY_PRICE_LIFETIME_USD, 25
 const BUY_PRICE_LIFETIME_KHR = parseMoney(process.env.BUY_PRICE_LIFETIME_KHR, null);
 const BUY_3M_DAYS = Math.max(1, Number.parseInt(String(process.env.BUY_3M_DAYS || '90'), 10) || 90);
 const BUY_LIFETIME_DAYS = Math.max(3650, Number.parseInt(String(process.env.BUY_LIFETIME_DAYS || '36500'), 10) || 36500);
+const BUY_ORDER_EXPIRE_MS = Math.max(15 * 1000, Number.parseInt(String(process.env.BUY_ORDER_EXPIRE_MS || '60000'), 10) || 60000);
+const BUY_ORDER_HIDE_APPROVED_MS = Math.max(15 * 1000, Number.parseInt(String(process.env.BUY_ORDER_HIDE_APPROVED_MS || String(BUY_ORDER_EXPIRE_MS)), 10) || BUY_ORDER_EXPIRE_MS);
 const BAKONG_API_TOKEN = String(process.env.BAKONG_API_TOKEN || '').trim();
 const BAKONG_ACCOUNT_ID = String(process.env.BAKONG_ACCOUNT_ID || '').trim();
 const BAKONG_MERCHANT_NAME = String(process.env.BAKONG_MERCHANT_NAME || '').trim();
@@ -485,6 +487,8 @@ function sanitizeTrialRecord(record) {
 function sanitizeOrderRecord(record, options = {}) {
   if (!record) return null;
   const expiresAtMs = Date.parse(String(record.licenseExpiresAt || ''));
+  const createdAtMs = Date.parse(String(record.createdAt || ''));
+  const orderExpiresAtMs = Number.isFinite(createdAtMs) ? createdAtMs + BUY_ORDER_EXPIRE_MS : NaN;
   return {
     orderId: String(record.orderId || '').trim().toUpperCase(),
     deviceId: String(record.deviceId || '').trim().toUpperCase(),
@@ -501,6 +505,11 @@ function sanitizeOrderRecord(record, options = {}) {
     merchantId: String(record.merchantId || '').trim(),
     acquiringBank: String(record.acquiringBank || '').trim(),
     createdAt: record.createdAt || '',
+    orderExpiresAt: Number.isFinite(orderExpiresAtMs) ? new Date(orderExpiresAtMs).toISOString() : '',
+    orderExpiresAtLabel: Number.isFinite(orderExpiresAtMs)
+      ? new Date(orderExpiresAtMs).toLocaleString()
+      : '',
+    expiredAt: record.expiredAt || '',
     approvedAt: record.approvedAt || '',
     licenseExpiresAt: record.licenseExpiresAt || '',
     licenseExpiresAtLabel: Number.isFinite(expiresAtMs)
@@ -642,6 +651,60 @@ function createOrderId() {
   const random = crypto.randomBytes(4).toString('hex').toUpperCase();
   const stamp = Date.now().toString(36).toUpperCase();
   return `ORD-${stamp}-${random}`;
+}
+
+function getOrderStatus(order) {
+  return String(order?.status || 'pending').trim().toLowerCase();
+}
+
+function getOrderCreatedAtMs(order) {
+  return Date.parse(String(order?.createdAt || ''));
+}
+
+function getOrderApprovedAtMs(order) {
+  return Date.parse(String(order?.approvedAt || ''));
+}
+
+function createSystemHistoryEntry(type, extra = {}) {
+  return {
+    type,
+    at: new Date().toISOString(),
+    ip: '',
+    ...extra
+  };
+}
+
+function expireStaleBuyOrders(db) {
+  const nowMs = Date.now();
+  let changed = false;
+
+  Object.values(db.orders || {}).forEach((order) => {
+    if (getOrderStatus(order) !== 'pending') return;
+    const createdAtMs = getOrderCreatedAtMs(order);
+    if (!Number.isFinite(createdAtMs)) return;
+    if ((nowMs - createdAtMs) < BUY_ORDER_EXPIRE_MS) return;
+
+    order.status = 'expired';
+    order.expiredAt = new Date(nowMs).toISOString();
+    order.paymentCheckedAt = order.expiredAt;
+    ensureHistory(order).push(createSystemHistoryEntry('order-expired', {
+      orderId: order.orderId,
+      reason: `Pending longer than ${Math.round(BUY_ORDER_EXPIRE_MS / 1000)} seconds.`
+    }));
+    changed = true;
+  });
+
+  return changed;
+}
+
+function shouldHideBuyOrderFromAdminList(order) {
+  const status = getOrderStatus(order);
+  if (status === 'expired') return true;
+  if (status !== 'approved') return false;
+
+  const approvedAtMs = getOrderApprovedAtMs(order);
+  if (!Number.isFinite(approvedAtMs)) return false;
+  return (Date.now() - approvedAtMs) >= BUY_ORDER_HIDE_APPROVED_MS;
 }
 
 function buildPaymentNote(order) {
@@ -803,8 +866,8 @@ function findExistingOrderByDeviceId(db, deviceIds) {
     .filter(order => deviceRecordMatches(order, normalizedDeviceIds, ['deviceId']))
     .sort((a, b) => String(b?.createdAt || '').localeCompare(String(a?.createdAt || '')));
 
-  return orders.find(order => String(order?.status || '').trim().toLowerCase() === 'pending')
-    || orders.find(order => String(order?.status || '').trim().toLowerCase() === 'approved')
+  return orders.find(order => getOrderStatus(order) === 'pending')
+    || orders.find(order => getOrderStatus(order) === 'approved')
     || null;
 }
 
@@ -1331,6 +1394,7 @@ async function createBuyRequest(req, res, body) {
 
   try {
     const db = await readDb();
+    expireStaleBuyOrders(db);
     let order = findExistingOrderByDeviceId(db, requestedDeviceIds);
 
     if (order && String(order.status || '').trim().toLowerCase() === 'approved') {
@@ -1447,6 +1511,10 @@ async function buyOrderStatus(req, res) {
 
   try {
     const db = await readDb();
+    const changed = expireStaleBuyOrders(db);
+    if (changed) {
+      await writeDb(db);
+    }
     let order = db.orders[orderId];
     if (!order) {
       return jsonResponse(res, 404, { ok: false, message: 'Order was not found.' });
@@ -1562,7 +1630,12 @@ async function adminOrders(req, res) {
   try {
     ensureAdmin(req);
     const db = await readDb();
+    const changed = expireStaleBuyOrders(db);
+    if (changed) {
+      await writeDb(db);
+    }
     const records = Object.values(db.orders || {})
+      .filter(order => !shouldHideBuyOrderFromAdminList(order))
       .map((order) => sanitizeOrderRecord(order, { includeNote: true }))
       .sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
     return jsonResponse(res, 200, {
@@ -1718,9 +1791,19 @@ async function adminApproveOrder(req, res, body) {
     }
 
     const db = await readDb();
+    const changed = expireStaleBuyOrders(db);
+    if (changed) {
+      await writeDb(db);
+    }
     const order = db.orders[orderId];
     if (!order) {
       return jsonResponse(res, 404, { ok: false, message: 'Order was not found.' });
+    }
+    if (getOrderStatus(order) === 'expired') {
+      return jsonResponse(res, 410, {
+        ok: false,
+        message: 'Order expired. Generate a new QR and try again.'
+      });
     }
     if (String(order.status || '').trim().toLowerCase() === 'approved') {
       return jsonResponse(res, 200, {
