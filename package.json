@@ -7,5 +7,8 @@
   "scripts": {
     "start": "node server.mjs",
     "dev": "node server.mjs"
+  },
+  "dependencies": {
+    "bakong-khqr": "^1.0.20"
   }
 }

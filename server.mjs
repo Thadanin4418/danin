@@ -62,8 +62,10 @@ const BUY_LIFETIME_DAYS = Math.max(3650, Number.parseInt(String(process.env.BUY_
 const BAKONG_API_TOKEN = String(process.env.BAKONG_API_TOKEN || '').trim();
 const BAKONG_ACCOUNT_ID = String(process.env.BAKONG_ACCOUNT_ID || '').trim();
 const BAKONG_MERCHANT_NAME = String(process.env.BAKONG_MERCHANT_NAME || '').trim();
+const BAKONG_MERCHANT_CITY = String(process.env.BAKONG_MERCHANT_CITY || 'PHNOM PENH').trim() || 'PHNOM PENH';
 const BAKONG_MERCHANT_ID = String(process.env.BAKONG_MERCHANT_ID || '').trim();
 const BAKONG_ACQUIRING_BANK = String(process.env.BAKONG_ACQUIRING_BANK || '').trim();
+const BAKONG_API_BASE_URL = String(process.env.BAKONG_API_BASE_URL || 'https://api-bakong.nbc.gov.kh').trim().replace(/\/+$/g, '');
 const DEFAULT_PRIVATE_KEY_PEM = `-----BEGIN PRIVATE KEY-----
 MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgvlr8EllTMXS3A+9x
 Vu65elQ7R3sjpSA1oan+QUnKq4ehRANCAARHfFvbeGuSCzJVwS4E5vEtMYdyy4UK
@@ -505,9 +507,47 @@ function sanitizeOrderRecord(record, options = {}) {
       ? new Date(expiresAtMs).toLocaleString()
       : '',
     paymentNote: options.includeNote ? String(record.paymentNote || '').trim() : '',
+    khqrString: options.includeNote ? String(record.khqrString || '').trim() : '',
+    khqrMd5: options.includeNote ? String(record.khqrMd5 || '').trim() : '',
+    autoPaymentEnabled: Boolean(record.autoPaymentEnabled),
+    paymentCheckedAt: record.paymentCheckedAt || '',
     paymentMode: String(record.paymentMode || 'manual-bakong').trim(),
     historyCount: Array.isArray(record.history) ? record.history.length : 0
   };
+}
+
+let bakongSdkPromise = null;
+
+async function loadBakongSdk() {
+  if (!bakongSdkPromise) {
+    bakongSdkPromise = (async () => {
+      const mod = await import('bakong-khqr');
+      const source = mod?.default && !mod.BakongKHQR ? mod.default : mod;
+      const sdk = {
+        BakongKHQR: source.BakongKHQR || mod.BakongKHQR,
+        khqrData: source.khqrData || mod.khqrData,
+        IndividualInfo: source.IndividualInfo || mod.IndividualInfo
+      };
+      if (!sdk.BakongKHQR || !sdk.khqrData || !sdk.IndividualInfo) {
+        throw new Error('Bakong KHQR SDK exports are unavailable.');
+      }
+      return sdk;
+    })();
+  }
+  return bakongSdkPromise;
+}
+
+function getBakongMerchantName() {
+  if (BAKONG_MERCHANT_NAME) return BAKONG_MERCHANT_NAME;
+  const fallback = String(BAKONG_ACCOUNT_ID || '')
+    .split('@')[0]
+    .replace(/[_-]+/g, ' ')
+    .trim();
+  return fallback || 'DANIN THA';
+}
+
+function isBakongAutoPaymentReady() {
+  return Boolean(BAKONG_API_TOKEN && BAKONG_ACCOUNT_ID);
 }
 
 function getBuyPlans() {
@@ -566,17 +606,19 @@ function getBuyConfig() {
   const plans = getBuyPlans();
   return {
     enabled: Boolean(BAKONG_ACCOUNT_ID && plans.length),
-    paymentMode: 'manual-bakong',
+    paymentMode: isBakongAutoPaymentReady() ? 'bakong-auto' : 'manual-bakong',
     bakongAccountId: BAKONG_ACCOUNT_ID,
-    merchantName: BAKONG_MERCHANT_NAME,
+    merchantName: getBakongMerchantName(),
     merchantId: BAKONG_MERCHANT_ID,
     acquiringBank: BAKONG_ACQUIRING_BANK,
+    merchantCity: BAKONG_MERCHANT_CITY,
     amountUsd: plans[0]?.amountUsd ?? null,
     amountUsdLabel: plans[0]?.amountUsdLabel || '',
     amountKhr: plans[0]?.amountKhr ?? null,
     amountKhrLabel: plans[0]?.amountKhrLabel || '',
     defaultLicenseDays: DEFAULT_LICENSE_DAYS,
     hasBakongApiToken: Boolean(BAKONG_API_TOKEN),
+    autoPaymentEnabled: isBakongAutoPaymentReady(),
     plans
   };
 }
@@ -624,8 +666,77 @@ function buildPaymentNote(order) {
     lines.push(`Bakong ID: ${order.bakongAccountId}`);
   }
 
-  lines.push('', 'After payment, wait for admin approval. The extension can auto-restore the license for this computer.');
+  lines.push('', order.autoPaymentEnabled
+    ? 'After payment, the server will try to approve this order automatically. The extension can auto-restore the license for this computer.'
+    : 'After payment, wait for admin approval. The extension can auto-restore the license for this computer.');
   return lines.join('\n');
+}
+
+async function generateBakongKhqrForOrder(order) {
+  const { BakongKHQR, khqrData, IndividualInfo } = await loadBakongSdk();
+  const config = getBuyConfig();
+  const optionalData = {
+    currency: Number.isFinite(order.amountUsd) ? khqrData.currency.usd : khqrData.currency.khr,
+    amount: Number.isFinite(order.amountUsd) ? order.amountUsd : order.amountKhr,
+    billNumber: order.orderId,
+    storeLabel: 'Sora License',
+    terminalLabel: 'Chrome',
+    purposeOfTransaction: order.planLabel || 'Sora License'
+  };
+  if (BAKONG_ACQUIRING_BANK) {
+    optionalData.acquiringBank = BAKONG_ACQUIRING_BANK;
+  }
+
+  const individualInfo = new IndividualInfo(
+    config.bakongAccountId,
+    config.merchantName || getBakongMerchantName(),
+    config.merchantCity || BAKONG_MERCHANT_CITY,
+    optionalData
+  );
+
+  const khqr = new BakongKHQR();
+  const result = khqr.generateIndividual(individualInfo);
+  if (result?.status?.code !== 0 || !result?.data?.qr || !result?.data?.md5) {
+    throw new Error(result?.status?.message || 'Could not generate KHQR.');
+  }
+
+  return {
+    qr: String(result.data.qr || '').trim(),
+    md5: String(result.data.md5 || '').trim()
+  };
+}
+
+async function checkBakongTransactionByMd5(md5) {
+  const response = await fetch(`${BAKONG_API_BASE_URL}/v1/check_transaction_by_md5`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${BAKONG_API_TOKEN}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({ md5 })
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(data?.responseMessage || data?.message || 'Bakong transaction check failed.');
+  }
+  return data;
+}
+
+function isMatchingPaidOrder(order, paymentData) {
+  const expectedAccount = String(BAKONG_ACCOUNT_ID || '').trim().toLowerCase();
+  const toAccount = String(paymentData?.toAccountId || '').trim().toLowerCase();
+  if (expectedAccount && toAccount && expectedAccount !== toAccount) {
+    return false;
+  }
+
+  const paidAmount = Number(paymentData?.amount);
+  if (Number.isFinite(order.amountUsd)) {
+    return Number.isFinite(paidAmount) && Math.abs(paidAmount - order.amountUsd) < 0.0001;
+  }
+  if (Number.isFinite(order.amountKhr)) {
+    return Number.isFinite(paidAmount) && Math.abs(paidAmount - order.amountKhr) < 0.0001;
+  }
+  return false;
 }
 
 function normalizeDeviceId(value) {
@@ -1254,13 +1365,30 @@ async function createBuyRequest(req, res, body) {
         merchantId: config.merchantId,
         acquiringBank: config.acquiringBank,
         paymentMode: config.paymentMode,
+        autoPaymentEnabled: Boolean(config.autoPaymentEnabled),
         createdAt: now,
         approvedAt: '',
         licenseExpiresAt: '',
         approvedLicenseKeyHash: '',
+        paymentCheckedAt: '',
+        khqrString: '',
+        khqrMd5: '',
         lastIp: getClientIp(req),
         history: []
       };
+      if (config.autoPaymentEnabled) {
+        try {
+          const khqr = await generateBakongKhqrForOrder(order);
+          order.khqrString = khqr.qr;
+          order.khqrMd5 = khqr.md5;
+        } catch (error) {
+          order.autoPaymentEnabled = false;
+          order.paymentMode = 'manual-bakong';
+          ensureHistory(order).push(createHistoryEntry('khqr-fallback-manual', req, {
+            message: error?.message || 'KHQR auto generation failed.'
+          }));
+        }
+      }
       order.paymentNote = buildPaymentNote(order);
       ensureHistory(order).push(createHistoryEntry('buy-request', req, {
         orderId: order.orderId,
@@ -1274,6 +1402,20 @@ async function createBuyRequest(req, res, body) {
       order.requestedDays = selectedPlan.days;
       order.amountUsd = selectedPlan.amountUsd;
       order.amountKhr = selectedPlan.amountKhr;
+      order.autoPaymentEnabled = Boolean(config.autoPaymentEnabled);
+      if (config.autoPaymentEnabled && (!order.khqrString || !order.khqrMd5)) {
+        try {
+          const khqr = await generateBakongKhqrForOrder(order);
+          order.khqrString = khqr.qr;
+          order.khqrMd5 = khqr.md5;
+        } catch (error) {
+          order.autoPaymentEnabled = false;
+          order.paymentMode = 'manual-bakong';
+          ensureHistory(order).push(createHistoryEntry('khqr-fallback-manual', req, {
+            message: error?.message || 'KHQR auto generation failed.'
+          }));
+        }
+      }
       order.paymentNote = buildPaymentNote(order);
       db.orders[order.orderId] = order;
       await writeDb(db);
@@ -1302,9 +1444,16 @@ async function buyOrderStatus(req, res) {
 
   try {
     const db = await readDb();
-    const order = db.orders[orderId];
+    let order = db.orders[orderId];
     if (!order) {
       return jsonResponse(res, 404, { ok: false, message: 'Order was not found.' });
+    }
+
+    const autoApproved = await tryAutoApproveOrderPayment(db, order, req);
+    if (autoApproved?.order) {
+      order = autoApproved.order;
+    } else {
+      order = db.orders[orderId] || order;
     }
 
     return jsonResponse(res, 200, {
@@ -1463,6 +1612,100 @@ async function adminSetSettings(req, res, body) {
   }
 }
 
+async function approveOrderWithLicense(db, order, req, options = {}) {
+  const orderDays = Math.max(1, Number.parseInt(String(order.requestedDays || DEFAULT_LICENSE_DAYS), 10) || DEFAULT_LICENSE_DAYS);
+  const licenseKey = generateLicenseKey({
+    deviceId: order.deviceId,
+    days: orderDays
+  });
+  const verified = verifyLicenseToken(licenseKey);
+  const resolved = await getOrCreateRecordFromLicenseKey(db, licenseKey, {
+    deviceId: '',
+    activatedAt: '',
+    lastValidatedAt: ''
+  });
+
+  ensureHistory(resolved.record).push(createHistoryEntry(
+    options.auto ? 'auto-generate-from-order' : 'generate-from-order',
+    req,
+    {
+      orderId: order.orderId,
+      deviceId: order.deviceId,
+      planId: order.planId || ''
+    }
+  ));
+  db.licenses[resolved.keyHash] = resolved.record;
+
+  order.status = 'approved';
+  order.approvedAt = new Date().toISOString();
+  order.licenseExpiresAt = verified.payload.expiresAt;
+  order.approvedLicenseKeyHash = resolved.keyHash;
+  order.lastIp = getClientIp(req);
+  order.paymentCheckedAt = new Date().toISOString();
+  ensureHistory(order).push(createHistoryEntry(
+    options.auto ? 'auto-approve-order' : 'approve-order',
+    req,
+    {
+      orderId: order.orderId,
+      deviceId: order.deviceId,
+      planId: order.planId || '',
+      requestedDays: orderDays
+    }
+  ));
+  db.orders[order.orderId] = order;
+  await writeDb(db);
+
+  return {
+    order,
+    license: {
+      deviceId: order.deviceId,
+      expiresAt: verified.payload.expiresAt,
+      expiresAtLabel: verified.expiresAtLabel,
+      keyHash: resolved.keyHash
+    },
+    licenseKey
+  };
+}
+
+async function tryAutoApproveOrderPayment(db, order, req) {
+  if (!isBakongAutoPaymentReady() || !order?.khqrMd5 || String(order.status || '').trim().toLowerCase() !== 'pending') {
+    return null;
+  }
+
+  try {
+    const result = await checkBakongTransactionByMd5(order.khqrMd5);
+    order.paymentCheckedAt = new Date().toISOString();
+    if (Number(result?.responseCode) !== 0 || !result?.data) {
+      db.orders[order.orderId] = order;
+      await writeDb(db);
+      return null;
+    }
+    if (!isMatchingPaidOrder(order, result.data)) {
+      ensureHistory(order).push(createHistoryEntry('auto-payment-mismatch', req, {
+        orderId: order.orderId
+      }));
+      db.orders[order.orderId] = order;
+      await writeDb(db);
+      return null;
+    }
+
+    order.paymentHash = String(result?.data?.hash || '').trim();
+    order.paymentFromAccountId = String(result?.data?.fromAccountId || '').trim();
+    order.paymentToAccountId = String(result?.data?.toAccountId || '').trim();
+    order.paymentDescription = String(result?.data?.description || '').trim();
+    ensureHistory(order).push(createHistoryEntry('bakong-payment-detected', req, {
+      orderId: order.orderId,
+      hash: order.paymentHash
+    }));
+    return await approveOrderWithLicense(db, order, req, { auto: true });
+  } catch {
+    order.paymentCheckedAt = new Date().toISOString();
+    db.orders[order.orderId] = order;
+    await writeDb(db);
+    return null;
+  }
+}
+
 async function adminApproveOrder(req, res, body) {
   try {
     ensureAdmin(req);
@@ -1484,50 +1727,14 @@ async function adminApproveOrder(req, res, body) {
       });
     }
 
-    const orderDays = Math.max(1, Number.parseInt(String(order.requestedDays || DEFAULT_LICENSE_DAYS), 10) || DEFAULT_LICENSE_DAYS);
-    const licenseKey = generateLicenseKey({
-      deviceId: order.deviceId,
-      days: orderDays
-    });
-    const verified = verifyLicenseToken(licenseKey);
-    const resolved = await getOrCreateRecordFromLicenseKey(db, licenseKey, {
-      deviceId: '',
-      activatedAt: '',
-      lastValidatedAt: ''
-    });
-
-    ensureHistory(resolved.record).push(createHistoryEntry('generate-from-order', req, {
-      orderId,
-      deviceId: order.deviceId
-    }));
-    db.licenses[resolved.keyHash] = resolved.record;
-
-    order.status = 'approved';
-    order.approvedAt = new Date().toISOString();
-    order.licenseExpiresAt = verified.payload.expiresAt;
-    order.approvedLicenseKeyHash = resolved.keyHash;
-    order.lastIp = getClientIp(req);
-    ensureHistory(order).push(createHistoryEntry('approve-order', req, {
-      orderId,
-      deviceId: order.deviceId,
-      planId: order.planId || '',
-      requestedDays: orderDays
-    }));
-    db.orders[orderId] = order;
-
-    await writeDb(db);
+    const approved = await approveOrderWithLicense(db, order, req, { auto: false });
 
     return jsonResponse(res, 200, {
       ok: true,
       message: 'Buy order approved and license generated.',
-      order: sanitizeOrderRecord(order, { includeNote: true }),
-      license: {
-        deviceId: order.deviceId,
-        expiresAt: verified.payload.expiresAt,
-        expiresAtLabel: verified.expiresAtLabel,
-        keyHash: resolved.keyHash
-      },
-      licenseKey
+      order: sanitizeOrderRecord(approved.order, { includeNote: true }),
+      license: approved.license,
+      licenseKey: approved.licenseKey
     });
   } catch (error) {
     return jsonResponse(res, 403, { ok: false, message: error?.message || 'Could not approve buy order.' });

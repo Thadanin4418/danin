@@ -63,6 +63,8 @@ Render easiest setup:
    - `LICENSE_PRIVATE_KEY_PEM_BASE64=...`
    - `TRIAL_POLICY=1h` or `30d` or `forever` or `off`
    - `BAKONG_ACCOUNT_ID=yourbakongid@bank`
+   - `BAKONG_MERCHANT_NAME=Your Name or Shop`
+   - `BAKONG_API_TOKEN=YOUR_BAKONG_OPEN_API_TOKEN`
    - `LICENSE_PRICE_USD=35`
    - `BUY_PRICE_3M_USD=105`
    - `BUY_PRICE_LIFETIME_USD=250`

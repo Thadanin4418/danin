@@ -486,7 +486,7 @@
       priceHelp.textContent = selectedPlan?.description || 'This license will be bound to one computer.';
       bakongValue.textContent = config?.bakongAccountId || 'Not configured';
       configMeta.textContent = config?.enabled
-        ? `Payment mode: ${config.paymentMode}. Default license duration: ${config.defaultLicenseDays} day(s).`
+        ? `Payment mode: ${config.paymentMode}. ${config.autoPaymentEnabled ? 'Approved payments will activate automatically.' : 'Manual approval is still required.'}`
         : 'Buy flow is not configured on the server yet.';
       renderPlanCards();
       if (!config?.enabled) {
@@ -511,13 +511,16 @@
       }
 
       setStatus(
-        `Order prepared.\n\nOrder ID: ${order.orderId}\nPlan: ${order.planLabel || 'License'}\nStatus: ${order.status}\nBakong ID: ${order.bakongAccountId || 'Not configured'}\n\nPay the amount above, then wait for approval.`,
+        `Order prepared.\n\nOrder ID: ${order.orderId}\nPlan: ${order.planLabel || 'License'}\nStatus: ${order.status}\nBakong ID: ${order.bakongAccountId || 'Not configured'}\n\n${order.autoPaymentEnabled ? 'After you pay, the server will try to approve this order automatically.' : 'Pay the amount above, then wait for approval.'}`,
         null
       );
       updatePaymentQr();
     }
 
     function buildQrPayload() {
+      if (currentOrder?.khqrString) {
+        return String(currentOrder.khqrString || '').trim();
+      }
       const parts = [];
       if (currentConfig?.bakongAccountId) {
         parts.push(`Bakong ID: ${currentConfig.bakongAccountId}`);
@@ -544,7 +547,9 @@
 
     function updatePaymentQr() {
       const payload = buildQrPayload();
-      qrPayloadPreview.textContent = payload || 'KHQR details will appear here after the order is prepared.';
+      qrPayloadPreview.textContent = currentOrder?.khqrMd5
+        ? `KHQR ready\nMD5: ${currentOrder.khqrMd5}`
+        : payload || 'KHQR details will appear here after the order is prepared.';
       if (!payload) {
         qrBox.innerHTML = '<div class="qr-empty">Prepare an order first to show the KHQR payment QR.</div>';
         return;
