@@ -26,6 +26,7 @@ Public deployment:
 - set `ADMIN_TOKEN`
 - set `DATA_DIR` to persistent storage
 - recommended: set `LICENSE_PRIVATE_KEY_PEM` or `LICENSE_PRIVATE_KEY_PEM_BASE64`
+- set `TRIAL_POLICY` if you want to control free access globally
 - set `BAKONG_ACCOUNT_ID` and at least one price (`LICENSE_PRICE_USD` or `LICENSE_PRICE_KHR`) if you want the public Buy page to work
 
 Easy mode:
@@ -60,6 +61,7 @@ Render easiest setup:
    - `PUBLIC_BASE_URL=https://YOUR-RENDER-DOMAIN.onrender.com`
    - `ADMIN_TOKEN=mysecret123` or your own secret
    - `LICENSE_PRIVATE_KEY_PEM_BASE64=...`
+   - `TRIAL_POLICY=1h` or `30d` or `forever` or `off`
    - `BAKONG_ACCOUNT_ID=yourbakongid@bank`
    - `LICENSE_PRICE_USD=35`
 5. Deploy.
@@ -122,6 +124,16 @@ API routes:
 
 - GET /api/buy/order-status?orderId=...
   returns public order status for the buy page
+
+Trial policy:
+- `TRIAL_POLICY=1h`
+  one-hour first-use free access
+- `TRIAL_POLICY=30d`
+  thirty-day first-use free access
+- `TRIAL_POLICY=forever`
+  free access without expiry until you change the policy
+- `TRIAL_POLICY=off`
+  disables free access and requires license/buy approval immediately
 
 - POST /api/activate
   body: { "licenseKey": "...", "deviceId": "..." }

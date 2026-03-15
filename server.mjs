@@ -50,7 +50,6 @@ let writeQueue = Promise.resolve();
 
 const PRODUCT_CODE = 'sora-all-in-one';
 const LICENSE_VERSION = 1;
-const TRIAL_DURATION_MS = 60 * 60 * 1000;
 const DEFAULT_LICENSE_DAYS = Math.max(1, Number.parseInt(String(process.env.LICENSE_DURATION_DAYS || '30'), 10) || 30);
 const LICENSE_PRICE_USD = parseMoney(process.env.LICENSE_PRICE_USD, 35);
 const LICENSE_PRICE_KHR = parseMoney(process.env.LICENSE_PRICE_KHR, null);
@@ -84,6 +83,7 @@ function readPrivateKeyPem() {
 }
 
 const PRIVATE_KEY_PEM = readPrivateKeyPem();
+const TRIAL_POLICY = parseTrialPolicy(process.env.TRIAL_POLICY || '1h');
 
 const EMPTY_DB = {
   version: 1,
@@ -102,6 +102,79 @@ function parseMoney(value, fallback) {
     return fallback;
   }
   return number;
+}
+
+function formatCountLabel(value, singular) {
+  const safeValue = Math.max(1, Number.parseInt(String(value || '1'), 10) || 1);
+  return `${safeValue} ${singular}${safeValue === 1 ? '' : 's'}`;
+}
+
+function parseTrialPolicy(value) {
+  const text = String(value || '1h').trim().toLowerCase();
+  if (!text || text === '1h') {
+    return {
+      raw: '1h',
+      mode: 'timed',
+      durationMs: 60 * 60 * 1000,
+      policyLabel: '1 hour'
+    };
+  }
+
+  if (['off', 'disabled', 'disable', 'none', 'no'].includes(text)) {
+    return {
+      raw: text,
+      mode: 'disabled',
+      durationMs: 0,
+      policyLabel: 'Disabled'
+    };
+  }
+
+  if (['forever', 'always', 'unlimited', 'infinite'].includes(text)) {
+    return {
+      raw: text,
+      mode: 'forever',
+      durationMs: Number.POSITIVE_INFINITY,
+      policyLabel: 'Unlimited'
+    };
+  }
+
+  const match = text.match(/^(\d+)\s*(h|hr|hrs|hour|hours|d|day|days|m|mo|mon|month|months)$/i);
+  if (!match) {
+    return {
+      raw: text,
+      mode: 'timed',
+      durationMs: 60 * 60 * 1000,
+      policyLabel: '1 hour'
+    };
+  }
+
+  const amount = Math.max(1, Number.parseInt(match[1], 10) || 1);
+  const unit = match[2].toLowerCase();
+
+  if (unit.startsWith('h')) {
+    return {
+      raw: text,
+      mode: 'timed',
+      durationMs: amount * 60 * 60 * 1000,
+      policyLabel: formatCountLabel(amount, 'hour')
+    };
+  }
+
+  if (unit.startsWith('d')) {
+    return {
+      raw: text,
+      mode: 'timed',
+      durationMs: amount * 24 * 60 * 60 * 1000,
+      policyLabel: formatCountLabel(amount, 'day')
+    };
+  }
+
+  return {
+    raw: text,
+    mode: 'timed',
+    durationMs: amount * 30 * 24 * 60 * 60 * 1000,
+    policyLabel: amount === 1 ? '1 month' : `${amount} months`
+  };
 }
 
 function formatUsd(value) {
@@ -707,7 +780,26 @@ async function trialStatus(req, res, body) {
     const db = await readDb();
     const nowMs = Date.now();
     const nowIso = new Date(nowMs).toISOString();
+    const policy = TRIAL_POLICY;
     let record = db.trials[deviceId];
+
+    if (policy.mode === 'disabled') {
+      return jsonResponse(res, 200, {
+        ok: true,
+        trial: {
+          deviceId,
+          active: false,
+          expired: false,
+          disabled: true,
+          forever: false,
+          mode: policy.mode,
+          startedAt: '',
+          endsAt: '',
+          expiresAtLabel: 'Disabled',
+          policyLabel: policy.policyLabel
+        }
+      });
+    }
 
     if (!record) {
       const existing = findTrialRecord(db, requestedDeviceIds);
@@ -729,7 +821,41 @@ async function trialStatus(req, res, body) {
       await writeDb(db);
     }
 
-    const endsAtMs = Date.parse(String(record.endsAt || ''));
+    if (policy.mode === 'forever') {
+      mergeRecordDeviceAliases(record, deviceId, requestedDeviceIds);
+      record.lastIp = getClientIp(req);
+      db.trials[deviceId] = record;
+      await writeDb(db);
+
+      return jsonResponse(res, 200, {
+        ok: true,
+        trial: {
+          ...sanitizeTrialRecord({
+            ...record,
+            active: true,
+            expired: false
+          }),
+          forever: true,
+          disabled: false,
+          mode: policy.mode,
+          endsAt: '',
+          expiresAtLabel: 'No expiry',
+          policyLabel: policy.policyLabel
+        }
+      });
+    }
+
+    const startedAtMs = Date.parse(String(record.startedAt || nowIso));
+    const endsAtMs = Number.isFinite(startedAtMs)
+      ? startedAtMs + policy.durationMs
+      : nowMs + policy.durationMs;
+    const nextEndsAt = new Date(endsAtMs).toISOString();
+    record.endsAt = nextEndsAt;
+    mergeRecordDeviceAliases(record, deviceId, requestedDeviceIds);
+    record.lastIp = getClientIp(req);
+    db.trials[deviceId] = record;
+    await writeDb(db);
+
     const active = Number.isFinite(endsAtMs) && nowMs < endsAtMs;
     const expired = !active;
 
@@ -741,9 +867,14 @@ async function trialStatus(req, res, body) {
           active,
           expired
         }),
+        forever: false,
+        disabled: false,
+        mode: policy.mode,
+        endsAt: nextEndsAt,
         expiresAtLabel: Number.isFinite(endsAtMs)
           ? new Date(endsAtMs).toLocaleString()
-          : 'Unknown'
+          : 'Unknown',
+        policyLabel: policy.policyLabel
       }
     });
   } catch (error) {
@@ -1343,7 +1474,11 @@ const server = http.createServer(async (req, res) => {
       ok: true,
       product: PRODUCT_CODE,
       now: new Date().toISOString(),
-      buyConfigured: getBuyConfig().enabled
+      buyConfigured: getBuyConfig().enabled,
+      trialPolicy: {
+        mode: TRIAL_POLICY.mode,
+        policyLabel: TRIAL_POLICY.policyLabel
+      }
     });
   }
 
