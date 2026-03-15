@@ -46,7 +46,8 @@ Public deployment notes:
 - After deploy, open:
   - `https://your-domain.com/manager`
   - `https://your-domain.com/admin`
-- In the extension popup, change `License Server URL` from `http://127.0.0.1:8787` to your public URL.
+  - `https://your-domain.com/buy`
+- The extension popup uses your public server URL for activation/restore and can open the public buy page.
 
 Render easiest setup:
 1. Push this folder to GitHub.
@@ -60,8 +61,7 @@ Render easiest setup:
 5. Deploy.
 6. Open:
    - `https://YOUR-RENDER-DOMAIN.onrender.com/manager`
-7. In the extension popup, set `License Server URL` to:
-   - `https://YOUR-RENDER-DOMAIN.onrender.com`
+   - `https://YOUR-RENDER-DOMAIN.onrender.com/buy`
 
 Blogger:
 - Blogger cannot run the Node.js server itself.

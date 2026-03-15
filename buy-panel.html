@@ -1,0 +1,239 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Buy Sora License</title>
+  <style>
+    :root {
+      --bg: #f7f2e8;
+      --panel: #fffdf9;
+      --line: #dfd2c1;
+      --ink: #1f2937;
+      --muted: #6b7280;
+      --brand: #0f766e;
+      --warn: #b45309;
+      --dark: #374151;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "SF Pro Text", "Helvetica Neue", Arial, sans-serif;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at top right, #fff6dc 0%, transparent 28%),
+        linear-gradient(180deg, #fffdf8 0%, var(--bg) 100%);
+    }
+    .wrap {
+      max-width: 980px;
+      margin: 0 auto;
+      padding: 28px 16px 48px;
+    }
+    .hero {
+      margin-bottom: 16px;
+    }
+    h1 {
+      margin: 0 0 8px;
+      font-size: 34px;
+      line-height: 1.1;
+    }
+    .sub {
+      color: var(--muted);
+      line-height: 1.6;
+      max-width: 760px;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: 1.15fr .85fr;
+      gap: 16px;
+      margin-top: 18px;
+    }
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 20px;
+      padding: 18px;
+      box-shadow: 0 12px 28px rgba(15, 23, 42, 0.06);
+    }
+    .label {
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: .06em;
+      font-weight: 700;
+      color: var(--muted);
+      margin: 0 0 6px;
+    }
+    input, textarea {
+      width: 100%;
+      border-radius: 12px;
+      border: 1px solid #d8cfbf;
+      background: white;
+      padding: 12px 13px;
+      font-size: 14px;
+      color: var(--ink);
+      outline: none;
+    }
+    textarea {
+      min-height: 140px;
+      resize: vertical;
+      line-height: 1.55;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+    input:focus, textarea:focus {
+      border-color: var(--brand);
+      box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.12);
+    }
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 12px;
+    }
+    button, a.button {
+      border: 0;
+      border-radius: 12px;
+      padding: 11px 14px;
+      font-weight: 700;
+      font-size: 14px;
+      color: white;
+      background: #111827;
+      cursor: pointer;
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+    button.secondary, a.button.secondary { background: var(--dark); }
+    button.brand { background: var(--brand); }
+    .status {
+      margin-top: 12px;
+      padding: 13px 14px;
+      border-radius: 14px;
+      border: 1px solid var(--line);
+      background: #fff7ed;
+      color: #92400e;
+      line-height: 1.55;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .note {
+      margin-top: 14px;
+      color: var(--muted);
+      line-height: 1.6;
+      font-size: 14px;
+    }
+    .steps {
+      margin: 0;
+      padding-left: 18px;
+      line-height: 1.7;
+    }
+    .steps li + li {
+      margin-top: 8px;
+    }
+    .tip {
+      margin-top: 12px;
+      padding: 12px 14px;
+      border-radius: 14px;
+      border: 1px dashed #d6b98b;
+      background: #fff9ef;
+      color: #7c4a03;
+      line-height: 1.55;
+    }
+    @media (max-width: 860px) {
+      .grid {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="hero">
+      <h1>Buy Sora License</h1>
+      <div class="sub">
+        Use this page to prepare a license purchase for one computer. Send or keep the <strong>Device ID</strong>
+        below. After your payment is confirmed, the license will be attached to this computer and the extension can
+        auto-restore it later without pasting the key again.
+      </div>
+    </div>
+
+    <div class="grid">
+      <div class="panel">
+        <div class="label">Device ID</div>
+        <input id="deviceId" type="text" placeholder="Device ID from the extension popup" />
+
+        <div class="actions">
+          <button id="copyDeviceIdBtn" class="secondary" type="button">Copy Device ID</button>
+          <a id="openManagerBtn" class="button secondary" href="/manager" target="_blank" rel="noreferrer">Open Manager</a>
+        </div>
+
+        <div class="label" style="margin-top:16px;">Payment Note</div>
+        <textarea id="paymentNote" readonly></textarea>
+
+        <div class="status" id="statusBox">
+          Payment integration is not fully automatic yet.
+          For now, use this page to keep the Device ID ready for a KHQR payment flow.
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="label">How It Works</div>
+        <ol class="steps">
+          <li>Open the extension popup and copy the <strong>Device ID</strong>.</li>
+          <li>Use this same Device ID for the purchase.</li>
+          <li>After payment is confirmed, a license is generated for this computer.</li>
+          <li>Reopen the extension popup. The extension can auto-restore the license for this computer from the server.</li>
+        </ol>
+
+        <div class="tip">
+          Recommended next step: connect your KHQR/Bakong payment flow here later so payment confirmation can create the
+          license automatically. The auto-restore part is already supported by the extension and server.
+        </div>
+
+        <div class="note">
+          This page is meant to be the public entry point for <strong>Buy License</strong>. You can customize it later
+          with your price, KHQR image, and payment verification flow.
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const deviceIdInput = document.getElementById('deviceId');
+    const paymentNote = document.getElementById('paymentNote');
+    const statusBox = document.getElementById('statusBox');
+
+    function getQueryDeviceId() {
+      const url = new URL(window.location.href);
+      return String(url.searchParams.get('deviceId') || '').trim().toUpperCase();
+    }
+
+    function updatePaymentNote() {
+      const deviceId = String(deviceIdInput.value || '').trim().toUpperCase();
+      paymentNote.value = deviceId
+        ? `BUY LICENSE REQUEST\n\nDevice ID:\n${deviceId}\n\nAfter payment is confirmed, generate a license for this Device ID.`
+        : 'Paste or open this page with a Device ID first.';
+    }
+
+    async function copyDeviceId() {
+      const deviceId = String(deviceIdInput.value || '').trim();
+      if (!deviceId) {
+        statusBox.textContent = 'No Device ID to copy yet.';
+        return;
+      }
+      try {
+        await navigator.clipboard.writeText(deviceId);
+        statusBox.textContent = 'Copied Device ID.';
+      } catch {
+        statusBox.textContent = 'Could not copy Device ID.';
+      }
+    }
+
+    document.getElementById('copyDeviceIdBtn').addEventListener('click', copyDeviceId);
+    deviceIdInput.addEventListener('input', updatePaymentNote);
+
+    deviceIdInput.value = getQueryDeviceId();
+    updatePaymentNote();
+  </script>
+</body>
+</html>

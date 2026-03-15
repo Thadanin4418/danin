@@ -44,6 +44,7 @@ const DB_DIR = process.env.DATA_DIR
 const DB_PATH = path.join(DB_DIR, 'licenses.json');
 const ADMIN_PANEL_PATH = path.join(__dirname, 'admin-panel.html');
 const MANAGER_PANEL_PATH = path.join(__dirname, 'manager-panel.html');
+const BUY_PANEL_PATH = path.join(__dirname, 'buy-panel.html');
 const PREFILL_TOKEN_PATH = path.join(DB_DIR, 'manager-prefill-token.txt');
 let writeQueue = Promise.resolve();
 
@@ -798,6 +799,15 @@ async function serveManagerPanel(res) {
   }
 }
 
+async function serveBuyPanel(res) {
+  try {
+    const html = await fs.readFile(BUY_PANEL_PATH, 'utf8');
+    return textResponse(res, 200, html, 'text/html; charset=utf-8');
+  } catch (error) {
+    return textResponse(res, 500, error?.message || 'Could not load buy page.');
+  }
+}
+
 async function adminGenerate(req, res, body) {
   try {
     ensureAdmin(req);
@@ -858,6 +868,9 @@ const server = http.createServer(async (req, res) => {
   }
   if (req.method === 'GET' && req.url === '/manager') {
     return await serveManagerPanel(res);
+  }
+  if (req.method === 'GET' && req.url.startsWith('/buy')) {
+    return await serveBuyPanel(res);
   }
 
   try {
