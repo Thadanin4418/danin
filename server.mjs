@@ -692,7 +692,6 @@ async function generateBakongKhqrForOrder(order) {
 
   const individualInfo = new IndividualInfo(
     config.bakongAccountId,
-    currencyCode,
     config.merchantName || getBakongMerchantName(),
     config.merchantCity || BAKONG_MERCHANT_CITY,
     optionalData
