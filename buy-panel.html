@@ -176,6 +176,67 @@
       line-height: 1.55;
       color: var(--muted);
     }
+    .qr-wrap {
+      margin-top: 16px;
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      background: #ffffff;
+      padding: 18px;
+      display: grid;
+      grid-template-columns: 260px 1fr;
+      gap: 18px;
+      align-items: center;
+    }
+    .qr-box {
+      width: 260px;
+      height: 260px;
+      border-radius: 18px;
+      border: 1px solid var(--line);
+      background: linear-gradient(180deg, #fff 0%, #f8fafc 100%);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+    }
+    .qr-box img {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      display: block;
+      background: white;
+    }
+    .qr-empty {
+      padding: 18px;
+      text-align: center;
+      color: var(--muted);
+      line-height: 1.55;
+      font-size: 14px;
+    }
+    .qr-info {
+      display: grid;
+      gap: 10px;
+    }
+    .qr-info-title {
+      font-size: 22px;
+      font-weight: 800;
+      margin: 0;
+    }
+    .qr-info-note {
+      color: var(--muted);
+      line-height: 1.6;
+      font-size: 14px;
+    }
+    .qr-code-text {
+      border: 1px dashed #d8cfbf;
+      border-radius: 14px;
+      background: #fff9ef;
+      padding: 12px 14px;
+      line-height: 1.6;
+      font-size: 13px;
+      color: #7c4a03;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
     @media (max-width: 860px) {
       .grid {
         grid-template-columns: 1fr;
@@ -183,15 +244,24 @@
       .summary-grid {
         grid-template-columns: 1fr;
       }
+      .qr-wrap {
+        grid-template-columns: 1fr;
+      }
+      .qr-box {
+        width: 100%;
+        max-width: 260px;
+        margin: 0 auto;
+      }
     }
   </style>
 </head>
 <body>
   <div class="wrap">
     <div class="hero">
-      <h1>Buy Sora License</h1>
+      <h1>Buy Sora License with KHQR</h1>
       <div class="sub">
-        This page prepares a license purchase for one computer. Pay to the Bakong ID below, then wait for approval.
+        This page prepares a license purchase for one computer. Open the KHQR payment details below, pay to the Bakong account,
+        then wait for approval.
         After approval, reopen the extension popup and it can auto-restore the license for this same computer.
       </div>
     </div>
@@ -239,6 +309,21 @@
           </div>
         </div>
 
+        <div class="qr-wrap">
+          <div class="qr-box" id="qrBox">
+            <div class="qr-empty">Prepare an order first to show the KHQR payment QR.</div>
+          </div>
+          <div class="qr-info">
+            <div class="label">KHQR Payment</div>
+            <p class="qr-info-title">Scan and Pay</p>
+            <div class="qr-info-note">
+              Scan this QR to open the payment details faster. If your banking app does not fill the payment automatically,
+              copy the <strong>Bakong ID</strong> and <strong>Payment Note</strong> below and pay manually.
+            </div>
+            <div class="qr-code-text" id="qrPayloadPreview">KHQR details will appear here after the order is prepared.</div>
+          </div>
+        </div>
+
         <div class="status" id="statusBox">Loading buy configuration...</div>
       </div>
 
@@ -272,6 +357,8 @@
     const bakongValue = document.getElementById('bakongValue');
     const statusBox = document.getElementById('statusBox');
     const configMeta = document.getElementById('configMeta');
+    const qrBox = document.getElementById('qrBox');
+    const qrPayloadPreview = document.getElementById('qrPayloadPreview');
 
     let currentConfig = null;
     let currentOrder = null;
@@ -318,6 +405,7 @@
       if (!config?.enabled) {
         setStatus('Buy flow is not configured yet. The server still needs Bakong account and price settings.', false);
       }
+      updatePaymentQr();
     }
 
     function renderOrder(order) {
@@ -339,6 +427,40 @@
         `Order prepared.\n\nOrder ID: ${order.orderId}\nStatus: ${order.status}\nBakong ID: ${order.bakongAccountId || 'Not configured'}\n\nPay the amount above, then wait for approval.`,
         null
       );
+      updatePaymentQr();
+    }
+
+    function buildQrPayload() {
+      const parts = [];
+      if (currentConfig?.bakongAccountId) {
+        parts.push(`Bakong ID: ${currentConfig.bakongAccountId}`);
+      }
+      if (currentConfig?.amountUsdLabel) {
+        parts.push(`Amount: ${currentConfig.amountUsdLabel}`);
+      } else if (currentConfig?.amountKhrLabel) {
+        parts.push(`Amount: ${currentConfig.amountKhrLabel}`);
+      }
+      if (currentOrder?.orderId) {
+        parts.push(`Order ID: ${currentOrder.orderId}`);
+      }
+      if (currentOrder?.deviceId) {
+        parts.push(`Device ID: ${currentOrder.deviceId}`);
+      }
+      if (paymentNote.value.trim()) {
+        parts.push('', paymentNote.value.trim());
+      }
+      return parts.join('\n').trim();
+    }
+
+    function updatePaymentQr() {
+      const payload = buildQrPayload();
+      qrPayloadPreview.textContent = payload || 'KHQR details will appear here after the order is prepared.';
+      if (!payload) {
+        qrBox.innerHTML = '<div class="qr-empty">Prepare an order first to show the KHQR payment QR.</div>';
+        return;
+      }
+      const imageUrl = `https://api.qrserver.com/v1/create-qr-code/?size=260x260&data=${encodeURIComponent(payload)}`;
+      qrBox.innerHTML = `<img src="${imageUrl}" alt="KHQR payment details QR" />`;
     }
 
     function stopPolling() {
@@ -439,6 +561,7 @@
         prepareOrder();
       } else {
         paymentNote.value = 'Paste Device ID first to prepare an order.';
+        updatePaymentQr();
       }
     });
   </script>
