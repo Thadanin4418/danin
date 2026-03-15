@@ -330,6 +330,7 @@ function sanitizeRecord(record) {
     deviceId: record.deviceId || '',
     activatedAt: record.activatedAt || '',
     lastValidatedAt: record.lastValidatedAt || '',
+    hasLicenseKey: Boolean(record.licenseKey),
     revoked: Boolean(record.revoked),
     revokedAt: record.revokedAt || '',
     lastIp: record.lastIp || '',
@@ -344,6 +345,7 @@ function createEmptyRecordFromVerified(verified, keyHash, options = {}) {
     version: verified.payload.version,
     expiresAt: verified.payload.expiresAt,
     licensedDeviceId: verified.payload.deviceId || '',
+    licenseKey: options.licenseKey || '',
     deviceId: options.deviceId ?? '',
     activatedAt: options.activatedAt || '',
     lastValidatedAt: options.lastValidatedAt || '',
@@ -359,6 +361,9 @@ async function getOrCreateRecordFromLicenseKey(db, licenseKey, options = {}) {
   const keyHash = sha256Hex(licenseKey);
   const existing = db.licenses[keyHash];
   if (existing) {
+    if (!existing.licenseKey) {
+      existing.licenseKey = String(licenseKey || '').trim();
+    }
     return {
       record: existing,
       verified,
@@ -368,6 +373,7 @@ async function getOrCreateRecordFromLicenseKey(db, licenseKey, options = {}) {
   }
 
   const record = createEmptyRecordFromVerified(verified, keyHash, {
+    licenseKey: String(licenseKey || '').trim(),
     deviceId: options.deviceId ?? '',
     activatedAt: options.activatedAt || '',
     lastValidatedAt: options.lastValidatedAt || ''
@@ -379,6 +385,26 @@ async function getOrCreateRecordFromLicenseKey(db, licenseKey, options = {}) {
     keyHash,
     created: true
   };
+}
+
+function findAutoActivatableRecord(db, deviceId) {
+  const normalizedDeviceId = String(deviceId || '').trim().toUpperCase();
+  if (!normalizedDeviceId) return null;
+
+  const nowMs = Date.now();
+  const records = Object.values(db.licenses || {})
+    .filter(record =>
+      String(record?.licensedDeviceId || '').trim().toUpperCase() === normalizedDeviceId
+    )
+    .filter(record => !record?.revoked)
+    .filter(record => String(record?.licenseKey || '').trim())
+    .filter(record => {
+      const expiresAtMs = Date.parse(String(record?.expiresAt || ''));
+      return Number.isFinite(expiresAtMs) && expiresAtMs > nowMs;
+    })
+    .sort((a, b) => Date.parse(String(b?.expiresAt || '')) - Date.parse(String(a?.expiresAt || '')));
+
+  return records[0] || null;
 }
 
 async function readJsonBody(req) {
@@ -541,6 +567,50 @@ async function validateLicense(req, res, body) {
     });
   } catch (error) {
     return jsonResponse(res, 400, { ok: false, message: error?.message || 'License validation failed.' });
+  }
+}
+
+async function autoActivateLicense(req, res, body) {
+  const deviceId = String(body?.deviceId || '').trim().toUpperCase();
+  if (!deviceId) {
+    return jsonResponse(res, 400, { ok: false, message: 'deviceId is required.' });
+  }
+
+  try {
+    const db = await readDb();
+    const record = findAutoActivatableRecord(db, deviceId);
+    if (!record) {
+      return jsonResponse(res, 404, { ok: false, message: 'No active license was found for this computer.' });
+    }
+
+    const now = new Date().toISOString();
+    if (record.deviceId && record.deviceId !== deviceId) {
+      return jsonResponse(res, 403, { ok: false, message: 'License key is already activated on another computer.' });
+    }
+
+    record.deviceId = deviceId;
+    if (!record.activatedAt) {
+      record.activatedAt = now;
+    }
+    record.lastValidatedAt = now;
+    record.lastIp = getClientIp(req);
+    ensureHistory(record).push(createHistoryEntry('auto-activate', req, { deviceId }));
+    db.licenses[record.keyHash] = record;
+    await writeDb(db);
+
+    return jsonResponse(res, 200, {
+      ok: true,
+      message: 'License restored for this computer.',
+      licenseKey: String(record.licenseKey || '').trim(),
+      license: {
+        deviceId,
+        expiresAt: record.expiresAt,
+        expiresAtLabel: new Date(Date.parse(String(record.expiresAt || ''))).toLocaleString(),
+        keyHash: record.keyHash
+      }
+    });
+  } catch (error) {
+    return jsonResponse(res, 400, { ok: false, message: error?.message || 'Automatic license restore failed.' });
   }
 }
 
@@ -733,6 +803,10 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && req.url === '/api/activate') {
       const body = await readJsonBody(req);
       return await activateLicense(req, res, body);
+    }
+    if (req.method === 'POST' && req.url === '/api/auto-activate') {
+      const body = await readJsonBody(req);
+      return await autoActivateLicense(req, res, body);
     }
     if (req.method === 'POST' && req.url === '/api/validate') {
       const body = await readJsonBody(req);
