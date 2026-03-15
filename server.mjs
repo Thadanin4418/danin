@@ -51,6 +51,14 @@ let writeQueue = Promise.resolve();
 const PRODUCT_CODE = 'sora-all-in-one';
 const LICENSE_VERSION = 1;
 const TRIAL_DURATION_MS = 60 * 60 * 1000;
+const DEFAULT_LICENSE_DAYS = Math.max(1, Number.parseInt(String(process.env.LICENSE_DURATION_DAYS || '30'), 10) || 30);
+const LICENSE_PRICE_USD = parseMoney(process.env.LICENSE_PRICE_USD, 35);
+const LICENSE_PRICE_KHR = parseMoney(process.env.LICENSE_PRICE_KHR, null);
+const BAKONG_API_TOKEN = String(process.env.BAKONG_API_TOKEN || '').trim();
+const BAKONG_ACCOUNT_ID = String(process.env.BAKONG_ACCOUNT_ID || '').trim();
+const BAKONG_MERCHANT_NAME = String(process.env.BAKONG_MERCHANT_NAME || '').trim();
+const BAKONG_MERCHANT_ID = String(process.env.BAKONG_MERCHANT_ID || '').trim();
+const BAKONG_ACQUIRING_BANK = String(process.env.BAKONG_ACQUIRING_BANK || '').trim();
 const DEFAULT_PRIVATE_KEY_PEM = `-----BEGIN PRIVATE KEY-----
 MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgvlr8EllTMXS3A+9x
 Vu65elQ7R3sjpSA1oan+QUnKq4ehRANCAARHfFvbeGuSCzJVwS4E5vEtMYdyy4UK
@@ -82,8 +90,37 @@ const EMPTY_DB = {
   createdAt: null,
   updatedAt: null,
   licenses: {},
-  trials: {}
+  trials: {},
+  orders: {}
 };
+
+function parseMoney(value, fallback) {
+  const text = String(value ?? '').trim().replace(/[$,\s]/g, '');
+  if (!text) return fallback;
+  const number = Number(text);
+  if (!Number.isFinite(number) || number <= 0) {
+    return fallback;
+  }
+  return number;
+}
+
+function formatUsd(value) {
+  if (!Number.isFinite(value)) return '';
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency: 'USD',
+    maximumFractionDigits: 2
+  }).format(value);
+}
+
+function formatKhr(value) {
+  if (!Number.isFinite(value)) return '';
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency: 'KHR',
+    maximumFractionDigits: 0
+  }).format(value);
+}
 
 function jsonResponse(res, statusCode, payload) {
   const body = JSON.stringify(payload, null, 2);
@@ -271,6 +308,9 @@ function normalizeDb(db) {
       : {},
     trials: db?.trials && typeof db.trials === 'object'
       ? db.trials
+      : {},
+    orders: db?.orders && typeof db.orders === 'object'
+      ? db.orders
       : {}
   };
 }
@@ -355,6 +395,91 @@ function sanitizeTrialRecord(record) {
     lastIp: record.lastIp || '',
     historyCount: Array.isArray(record.history) ? record.history.length : 0
   };
+}
+
+function sanitizeOrderRecord(record, options = {}) {
+  if (!record) return null;
+  const expiresAtMs = Date.parse(String(record.licenseExpiresAt || ''));
+  return {
+    orderId: String(record.orderId || '').trim().toUpperCase(),
+    deviceId: String(record.deviceId || '').trim().toUpperCase(),
+    status: String(record.status || 'pending').trim().toLowerCase(),
+    amountUsd: Number.isFinite(record.amountUsd) ? record.amountUsd : null,
+    amountUsdLabel: Number.isFinite(record.amountUsd) ? formatUsd(record.amountUsd) : '',
+    amountKhr: Number.isFinite(record.amountKhr) ? record.amountKhr : null,
+    amountKhrLabel: Number.isFinite(record.amountKhr) ? formatKhr(record.amountKhr) : '',
+    bakongAccountId: String(record.bakongAccountId || '').trim(),
+    merchantName: String(record.merchantName || '').trim(),
+    merchantId: String(record.merchantId || '').trim(),
+    acquiringBank: String(record.acquiringBank || '').trim(),
+    createdAt: record.createdAt || '',
+    approvedAt: record.approvedAt || '',
+    licenseExpiresAt: record.licenseExpiresAt || '',
+    licenseExpiresAtLabel: Number.isFinite(expiresAtMs)
+      ? new Date(expiresAtMs).toLocaleString()
+      : '',
+    paymentNote: options.includeNote ? String(record.paymentNote || '').trim() : '',
+    paymentMode: String(record.paymentMode || 'manual-bakong').trim(),
+    historyCount: Array.isArray(record.history) ? record.history.length : 0
+  };
+}
+
+function getBuyConfig() {
+  return {
+    enabled: Boolean(BAKONG_ACCOUNT_ID && (Number.isFinite(LICENSE_PRICE_USD) || Number.isFinite(LICENSE_PRICE_KHR))),
+    paymentMode: 'manual-bakong',
+    bakongAccountId: BAKONG_ACCOUNT_ID,
+    merchantName: BAKONG_MERCHANT_NAME,
+    merchantId: BAKONG_MERCHANT_ID,
+    acquiringBank: BAKONG_ACQUIRING_BANK,
+    amountUsd: Number.isFinite(LICENSE_PRICE_USD) ? LICENSE_PRICE_USD : null,
+    amountUsdLabel: Number.isFinite(LICENSE_PRICE_USD) ? formatUsd(LICENSE_PRICE_USD) : '',
+    amountKhr: Number.isFinite(LICENSE_PRICE_KHR) ? LICENSE_PRICE_KHR : null,
+    amountKhrLabel: Number.isFinite(LICENSE_PRICE_KHR) ? formatKhr(LICENSE_PRICE_KHR) : '',
+    defaultLicenseDays: DEFAULT_LICENSE_DAYS,
+    hasBakongApiToken: Boolean(BAKONG_API_TOKEN)
+  };
+}
+
+function createOrderId() {
+  const random = crypto.randomBytes(4).toString('hex').toUpperCase();
+  const stamp = Date.now().toString(36).toUpperCase();
+  return `ORD-${stamp}-${random}`;
+}
+
+function buildPaymentNote(order) {
+  const lines = [
+    'SORA LICENSE ORDER',
+    '',
+    `Order ID: ${order.orderId}`,
+    `Device ID: ${order.deviceId}`
+  ];
+
+  if (Number.isFinite(order.amountUsd)) {
+    lines.push(`Amount (USD): ${formatUsd(order.amountUsd)}`);
+  }
+  if (Number.isFinite(order.amountKhr)) {
+    lines.push(`Amount (KHR): ${formatKhr(order.amountKhr)}`);
+  }
+  if (order.bakongAccountId) {
+    lines.push(`Bakong ID: ${order.bakongAccountId}`);
+  }
+
+  lines.push('', 'After payment, wait for admin approval. The extension can auto-restore the license for this computer.');
+  return lines.join('\n');
+}
+
+function findExistingOrderByDeviceId(db, deviceId) {
+  const normalizedDeviceId = String(deviceId || '').trim().toUpperCase();
+  if (!normalizedDeviceId) return null;
+
+  const orders = Object.values(db.orders || {})
+    .filter(order => String(order?.deviceId || '').trim().toUpperCase() === normalizedDeviceId)
+    .sort((a, b) => String(b?.createdAt || '').localeCompare(String(a?.createdAt || '')));
+
+  return orders.find(order => String(order?.status || '').trim().toLowerCase() === 'pending')
+    || orders.find(order => String(order?.status || '').trim().toLowerCase() === 'approved')
+    || null;
 }
 
 function createEmptyRecordFromVerified(verified, keyHash, options = {}) {
@@ -679,6 +804,100 @@ async function autoActivateLicense(req, res, body) {
   }
 }
 
+async function buyConfig(req, res) {
+  return jsonResponse(res, 200, {
+    ok: true,
+    config: getBuyConfig()
+  });
+}
+
+async function createBuyRequest(req, res, body) {
+  const deviceId = String(body?.deviceId || '').trim().toUpperCase();
+  if (!deviceId) {
+    return jsonResponse(res, 400, { ok: false, message: 'deviceId is required.' });
+  }
+
+  const config = getBuyConfig();
+  if (!config.enabled) {
+    return jsonResponse(res, 503, {
+      ok: false,
+      message: 'Buy License is not configured yet. Set BAKONG_ACCOUNT_ID and a license price first.'
+    });
+  }
+
+  try {
+    const db = await readDb();
+    let order = findExistingOrderByDeviceId(db, deviceId);
+
+    if (!order) {
+      const now = new Date().toISOString();
+      order = {
+        orderId: createOrderId(),
+        deviceId,
+        status: 'pending',
+        amountUsd: config.amountUsd,
+        amountKhr: config.amountKhr,
+        bakongAccountId: config.bakongAccountId,
+        merchantName: config.merchantName,
+        merchantId: config.merchantId,
+        acquiringBank: config.acquiringBank,
+        paymentMode: config.paymentMode,
+        createdAt: now,
+        approvedAt: '',
+        licenseExpiresAt: '',
+        approvedLicenseKeyHash: '',
+        lastIp: getClientIp(req),
+        history: []
+      };
+      order.paymentNote = buildPaymentNote(order);
+      ensureHistory(order).push(createHistoryEntry('buy-request', req, {
+        orderId: order.orderId,
+        deviceId
+      }));
+      db.orders[order.orderId] = order;
+      await writeDb(db);
+    }
+
+    return jsonResponse(res, 200, {
+      ok: true,
+      message: 'Buy request prepared.',
+      config,
+      order: sanitizeOrderRecord(order, { includeNote: true })
+    });
+  } catch (error) {
+    return jsonResponse(res, 400, {
+      ok: false,
+      message: error?.message || 'Could not prepare buy request.'
+    });
+  }
+}
+
+async function buyOrderStatus(req, res) {
+  const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+  const orderId = String(url.searchParams.get('orderId') || '').trim().toUpperCase();
+  if (!orderId) {
+    return jsonResponse(res, 400, { ok: false, message: 'orderId query parameter is required.' });
+  }
+
+  try {
+    const db = await readDb();
+    const order = db.orders[orderId];
+    if (!order) {
+      return jsonResponse(res, 404, { ok: false, message: 'Order was not found.' });
+    }
+
+    return jsonResponse(res, 200, {
+      ok: true,
+      order: sanitizeOrderRecord(order, { includeNote: true })
+    });
+  } catch (error) {
+    return jsonResponse(res, 400, {
+      ok: false,
+      message: error?.message || 'Could not load order status.'
+    });
+  }
+}
+
 async function adminChange(req, res, body, mode) {
   try {
     ensureAdmin(req);
@@ -763,6 +982,91 @@ async function adminList(req, res) {
     });
   } catch (error) {
     return jsonResponse(res, 403, { ok: false, message: error?.message || 'Admin action failed.' });
+  }
+}
+
+async function adminOrders(req, res) {
+  try {
+    ensureAdmin(req);
+    const db = await readDb();
+    const records = Object.values(db.orders || {})
+      .map((order) => sanitizeOrderRecord(order, { includeNote: true }))
+      .sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+    return jsonResponse(res, 200, {
+      ok: true,
+      orders: records
+    });
+  } catch (error) {
+    return jsonResponse(res, 403, { ok: false, message: error?.message || 'Admin action failed.' });
+  }
+}
+
+async function adminApproveOrder(req, res, body) {
+  try {
+    ensureAdmin(req);
+    const orderId = String(body?.orderId || '').trim().toUpperCase();
+    const days = Math.max(1, Number.parseInt(String(body?.days || DEFAULT_LICENSE_DAYS), 10) || DEFAULT_LICENSE_DAYS);
+    if (!orderId) {
+      return jsonResponse(res, 400, { ok: false, message: 'orderId is required.' });
+    }
+
+    const db = await readDb();
+    const order = db.orders[orderId];
+    if (!order) {
+      return jsonResponse(res, 404, { ok: false, message: 'Order was not found.' });
+    }
+    if (String(order.status || '').trim().toLowerCase() === 'approved') {
+      return jsonResponse(res, 200, {
+        ok: true,
+        message: 'Order is already approved.',
+        order: sanitizeOrderRecord(order, { includeNote: true })
+      });
+    }
+
+    const licenseKey = generateLicenseKey({
+      deviceId: order.deviceId,
+      days
+    });
+    const verified = verifyLicenseToken(licenseKey);
+    const resolved = await getOrCreateRecordFromLicenseKey(db, licenseKey, {
+      deviceId: '',
+      activatedAt: '',
+      lastValidatedAt: ''
+    });
+
+    ensureHistory(resolved.record).push(createHistoryEntry('generate-from-order', req, {
+      orderId,
+      deviceId: order.deviceId
+    }));
+    db.licenses[resolved.keyHash] = resolved.record;
+
+    order.status = 'approved';
+    order.approvedAt = new Date().toISOString();
+    order.licenseExpiresAt = verified.payload.expiresAt;
+    order.approvedLicenseKeyHash = resolved.keyHash;
+    order.lastIp = getClientIp(req);
+    ensureHistory(order).push(createHistoryEntry('approve-order', req, {
+      orderId,
+      deviceId: order.deviceId
+    }));
+    db.orders[orderId] = order;
+
+    await writeDb(db);
+
+    return jsonResponse(res, 200, {
+      ok: true,
+      message: 'Buy order approved and license generated.',
+      order: sanitizeOrderRecord(order, { includeNote: true }),
+      license: {
+        deviceId: order.deviceId,
+        expiresAt: verified.payload.expiresAt,
+        expiresAtLabel: verified.expiresAtLabel,
+        keyHash: resolved.keyHash
+      },
+      licenseKey
+    });
+  } catch (error) {
+    return jsonResponse(res, 403, { ok: false, message: error?.message || 'Could not approve buy order.' });
   }
 }
 
@@ -859,7 +1163,8 @@ const server = http.createServer(async (req, res) => {
     return jsonResponse(res, 200, {
       ok: true,
       product: PRODUCT_CODE,
-      now: new Date().toISOString()
+      now: new Date().toISOString(),
+      buyConfigured: getBuyConfig().enabled
     });
   }
 
@@ -880,6 +1185,16 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && req.url === '/api/activate') {
       const body = await readJsonBody(req);
       return await activateLicense(req, res, body);
+    }
+    if (req.method === 'GET' && req.url === '/api/buy/config') {
+      return await buyConfig(req, res);
+    }
+    if (req.method === 'POST' && req.url === '/api/buy/request') {
+      const body = await readJsonBody(req);
+      return await createBuyRequest(req, res, body);
+    }
+    if (req.method === 'GET' && req.url.startsWith('/api/buy/order-status')) {
+      return await buyOrderStatus(req, res);
     }
     if (req.method === 'POST' && req.url === '/api/auto-activate') {
       const body = await readJsonBody(req);
@@ -915,6 +1230,13 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && req.url === '/api/admin/list') {
       return await adminList(req, res);
     }
+    if (req.method === 'GET' && req.url === '/api/admin/orders') {
+      return await adminOrders(req, res);
+    }
+    if (req.method === 'POST' && req.url === '/api/admin/approve-order') {
+      const body = await readJsonBody(req);
+      return await adminApproveOrder(req, res, body);
+    }
   } catch (error) {
     return jsonResponse(res, 500, {
       ok: false,
@@ -934,9 +1256,24 @@ server.listen(PORT, HOST, () => {
     console.log(`Public base URL: ${PUBLIC_BASE_URL}`);
     console.log(`Manager page: ${PUBLIC_BASE_URL.replace(/\/$/, '')}/manager`);
     console.log(`Admin page: ${PUBLIC_BASE_URL.replace(/\/$/, '')}/admin`);
+    console.log(`Buy page: ${PUBLIC_BASE_URL.replace(/\/$/, '')}/buy`);
   }
   if (!ADMIN_TOKEN) {
     console.log('ADMIN_TOKEN is not set. Admin HTTP routes are disabled.');
+  }
+  if (BAKONG_ACCOUNT_ID) {
+    console.log(`Bakong account for buy flow: ${BAKONG_ACCOUNT_ID}`);
+  } else {
+    console.log('Bakong buy flow is not configured. Set BAKONG_ACCOUNT_ID to enable /buy.');
+  }
+  if (Number.isFinite(LICENSE_PRICE_USD)) {
+    console.log(`License price (USD): ${formatUsd(LICENSE_PRICE_USD)}`);
+  }
+  if (Number.isFinite(LICENSE_PRICE_KHR)) {
+    console.log(`License price (KHR): ${formatKhr(LICENSE_PRICE_KHR)}`);
+  }
+  if (BAKONG_API_TOKEN) {
+    console.log('Bakong API token is configured.');
   }
   if (!process.env.LICENSE_PRIVATE_KEY_PEM && !process.env.LICENSE_PRIVATE_KEY_PEM_BASE64) {
     console.log('Using built-in private key. For public deployment, set LICENSE_PRIVATE_KEY_PEM or LICENSE_PRIVATE_KEY_PEM_BASE64.');

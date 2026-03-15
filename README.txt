@@ -11,6 +11,7 @@ Files:
 - server.mjs : HTTP license server
 - admin.mjs : local admin tool for revoke/reset/list/status
 - manager-panel.html : local manager page for key generation and server admin
+- buy-panel.html : public buy page for one computer
 - package.json : deploy/start file for Node hosting
 - .env.example : example environment variables for public deployment
 - render.yaml : ready-to-deploy Render blueprint
@@ -25,6 +26,7 @@ Public deployment:
 - set `ADMIN_TOKEN`
 - set `DATA_DIR` to persistent storage
 - recommended: set `LICENSE_PRIVATE_KEY_PEM` or `LICENSE_PRIVATE_KEY_PEM_BASE64`
+- set `BAKONG_ACCOUNT_ID` and at least one price (`LICENSE_PRICE_USD` or `LICENSE_PRICE_KHR`) if you want the public Buy page to work
 
 Easy mode:
 - a ready file already exists at:
@@ -58,6 +60,8 @@ Render easiest setup:
    - `PUBLIC_BASE_URL=https://YOUR-RENDER-DOMAIN.onrender.com`
    - `ADMIN_TOKEN=mysecret123` or your own secret
    - `LICENSE_PRIVATE_KEY_PEM_BASE64=...`
+   - `BAKONG_ACCOUNT_ID=yourbakongid@bank`
+   - `LICENSE_PRICE_USD=35`
 5. Deploy.
 6. Open:
    - `https://YOUR-RENDER-DOMAIN.onrender.com/manager`
@@ -109,6 +113,16 @@ On a public host, these become:
 - https://your-domain.com/admin
 
 API routes:
+- GET /api/buy/config
+  returns public buy-page config such as Bakong ID and price
+
+- POST /api/buy/request
+  body: { "deviceId": "..." }
+  creates or reuses a pending buy order for one computer
+
+- GET /api/buy/order-status?orderId=...
+  returns public order status for the buy page
+
 - POST /api/activate
   body: { "licenseKey": "...", "deviceId": "..." }
 
@@ -131,6 +145,13 @@ API routes:
 - GET /api/admin/list
   header: X-Admin-Token: YOUR_SECRET
 
+- GET /api/admin/orders
+  header: X-Admin-Token: YOUR_SECRET
+
+- POST /api/admin/approve-order
+  header: X-Admin-Token: YOUR_SECRET
+  body: { "orderId": "ORD-...", "days": 30 }
+
 Admin CLI examples:
 - List all server records:
   node /Users/nin/Downloads/sora_license_server/admin.mjs list
@@ -152,3 +173,5 @@ How it works:
 - The server then binds that key to one device ID.
 - The same computer can still use the same key in multiple Chrome profiles.
 - If the key is revoked or reset on the server, future validations fail.
+- The public Buy page creates a pending order for one Device ID.
+- After you approve that order in the manager page, the extension can auto-restore the license for that computer.

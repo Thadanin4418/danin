@@ -274,6 +274,7 @@
             <div class="label">Server Records</div>
             <div class="health" id="summaryText">No records loaded yet.</div>
           </div>
+          <button class="secondary" id="listOrdersBtn" type="button">Refresh Orders</button>
         </div>
 
         <div class="table">
@@ -293,6 +294,31 @@
             </tbody>
           </table>
         </div>
+
+        <div class="topbar" style="margin-top:16px;">
+          <div>
+            <div class="label">Buy Requests</div>
+            <div class="health" id="ordersSummaryText">No buy requests loaded yet.</div>
+          </div>
+        </div>
+
+        <div class="table">
+          <table>
+            <thead>
+              <tr>
+                <th>Order</th>
+                <th>Device</th>
+                <th>Amount</th>
+                <th>Status</th>
+                <th>Created</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody id="ordersBody">
+              <tr><td colspan="6" class="empty">No buy requests loaded yet.</td></tr>
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
   </div>
@@ -309,6 +335,8 @@
     const statusBox = document.getElementById('statusBox');
     const recordsBody = document.getElementById('recordsBody');
     const summaryText = document.getElementById('summaryText');
+    const ordersBody = document.getElementById('ordersBody');
+    const ordersSummaryText = document.getElementById('ordersSummaryText');
 
     serverUrlInput.value = window.location.origin;
 
@@ -416,6 +444,36 @@
       }).join('');
     }
 
+    function renderOrders(orders) {
+      const list = Array.isArray(orders) ? orders : [];
+      if (!list.length) {
+        ordersBody.innerHTML = '<tr><td colspan="6" class="empty">No buy requests found.</td></tr>';
+        ordersSummaryText.textContent = 'No buy requests loaded yet.';
+        return;
+      }
+
+      ordersSummaryText.textContent = `Loaded ${list.length} buy request(s).`;
+      ordersBody.innerHTML = list.map((order) => {
+        const amountLabel = order.amountUsdLabel || order.amountKhrLabel || '';
+        const state = order.status === 'approved'
+          ? '<span class="pill">Approved</span>'
+          : '<span class="pill bad">Pending</span>';
+        const action = order.status === 'approved'
+          ? '<span class="health">Done</span>'
+          : `<button class="secondary approve-order-btn" data-order-id="${escapeHtml(order.orderId || '')}" type="button">Approve</button>`;
+        return `
+          <tr>
+            <td>${escapeHtml(order.orderId || '')}</td>
+            <td>${escapeHtml(order.deviceId || '')}</td>
+            <td>${escapeHtml(amountLabel)}</td>
+            <td>${state}</td>
+            <td>${escapeHtml(order.createdAt || '')}</td>
+            <td>${action}</td>
+          </tr>
+        `;
+      }).join('');
+    }
+
     async function doGenerate() {
       const deviceId = getDeviceId();
       const days = Math.max(1, Number.parseInt(String(daysInput.value || '30'), 10) || 30);
@@ -516,6 +574,42 @@
       }
     }
 
+    async function doListOrders() {
+      try {
+        const data = await api('/api/admin/orders');
+        renderOrders(data.orders || []);
+        setStatus(`Loaded ${Array.isArray(data.orders) ? data.orders.length : 0} buy request(s).`, true);
+      } catch (error) {
+        setStatus(error.message || 'Could not list buy requests.', false);
+      }
+    }
+
+    async function doApproveOrder(orderId) {
+      const id = String(orderId || '').trim().toUpperCase();
+      const days = Math.max(1, Number.parseInt(String(daysInput.value || '30'), 10) || 30);
+      if (!id) {
+        setStatus('Order ID is missing.', false);
+        return;
+      }
+      try {
+        const data = await api('/api/admin/approve-order', {
+          method: 'POST',
+          body: JSON.stringify({ orderId: id, days })
+        });
+        if (data.licenseKey) {
+          licenseKeyInput.value = data.licenseKey;
+        }
+        setStatus(JSON.stringify({
+          message: data.message,
+          order: data.order,
+          license: data.license
+        }, null, 2), true);
+        await Promise.all([doList(), doListOrders()]);
+      } catch (error) {
+        setStatus(error.message || 'Could not approve buy request.', false);
+      }
+    }
+
     async function doHealth() {
       try {
         const data = await api('/health');
@@ -574,7 +668,13 @@
     document.getElementById('unrevokeBtn').addEventListener('click', () => doAdminChange('unrevoke'));
     document.getElementById('resetBtn').addEventListener('click', () => doAdminChange('reset'));
     document.getElementById('listBtn').addEventListener('click', doList);
+    document.getElementById('listOrdersBtn').addEventListener('click', doListOrders);
     document.getElementById('clearBtn').addEventListener('click', () => setStatus('Ready.'));
+    ordersBody.addEventListener('click', (event) => {
+      const button = event.target.closest('.approve-order-btn');
+      if (!button) return;
+      doApproveOrder(button.getAttribute('data-order-id'));
+    });
 
     [adminTokenInput, deviceIdInput, daysInput, licenseKeyInput].forEach((node) => {
       node.addEventListener('input', saveSettings);
@@ -583,6 +683,8 @@
 
     loadSettings();
     loadPrefillAdminToken();
+    doList();
+    doListOrders();
   </script>
 </body>
 </html>

@@ -13,7 +13,8 @@
       --muted: #6b7280;
       --brand: #0f766e;
       --warn: #b45309;
-      --dark: #374151;
+      --ok: #047857;
+      --soft: #fff7ed;
     }
     * { box-sizing: border-box; }
     body {
@@ -25,7 +26,7 @@
         linear-gradient(180deg, #fffdf8 0%, var(--bg) 100%);
     }
     .wrap {
-      max-width: 980px;
+      max-width: 1040px;
       margin: 0 auto;
       padding: 28px 16px 48px;
     }
@@ -35,16 +36,16 @@
     h1 {
       margin: 0 0 8px;
       font-size: 34px;
-      line-height: 1.1;
+      line-height: 1.08;
     }
     .sub {
       color: var(--muted);
       line-height: 1.6;
-      max-width: 760px;
+      max-width: 800px;
     }
     .grid {
       display: grid;
-      grid-template-columns: 1.15fr .85fr;
+      grid-template-columns: 1.1fr .9fr;
       gap: 16px;
       margin-top: 18px;
     }
@@ -74,7 +75,7 @@
       outline: none;
     }
     textarea {
-      min-height: 140px;
+      min-height: 158px;
       resize: vertical;
       line-height: 1.55;
       font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -89,7 +90,7 @@
       gap: 10px;
       margin-top: 12px;
     }
-    button, a.button {
+    button {
       border: 0;
       border-radius: 12px;
       padding: 11px 14px;
@@ -98,29 +99,55 @@
       color: white;
       background: #111827;
       cursor: pointer;
-      text-decoration: none;
       display: inline-flex;
       align-items: center;
       justify-content: center;
     }
-    button.secondary, a.button.secondary { background: var(--dark); }
+    button.secondary { background: #374151; }
     button.brand { background: var(--brand); }
+    .summary-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+      margin: 16px 0 6px;
+    }
+    .summary-card {
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: 14px;
+      background: white;
+    }
+    .summary-card .value {
+      font-size: 24px;
+      font-weight: 800;
+      margin-top: 2px;
+    }
+    .summary-card .help {
+      font-size: 13px;
+      line-height: 1.55;
+      color: var(--muted);
+      margin-top: 6px;
+    }
     .status {
       margin-top: 12px;
       padding: 13px 14px;
       border-radius: 14px;
       border: 1px solid var(--line);
-      background: #fff7ed;
+      background: var(--soft);
       color: #92400e;
       line-height: 1.55;
       white-space: pre-wrap;
       word-break: break-word;
     }
-    .note {
-      margin-top: 14px;
-      color: var(--muted);
-      line-height: 1.6;
-      font-size: 14px;
+    .status.ok {
+      background: #eef9f0;
+      border-color: #b7e3c1;
+      color: var(--ok);
+    }
+    .status.bad {
+      background: #fff1f1;
+      border-color: #efb4b4;
+      color: #b91c1c;
     }
     .steps {
       margin: 0;
@@ -131,7 +158,7 @@
       margin-top: 8px;
     }
     .tip {
-      margin-top: 12px;
+      margin-top: 14px;
       padding: 12px 14px;
       border-radius: 14px;
       border: 1px dashed #d6b98b;
@@ -139,8 +166,21 @@
       color: #7c4a03;
       line-height: 1.55;
     }
+    .field-stack {
+      display: grid;
+      gap: 14px;
+    }
+    .small {
+      margin-top: 12px;
+      font-size: 13px;
+      line-height: 1.55;
+      color: var(--muted);
+    }
     @media (max-width: 860px) {
       .grid {
+        grid-template-columns: 1fr;
+      }
+      .summary-grid {
         grid-template-columns: 1fr;
       }
     }
@@ -151,48 +191,73 @@
     <div class="hero">
       <h1>Buy Sora License</h1>
       <div class="sub">
-        Use this page to prepare a license purchase for one computer. Send or keep the <strong>Device ID</strong>
-        below. After your payment is confirmed, the license will be attached to this computer and the extension can
-        auto-restore it later without pasting the key again.
+        This page prepares a license purchase for one computer. Pay to the Bakong ID below, then wait for approval.
+        After approval, reopen the extension popup and it can auto-restore the license for this same computer.
       </div>
     </div>
 
     <div class="grid">
       <div class="panel">
-        <div class="label">Device ID</div>
-        <input id="deviceId" type="text" placeholder="Device ID from the extension popup" />
+        <div class="field-stack">
+          <div>
+            <div class="label">Device ID</div>
+            <input id="deviceId" type="text" placeholder="Device ID from the extension popup" />
+            <div class="actions">
+              <button id="copyDeviceIdBtn" class="secondary" type="button">Copy Device ID</button>
+              <button id="prepareOrderBtn" class="brand" type="button">Prepare Order</button>
+            </div>
+          </div>
 
-        <div class="actions">
-          <button id="copyDeviceIdBtn" class="secondary" type="button">Copy Device ID</button>
-          <a id="openManagerBtn" class="button secondary" href="/manager" target="_blank" rel="noreferrer">Open Manager</a>
+          <div class="summary-grid">
+            <div class="summary-card">
+              <div class="label">Price</div>
+              <div class="value" id="priceValue">$35.00</div>
+              <div class="help" id="priceHelp">This license will be bound to one computer.</div>
+            </div>
+            <div class="summary-card">
+              <div class="label">Bakong ID</div>
+              <div class="value" id="bakongValue">Loading...</div>
+              <div class="help">Send the payment to this Bakong account.</div>
+            </div>
+          </div>
+
+          <div>
+            <div class="label">Order Reference</div>
+            <input id="orderId" type="text" readonly placeholder="An order ID will appear here" />
+            <div class="actions">
+              <button id="copyOrderIdBtn" class="secondary" type="button">Copy Order ID</button>
+              <button id="copyBakongBtn" class="secondary" type="button">Copy Bakong ID</button>
+            </div>
+          </div>
+
+          <div>
+            <div class="label">Payment Note</div>
+            <textarea id="paymentNote" readonly></textarea>
+            <div class="actions">
+              <button id="copyPaymentNoteBtn" class="secondary" type="button">Copy Payment Note</button>
+            </div>
+          </div>
         </div>
 
-        <div class="label" style="margin-top:16px;">Payment Note</div>
-        <textarea id="paymentNote" readonly></textarea>
-
-        <div class="status" id="statusBox">
-          Payment integration is not fully automatic yet.
-          For now, use this page to keep the Device ID ready for a KHQR payment flow.
-        </div>
+        <div class="status" id="statusBox">Loading buy configuration...</div>
       </div>
 
       <div class="panel">
         <div class="label">How It Works</div>
         <ol class="steps">
           <li>Open the extension popup and copy the <strong>Device ID</strong>.</li>
-          <li>Use this same Device ID for the purchase.</li>
-          <li>After payment is confirmed, a license is generated for this computer.</li>
-          <li>Reopen the extension popup. The extension can auto-restore the license for this computer from the server.</li>
+          <li>Prepare an order on this page. You will get an <strong>Order ID</strong>.</li>
+          <li>Pay the displayed amount to the <strong>Bakong ID</strong>.</li>
+          <li>Wait for approval. This page checks the order status automatically.</li>
+          <li>When approved, reopen the extension popup. The extension can auto-restore the license for this computer.</li>
         </ol>
 
         <div class="tip">
-          Recommended next step: connect your KHQR/Bakong payment flow here later so payment confirmation can create the
-          license automatically. The auto-restore part is already supported by the extension and server.
+          Keep the <strong>Order ID</strong> and <strong>Device ID</strong>. They identify which computer should receive the license.
         </div>
 
-        <div class="note">
-          This page is meant to be the public entry point for <strong>Buy License</strong>. You can customize it later
-          with your price, KHQR image, and payment verification flow.
+        <div class="small" id="configMeta">
+          Payment mode: Bakong manual approval. Automatic payment verification can be added later when the full Bakong merchant flow is ready.
         </div>
       </div>
     </div>
@@ -200,40 +265,182 @@
 
   <script>
     const deviceIdInput = document.getElementById('deviceId');
+    const orderIdInput = document.getElementById('orderId');
     const paymentNote = document.getElementById('paymentNote');
+    const priceValue = document.getElementById('priceValue');
+    const priceHelp = document.getElementById('priceHelp');
+    const bakongValue = document.getElementById('bakongValue');
     const statusBox = document.getElementById('statusBox');
+    const configMeta = document.getElementById('configMeta');
+
+    let currentConfig = null;
+    let currentOrder = null;
+    let pollTimer = null;
+
+    function setStatus(text, ok = null) {
+      statusBox.textContent = text;
+      statusBox.classList.remove('ok', 'bad');
+      if (ok === true) statusBox.classList.add('ok');
+      if (ok === false) statusBox.classList.add('bad');
+    }
 
     function getQueryDeviceId() {
       const url = new URL(window.location.href);
       return String(url.searchParams.get('deviceId') || '').trim().toUpperCase();
     }
 
-    function updatePaymentNote() {
-      const deviceId = String(deviceIdInput.value || '').trim().toUpperCase();
-      paymentNote.value = deviceId
-        ? `BUY LICENSE REQUEST\n\nDevice ID:\n${deviceId}\n\nAfter payment is confirmed, generate a license for this Device ID.`
-        : 'Paste or open this page with a Device ID first.';
+    async function api(url, options = {}) {
+      const response = await fetch(url, {
+        ...options,
+        headers: {
+          'Content-Type': 'application/json',
+          ...(options.headers || {})
+        }
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || data.ok === false) {
+        throw new Error(data.message || 'Request failed.');
+      }
+      return data;
     }
 
-    async function copyDeviceId() {
-      const deviceId = String(deviceIdInput.value || '').trim();
+    function renderConfig(config) {
+      currentConfig = config || null;
+      const priceLabel = config?.amountUsdLabel || config?.amountKhrLabel || 'Not configured';
+      priceValue.textContent = priceLabel;
+      priceHelp.textContent = config?.amountUsdLabel && config?.amountKhrLabel
+        ? `${config.amountUsdLabel} or ${config.amountKhrLabel}`
+        : 'This license will be bound to one computer.';
+      bakongValue.textContent = config?.bakongAccountId || 'Not configured';
+      configMeta.textContent = config?.enabled
+        ? `Payment mode: ${config.paymentMode}. Default license duration: ${config.defaultLicenseDays} day(s).`
+        : 'Buy flow is not configured on the server yet.';
+      if (!config?.enabled) {
+        setStatus('Buy flow is not configured yet. The server still needs Bakong account and price settings.', false);
+      }
+    }
+
+    function renderOrder(order) {
+      currentOrder = order || null;
+      orderIdInput.value = String(order?.orderId || '');
+      paymentNote.value = String(order?.paymentNote || '');
+      if (!order) return;
+
+      if (order.status === 'approved') {
+        setStatus(
+          `Order approved.\n\nOrder ID: ${order.orderId}\nDevice ID: ${order.deviceId}\nLicense expires: ${order.licenseExpiresAtLabel || order.licenseExpiresAt}\n\nReopen the extension popup. The license can auto-restore for this computer.`,
+          true
+        );
+        stopPolling();
+        return;
+      }
+
+      setStatus(
+        `Order prepared.\n\nOrder ID: ${order.orderId}\nStatus: ${order.status}\nBakong ID: ${order.bakongAccountId || 'Not configured'}\n\nPay the amount above, then wait for approval.`,
+        null
+      );
+    }
+
+    function stopPolling() {
+      if (pollTimer) {
+        window.clearInterval(pollTimer);
+        pollTimer = null;
+      }
+    }
+
+    function startPolling(orderId) {
+      stopPolling();
+      if (!orderId) return;
+      pollTimer = window.setInterval(async () => {
+        try {
+          const data = await api(`/api/buy/order-status?orderId=${encodeURIComponent(orderId)}`, {
+            method: 'GET'
+          });
+          renderOrder(data.order || null);
+        } catch {
+          // Keep the last visible status if polling fails temporarily.
+        }
+      }, 15000);
+    }
+
+    async function loadConfig() {
+      try {
+        const data = await api('/api/buy/config', { method: 'GET' });
+        renderConfig(data.config || null);
+      } catch (error) {
+        setStatus(error.message || 'Could not load buy configuration.', false);
+      }
+    }
+
+    async function prepareOrder() {
+      const deviceId = String(deviceIdInput.value || '').trim().toUpperCase();
       if (!deviceId) {
-        statusBox.textContent = 'No Device ID to copy yet.';
+        setStatus('Paste Device ID first.', false);
+        return;
+      }
+      if (!currentConfig?.enabled) {
+        setStatus('Buy flow is not configured yet on the server.', false);
+        return;
+      }
+
+      try {
+        const data = await api('/api/buy/request', {
+          method: 'POST',
+          body: JSON.stringify({ deviceId })
+        });
+        renderOrder(data.order || null);
+        if (data.order?.orderId) {
+          startPolling(data.order.orderId);
+        }
+      } catch (error) {
+        setStatus(error.message || 'Could not prepare the order.', false);
+      }
+    }
+
+    async function copyText(value, successText, emptyText) {
+      const text = String(value || '').trim();
+      if (!text) {
+        setStatus(emptyText, false);
         return;
       }
       try {
-        await navigator.clipboard.writeText(deviceId);
-        statusBox.textContent = 'Copied Device ID.';
+        await navigator.clipboard.writeText(text);
+        setStatus(successText, true);
       } catch {
-        statusBox.textContent = 'Could not copy Device ID.';
+        setStatus('Could not copy to clipboard.', false);
       }
     }
 
-    document.getElementById('copyDeviceIdBtn').addEventListener('click', copyDeviceId);
-    deviceIdInput.addEventListener('input', updatePaymentNote);
+    document.getElementById('prepareOrderBtn').addEventListener('click', prepareOrder);
+    document.getElementById('copyDeviceIdBtn').addEventListener('click', () => copyText(
+      deviceIdInput.value,
+      'Copied Device ID.',
+      'No Device ID to copy yet.'
+    ));
+    document.getElementById('copyOrderIdBtn').addEventListener('click', () => copyText(
+      orderIdInput.value,
+      'Copied Order ID.',
+      'No Order ID to copy yet.'
+    ));
+    document.getElementById('copyBakongBtn').addEventListener('click', () => copyText(
+      currentConfig?.bakongAccountId,
+      'Copied Bakong ID.',
+      'No Bakong ID is configured yet.'
+    ));
+    document.getElementById('copyPaymentNoteBtn').addEventListener('click', () => copyText(
+      paymentNote.value,
+      'Copied payment note.',
+      'No payment note to copy yet.'
+    ));
 
     deviceIdInput.value = getQueryDeviceId();
-    updatePaymentNote();
+    loadConfig().then(() => {
+      if (deviceIdInput.value) {
+        prepareOrder();
+      } else {
+        paymentNote.value = 'Paste Device ID first to prepare an order.';
+      }
+    });
   </script>
 </body>
 </html>
