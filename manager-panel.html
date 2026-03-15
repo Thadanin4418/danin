@@ -234,6 +234,16 @@
           </div>
         </div>
 
+        <div class="label" style="margin-top:14px;">Trial Policy</div>
+        <div class="meta" id="trialPolicyMeta" style="margin-top:0;">Loading current policy...</div>
+        <div class="actions">
+          <button class="secondary trial-policy-btn" data-policy="1h" type="button">Set 1 Hour</button>
+          <button class="secondary trial-policy-btn" data-policy="30d" type="button">Set 30 Days</button>
+          <button class="secondary trial-policy-btn" data-policy="forever" type="button">Set Forever</button>
+          <button class="warn trial-policy-btn" data-policy="off" type="button">Disable Trial</button>
+          <button class="secondary" id="refreshSettingsBtn" type="button">Refresh Policy</button>
+        </div>
+
         <div class="actions">
           <button class="brand" id="generateBtn">Generate Key</button>
           <button class="secondary" id="copyKeyBtn">Copy Key</button>
@@ -333,6 +343,7 @@
     const serverUrlInput = document.getElementById('serverUrl');
     const licenseKeyInput = document.getElementById('licenseKey');
     const statusBox = document.getElementById('statusBox');
+    const trialPolicyMeta = document.getElementById('trialPolicyMeta');
     const recordsBody = document.getElementById('recordsBody');
     const summaryText = document.getElementById('summaryText');
     const ordersBody = document.getElementById('ordersBody');
@@ -619,6 +630,46 @@
       }
     }
 
+    function renderTrialPolicy(settings) {
+      const label = String(settings?.trialPolicyLabel || '').trim() || 'Unknown';
+      const raw = String(settings?.trialPolicy || '').trim() || '';
+      const source = String(settings?.source || '').trim() || 'environment';
+      trialPolicyMeta.textContent = `Current policy: ${label}${raw ? ` (${raw})` : ''} | Source: ${source}`;
+    }
+
+    async function doLoadSettings(showStatus = false) {
+      try {
+        const data = await api('/api/admin/settings');
+        renderTrialPolicy(data.settings || {});
+        if (showStatus) {
+          setStatus(JSON.stringify(data.settings || data, null, 2), true);
+        }
+      } catch (error) {
+        trialPolicyMeta.textContent = 'Could not load current trial policy.';
+        if (showStatus) {
+          setStatus(error.message || 'Could not load current settings.', false);
+        }
+      }
+    }
+
+    async function doSetTrialPolicy(policy) {
+      const nextPolicy = String(policy || '').trim();
+      if (!nextPolicy) {
+        setStatus('Trial policy is missing.', false);
+        return;
+      }
+      try {
+        const data = await api('/api/admin/settings', {
+          method: 'POST',
+          body: JSON.stringify({ trialPolicy: nextPolicy })
+        });
+        renderTrialPolicy(data.settings || {});
+        setStatus(JSON.stringify(data.settings || data, null, 2), true);
+      } catch (error) {
+        setStatus(error.message || 'Could not update trial policy.', false);
+      }
+    }
+
     document.getElementById('generateBtn').addEventListener('click', doGenerate);
     document.getElementById('pasteDeviceBtn').addEventListener('click', async () => {
       try {
@@ -661,6 +712,7 @@
       }
     });
     document.getElementById('healthBtn').addEventListener('click', doHealth);
+    document.getElementById('refreshSettingsBtn').addEventListener('click', () => doLoadSettings(true));
     document.getElementById('activateBtn').addEventListener('click', doActivate);
     document.getElementById('validateBtn').addEventListener('click', doValidate);
     document.getElementById('statusBtn').addEventListener('click', doStatus);
@@ -675,6 +727,11 @@
       if (!button) return;
       doApproveOrder(button.getAttribute('data-order-id'));
     });
+    document.querySelectorAll('.trial-policy-btn').forEach((button) => {
+      button.addEventListener('click', () => {
+        doSetTrialPolicy(button.getAttribute('data-policy'));
+      });
+    });
 
     [adminTokenInput, deviceIdInput, daysInput, licenseKeyInput].forEach((node) => {
       node.addEventListener('input', saveSettings);
@@ -683,6 +740,7 @@
 
     loadSettings();
     loadPrefillAdminToken();
+    doLoadSettings();
     doList();
     doListOrders();
   </script>

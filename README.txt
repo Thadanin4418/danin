@@ -108,6 +108,7 @@ Admin web panel:
 
 Manager page:
   http://127.0.0.1:8787/manager
+  You can also change `Trial Policy` directly from this page without opening Render.
 
 On a public host, these become:
 - https://your-domain.com/health
@@ -159,6 +160,13 @@ Trial policy:
 
 - GET /api/admin/orders
   header: X-Admin-Token: YOUR_SECRET
+
+- GET /api/admin/settings
+  header: X-Admin-Token: YOUR_SECRET
+
+- POST /api/admin/settings
+  header: X-Admin-Token: YOUR_SECRET
+  body: { "trialPolicy": "1h" }
 
 - POST /api/admin/approve-order
   header: X-Admin-Token: YOUR_SECRET

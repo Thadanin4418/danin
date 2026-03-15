@@ -91,7 +91,8 @@ const EMPTY_DB = {
   updatedAt: null,
   licenses: {},
   trials: {},
-  orders: {}
+  orders: {},
+  settings: {}
 };
 
 function parseMoney(value, fallback) {
@@ -384,6 +385,9 @@ function normalizeDb(db) {
       : {},
     orders: db?.orders && typeof db.orders === 'object'
       ? db.orders
+      : {},
+    settings: db?.settings && typeof db.settings === 'object'
+      ? db.settings
       : {}
   };
 }
@@ -511,6 +515,21 @@ function getBuyConfig() {
     amountKhrLabel: Number.isFinite(LICENSE_PRICE_KHR) ? formatKhr(LICENSE_PRICE_KHR) : '',
     defaultLicenseDays: DEFAULT_LICENSE_DAYS,
     hasBakongApiToken: Boolean(BAKONG_API_TOKEN)
+  };
+}
+
+function getEffectiveTrialPolicy(db) {
+  const configured = String(db?.settings?.trialPolicy || '').trim();
+  return parseTrialPolicy(configured || TRIAL_POLICY.raw);
+}
+
+function sanitizeSettings(db) {
+  const policy = getEffectiveTrialPolicy(db);
+  return {
+    trialPolicy: policy.raw,
+    trialPolicyMode: policy.mode,
+    trialPolicyLabel: policy.policyLabel,
+    source: String(db?.settings?.trialPolicy || '').trim() ? 'manager' : 'environment'
   };
 }
 
@@ -780,7 +799,7 @@ async function trialStatus(req, res, body) {
     const db = await readDb();
     const nowMs = Date.now();
     const nowIso = new Date(nowMs).toISOString();
-    const policy = TRIAL_POLICY;
+    const policy = getEffectiveTrialPolicy(db);
     let record = db.trials[deviceId];
 
     if (policy.mode === 'disabled') {
@@ -1311,6 +1330,47 @@ async function adminOrders(req, res) {
   }
 }
 
+async function adminGetSettings(req, res) {
+  try {
+    ensureAdmin(req);
+    const db = await readDb();
+    return jsonResponse(res, 200, {
+      ok: true,
+      settings: sanitizeSettings(db)
+    });
+  } catch (error) {
+    return jsonResponse(res, 403, { ok: false, message: error?.message || 'Admin action failed.' });
+  }
+}
+
+async function adminSetSettings(req, res, body) {
+  try {
+    ensureAdmin(req);
+    const db = await readDb();
+    const nextTrialPolicy = String(body?.trialPolicy || '').trim();
+
+    if (!nextTrialPolicy) {
+      return jsonResponse(res, 400, { ok: false, message: 'trialPolicy is required.' });
+    }
+
+    const parsed = parseTrialPolicy(nextTrialPolicy);
+    db.settings = {
+      ...(db.settings || {}),
+      trialPolicy: parsed.raw,
+      updatedAt: new Date().toISOString()
+    };
+    await writeDb(db);
+
+    return jsonResponse(res, 200, {
+      ok: true,
+      message: `Trial policy set to ${parsed.policyLabel}.`,
+      settings: sanitizeSettings(db)
+    });
+  } catch (error) {
+    return jsonResponse(res, 403, { ok: false, message: error?.message || 'Could not update settings.' });
+  }
+}
+
 async function adminApproveOrder(req, res, body) {
   try {
     ensureAdmin(req);
@@ -1470,15 +1530,13 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'GET' && req.url === '/health') {
+    const db = await readDb();
     return jsonResponse(res, 200, {
       ok: true,
       product: PRODUCT_CODE,
       now: new Date().toISOString(),
       buyConfigured: getBuyConfig().enabled,
-      trialPolicy: {
-        mode: TRIAL_POLICY.mode,
-        policyLabel: TRIAL_POLICY.policyLabel
-      }
+      trialPolicy: sanitizeSettings(db)
     });
   }
 
@@ -1546,6 +1604,13 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === 'GET' && req.url === '/api/admin/orders') {
       return await adminOrders(req, res);
+    }
+    if (req.method === 'GET' && req.url === '/api/admin/settings') {
+      return await adminGetSettings(req, res);
+    }
+    if (req.method === 'POST' && req.url === '/api/admin/settings') {
+      const body = await readJsonBody(req);
+      return await adminSetSettings(req, res, body);
     }
     if (req.method === 'POST' && req.url === '/api/admin/approve-order') {
       const body = await readJsonBody(req);
