@@ -469,12 +469,65 @@ function buildPaymentNote(order) {
   return lines.join('\n');
 }
 
-function findExistingOrderByDeviceId(db, deviceId) {
-  const normalizedDeviceId = String(deviceId || '').trim().toUpperCase();
-  if (!normalizedDeviceId) return null;
+function normalizeDeviceId(value) {
+  const text = String(value || '').trim().toUpperCase();
+  return /^[A-F0-9]{32}$/.test(text) ? text : '';
+}
+
+function normalizeDeviceIdList(values, primary = '') {
+  const output = [];
+  const seen = new Set();
+
+  [primary].concat(Array.isArray(values) ? values : [values]).forEach((value) => {
+    const normalized = normalizeDeviceId(value);
+    if (!normalized || seen.has(normalized)) return;
+    seen.add(normalized);
+    output.push(normalized);
+  });
+
+  return output;
+}
+
+function getRequestedDeviceIds(body) {
+  return normalizeDeviceIdList(body?.deviceIdAliases || [], body?.deviceId || '');
+}
+
+function getRecordAliasDeviceIds(record) {
+  return normalizeDeviceIdList(record?.aliasDeviceIds || [], '');
+}
+
+function deviceRecordMatches(record, deviceIds, fields = ['deviceId']) {
+  const requested = normalizeDeviceIdList(deviceIds || [], '');
+  if (!requested.length) return false;
+
+  for (const field of fields) {
+    if (requested.includes(normalizeDeviceId(record?.[field] || ''))) {
+      return true;
+    }
+  }
+
+  const aliases = getRecordAliasDeviceIds(record);
+  return aliases.some(alias => requested.includes(alias));
+}
+
+function mergeRecordDeviceAliases(record, nextPrimary, extraValues = []) {
+  const merged = normalizeDeviceIdList([
+    ...(record?.aliasDeviceIds || []),
+    record?.deviceId || '',
+    record?.licensedDeviceId || '',
+    ...extraValues
+  ], '');
+
+  record.aliasDeviceIds = merged.filter(value => value !== normalizeDeviceId(nextPrimary));
+  return record.aliasDeviceIds;
+}
+
+function findExistingOrderByDeviceId(db, deviceIds) {
+  const normalizedDeviceIds = normalizeDeviceIdList(deviceIds || [], '');
+  if (!normalizedDeviceIds.length) return null;
 
   const orders = Object.values(db.orders || {})
-    .filter(order => String(order?.deviceId || '').trim().toUpperCase() === normalizedDeviceId)
+    .filter(order => deviceRecordMatches(order, normalizedDeviceIds, ['deviceId']))
     .sort((a, b) => String(b?.createdAt || '').localeCompare(String(a?.createdAt || '')));
 
   return orders.find(order => String(order?.status || '').trim().toLowerCase() === 'pending')
@@ -531,15 +584,13 @@ async function getOrCreateRecordFromLicenseKey(db, licenseKey, options = {}) {
   };
 }
 
-function findAutoActivatableRecord(db, deviceId) {
-  const normalizedDeviceId = String(deviceId || '').trim().toUpperCase();
-  if (!normalizedDeviceId) return null;
+function findAutoActivatableRecord(db, deviceIds) {
+  const normalizedDeviceIds = normalizeDeviceIdList(deviceIds || [], '');
+  if (!normalizedDeviceIds.length) return null;
 
   const nowMs = Date.now();
   const records = Object.values(db.licenses || {})
-    .filter(record =>
-      String(record?.licensedDeviceId || '').trim().toUpperCase() === normalizedDeviceId
-    )
+    .filter(record => deviceRecordMatches(record, normalizedDeviceIds, ['licensedDeviceId', 'deviceId']))
     .filter(record => !record?.revoked)
     .filter(record => String(record?.licenseKey || '').trim())
     .filter(record => {
@@ -551,8 +602,103 @@ function findAutoActivatableRecord(db, deviceId) {
   return records[0] || null;
 }
 
+function findTrialRecord(db, deviceIds) {
+  const normalizedDeviceIds = normalizeDeviceIdList(deviceIds || [], '');
+  if (!normalizedDeviceIds.length) return null;
+
+  const directMatch = normalizedDeviceIds.find(deviceId => db.trials?.[deviceId]);
+  if (directMatch) {
+    return {
+      key: directMatch,
+      record: db.trials[directMatch]
+    };
+  }
+
+  const record = Object.values(db.trials || {}).find(item => deviceRecordMatches(item, normalizedDeviceIds, ['deviceId']));
+  if (!record) return null;
+
+  return {
+    key: normalizeDeviceId(record.deviceId || ''),
+    record
+  };
+}
+
+function migrateTrialRecordToDeviceId(db, trialEntry, nextDeviceId, req) {
+  const record = trialEntry?.record;
+  const previousKey = normalizeDeviceId(trialEntry?.key || '');
+  const targetDeviceId = normalizeDeviceId(nextDeviceId);
+  if (!record || !targetDeviceId) return record;
+
+  mergeRecordDeviceAliases(record, targetDeviceId, [previousKey]);
+  record.deviceId = targetDeviceId;
+  record.lastIp = getClientIp(req);
+  ensureHistory(record).push(createHistoryEntry('trial-device-migrate', req, {
+    fromDeviceId: previousKey,
+    toDeviceId: targetDeviceId
+  }));
+
+  if (previousKey && previousKey !== targetDeviceId) {
+    delete db.trials[previousKey];
+  }
+  db.trials[targetDeviceId] = record;
+  return record;
+}
+
+function rekeyLicenseRecord(db, oldKeyHash, record, newKeyHash) {
+  if (oldKeyHash && oldKeyHash !== newKeyHash) {
+    delete db.licenses[oldKeyHash];
+  }
+  db.licenses[newKeyHash] = record;
+
+  Object.values(db.orders || {}).forEach((order) => {
+    if (String(order?.approvedLicenseKeyHash || '').trim() === String(oldKeyHash || '').trim()) {
+      order.approvedLicenseKeyHash = newKeyHash;
+    }
+  });
+}
+
+function migrateLicenseRecordToDeviceId(db, record, nextDeviceId, req) {
+  const targetDeviceId = normalizeDeviceId(nextDeviceId);
+  if (!record || !targetDeviceId) {
+    throw new Error('deviceId is required.');
+  }
+
+  const oldKeyHash = String(record.keyHash || '').trim();
+  const previousLicensedDeviceId = normalizeDeviceId(record.licensedDeviceId || '');
+  const previousRuntimeDeviceId = normalizeDeviceId(record.deviceId || '');
+  const nextLicenseKey = generateLicenseKey({
+    deviceId: targetDeviceId,
+    expiresAt: record.expiresAt
+  });
+  const verified = verifyLicenseToken(nextLicenseKey);
+  const nextKeyHash = sha256Hex(nextLicenseKey);
+  const now = new Date().toISOString();
+
+  mergeRecordDeviceAliases(record, targetDeviceId, [previousLicensedDeviceId, previousRuntimeDeviceId]);
+  record.keyHash = nextKeyHash;
+  record.licensedDeviceId = targetDeviceId;
+  record.licenseKey = nextLicenseKey;
+  record.deviceId = targetDeviceId;
+  record.activatedAt = record.activatedAt || now;
+  record.lastValidatedAt = now;
+  record.lastIp = getClientIp(req);
+  ensureHistory(record).push(createHistoryEntry('device-migrate', req, {
+    fromDeviceId: previousLicensedDeviceId || previousRuntimeDeviceId,
+    toDeviceId: targetDeviceId
+  }));
+
+  rekeyLicenseRecord(db, oldKeyHash, record, nextKeyHash);
+
+  return {
+    record,
+    licenseKey: nextLicenseKey,
+    verified
+  };
+}
+
 async function trialStatus(req, res, body) {
-  const deviceId = String(body?.deviceId || '').trim().toUpperCase();
+  const deviceId = normalizeDeviceId(body?.deviceId || '');
+  const requestedDeviceIds = getRequestedDeviceIds(body);
   if (!deviceId) {
     return jsonResponse(res, 400, { ok: false, message: 'deviceId is required.' });
   }
@@ -564,8 +710,16 @@ async function trialStatus(req, res, body) {
     let record = db.trials[deviceId];
 
     if (!record) {
+      const existing = findTrialRecord(db, requestedDeviceIds);
+      if (existing?.record) {
+        record = migrateTrialRecordToDeviceId(db, existing, deviceId, req);
+      }
+    }
+
+    if (!record) {
       record = {
         deviceId,
+        aliasDeviceIds: normalizeDeviceIdList(requestedDeviceIds, deviceId).filter(value => value !== deviceId),
         startedAt: nowIso,
         endsAt: new Date(nowMs + TRIAL_DURATION_MS).toISOString(),
         lastIp: getClientIp(req),
@@ -761,41 +915,53 @@ async function validateLicense(req, res, body) {
 }
 
 async function autoActivateLicense(req, res, body) {
-  const deviceId = String(body?.deviceId || '').trim().toUpperCase();
+  const deviceId = normalizeDeviceId(body?.deviceId || '');
+  const requestedDeviceIds = getRequestedDeviceIds(body);
   if (!deviceId) {
     return jsonResponse(res, 400, { ok: false, message: 'deviceId is required.' });
   }
 
   try {
     const db = await readDb();
-    const record = findAutoActivatableRecord(db, deviceId);
+    let record = findAutoActivatableRecord(db, requestedDeviceIds);
     if (!record) {
       return jsonResponse(res, 404, { ok: false, message: 'No active license was found for this computer.' });
     }
 
-    const now = new Date().toISOString();
-    if (record.deviceId && record.deviceId !== deviceId) {
-      return jsonResponse(res, 403, { ok: false, message: 'License key is already activated on another computer.' });
-    }
+    let licenseKey = String(record.licenseKey || '').trim();
+    let expiresAt = record.expiresAt;
+    let expiresAtLabel = new Date(Date.parse(String(record.expiresAt || ''))).toLocaleString();
 
-    record.deviceId = deviceId;
-    if (!record.activatedAt) {
-      record.activatedAt = now;
+    if (normalizeDeviceId(record.licensedDeviceId || '') !== deviceId) {
+      const migrated = migrateLicenseRecordToDeviceId(db, record, deviceId, req);
+      record = migrated.record;
+      licenseKey = migrated.licenseKey;
+      expiresAt = migrated.verified.payload.expiresAt;
+      expiresAtLabel = migrated.verified.expiresAtLabel;
+    } else {
+      const now = new Date().toISOString();
+      if (record.deviceId && normalizeDeviceId(record.deviceId) && normalizeDeviceId(record.deviceId) !== deviceId) {
+        return jsonResponse(res, 403, { ok: false, message: 'License key is already activated on another computer.' });
+      }
+
+      record.deviceId = deviceId;
+      record.activatedAt = record.activatedAt || now;
+      record.lastValidatedAt = now;
+      record.lastIp = getClientIp(req);
+      mergeRecordDeviceAliases(record, deviceId, requestedDeviceIds);
+      ensureHistory(record).push(createHistoryEntry('auto-activate', req, { deviceId }));
+      db.licenses[record.keyHash] = record;
     }
-    record.lastValidatedAt = now;
-    record.lastIp = getClientIp(req);
-    ensureHistory(record).push(createHistoryEntry('auto-activate', req, { deviceId }));
-    db.licenses[record.keyHash] = record;
     await writeDb(db);
 
     return jsonResponse(res, 200, {
       ok: true,
       message: 'License restored for this computer.',
-      licenseKey: String(record.licenseKey || '').trim(),
+      licenseKey,
       license: {
         deviceId,
-        expiresAt: record.expiresAt,
-        expiresAtLabel: new Date(Date.parse(String(record.expiresAt || ''))).toLocaleString(),
+        expiresAt,
+        expiresAtLabel,
         keyHash: record.keyHash
       }
     });
@@ -812,7 +978,8 @@ async function buyConfig(req, res) {
 }
 
 async function createBuyRequest(req, res, body) {
-  const deviceId = String(body?.deviceId || '').trim().toUpperCase();
+  const deviceId = normalizeDeviceId(body?.deviceId || '');
+  const requestedDeviceIds = getRequestedDeviceIds(body);
   if (!deviceId) {
     return jsonResponse(res, 400, { ok: false, message: 'deviceId is required.' });
   }
@@ -827,13 +994,25 @@ async function createBuyRequest(req, res, body) {
 
   try {
     const db = await readDb();
-    let order = findExistingOrderByDeviceId(db, deviceId);
+    let order = findExistingOrderByDeviceId(db, requestedDeviceIds);
+
+    if (order && normalizeDeviceId(order.deviceId || '') !== deviceId) {
+      mergeRecordDeviceAliases(order, deviceId, requestedDeviceIds);
+      order.deviceId = deviceId;
+      order.lastIp = getClientIp(req);
+      ensureHistory(order).push(createHistoryEntry('order-device-migrate', req, {
+        orderId: order.orderId,
+        toDeviceId: deviceId
+      }));
+      db.orders[order.orderId] = order;
+    }
 
     if (!order) {
       const now = new Date().toISOString();
       order = {
         orderId: createOrderId(),
         deviceId,
+        aliasDeviceIds: normalizeDeviceIdList(requestedDeviceIds, deviceId).filter(value => value !== deviceId),
         status: 'pending',
         amountUsd: config.amountUsd,
         amountKhr: config.amountKhr,
