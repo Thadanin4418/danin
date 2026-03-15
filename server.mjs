@@ -513,6 +513,19 @@ function sanitizeOrderRecord(record, options = {}) {
 function getBuyPlans() {
   const plans = [];
 
+  if (Number.isFinite(LICENSE_PRICE_USD) || Number.isFinite(LICENSE_PRICE_KHR)) {
+    plans.push({
+      id: '1m',
+      label: '1 Month',
+      description: `${formatCountLabel(Math.round(DEFAULT_LICENSE_DAYS / 30) || 1, 'month')} access for one computer`,
+      days: DEFAULT_LICENSE_DAYS,
+      amountUsd: Number.isFinite(LICENSE_PRICE_USD) ? LICENSE_PRICE_USD : null,
+      amountUsdLabel: Number.isFinite(LICENSE_PRICE_USD) ? formatUsd(LICENSE_PRICE_USD) : '',
+      amountKhr: Number.isFinite(LICENSE_PRICE_KHR) ? LICENSE_PRICE_KHR : null,
+      amountKhrLabel: Number.isFinite(LICENSE_PRICE_KHR) ? formatKhr(LICENSE_PRICE_KHR) : ''
+    });
+  }
+
   if (Number.isFinite(BUY_PRICE_3M_USD) || Number.isFinite(BUY_PRICE_3M_KHR)) {
     plans.push({
       id: '3m',
