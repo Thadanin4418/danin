@@ -1,0 +1,401 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		0F4C8AA167E14351A3F0D2C4 /* AIChatVoiceController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B9D6EAF173441B5A9C2E7F1 /* AIChatVoiceController.swift */; };
+		02B99702B2C2352D41A7C5EA /* soraninApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = C8C9F558A7523EB1A68DD1DF /* soraninApp.swift */; };
+		1368BFC4F772579305A405C8 /* GoogleAIVideoPromptGenerator.swift in Sources */ = {isa = PBXBuildFile; fileRef = D789BA449960FF7CE3265C26 /* GoogleAIVideoPromptGenerator.swift */; };
+		15F0D434BF48EBEBE874BD37 /* AIModelCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = 41BC9B5B4199026334B94739 /* AIModelCatalog.swift */; };
+		470D382F719102DD7E0A6A0A /* ReelsVideoExporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3EF5A6AC8898825809BE74B7 /* ReelsVideoExporter.swift */; };
+		50E81EE4E014F2312DBBAACF /* OpenAIVideoPromptGenerator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 16E2A205A028C90A8925FD2E /* OpenAIVideoPromptGenerator.swift */; };
+		6403AF96167F3AE117A68250 /* OpenAIAPIKeyStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9FD6A04985AAF01313A5C7F5 /* OpenAIAPIKeyStore.swift */; };
+		6760005E208F07591ED99D0D /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 5A700EBF1190DFD9364F4A3D /* Assets.xcassets */; };
+		92EF3884099C0738335A44C1 /* GoogleAIVideoThumbnailGenerator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 30DD2882CBD3FA9C10F20436 /* GoogleAIVideoThumbnailGenerator.swift */; };
+		94AA6AD808015831016C8B39 /* ShareSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 09B7D5D17333E4CF499F9146 /* ShareSheet.swift */; };
+		9B379696BD50193CA87FBCB6 /* SoraVideoLink.swift in Sources */ = {isa = PBXBuildFile; fileRef = EC1B60A6A6E260CDBE8C2310 /* SoraVideoLink.swift */; };
+		AA5EDAE37389695BEEC451F4 /* GoogleAIAPIKeyStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3FE6C1FEF9CFD3D380649FD5 /* GoogleAIAPIKeyStore.swift */; };
+		BFE7985A7AEBDAD079303EF4 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18CDE3087674D146D6FE6F6E /* ContentView.swift */; };
+		D0DDD6AA1D8E9929591AE32C /* SoraDownloadViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 47F810058577F27A752C75B6 /* SoraDownloadViewModel.swift */; };
+		DD4322A775D0AFAFEC7D148C /* GoogleAIVideoTitleGenerator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7C25B6DF6998AB6EAF5509C9 /* GoogleAIVideoTitleGenerator.swift */; };
+		E2CCD310E35B4FEF449C94F3 /* OpenAIVideoTitleGenerator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1D0659A183C37934B3F13E94 /* OpenAIVideoTitleGenerator.swift */; };
+		EA044A02046A212BB0ED32FF /* VideoTitleGenerator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9C609782025C2EAC140E3C0A /* VideoTitleGenerator.swift */; };
+		F906A82FAD823A6BB99D2888 /* APIKeyValidators.swift in Sources */ = {isa = PBXBuildFile; fileRef = 26BD2EF5FE3BEE5BB1DF9E1F /* APIKeyValidators.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		09B7D5D17333E4CF499F9146 /* ShareSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareSheet.swift; sourceTree = "<group>"; };
+		16E2A205A028C90A8925FD2E /* OpenAIVideoPromptGenerator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenAIVideoPromptGenerator.swift; sourceTree = "<group>"; };
+		18CDE3087674D146D6FE6F6E /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		1D0659A183C37934B3F13E94 /* OpenAIVideoTitleGenerator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenAIVideoTitleGenerator.swift; sourceTree = "<group>"; };
+		26BD2EF5FE3BEE5BB1DF9E1F /* APIKeyValidators.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIKeyValidators.swift; sourceTree = "<group>"; };
+		30DD2882CBD3FA9C10F20436 /* GoogleAIVideoThumbnailGenerator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GoogleAIVideoThumbnailGenerator.swift; sourceTree = "<group>"; };
+		38734F2B9BAB0D36DDE09871 /* soranin.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = soranin.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		3EF5A6AC8898825809BE74B7 /* ReelsVideoExporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReelsVideoExporter.swift; sourceTree = "<group>"; };
+		3FE6C1FEF9CFD3D380649FD5 /* GoogleAIAPIKeyStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GoogleAIAPIKeyStore.swift; sourceTree = "<group>"; };
+		41BC9B5B4199026334B94739 /* AIModelCatalog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AIModelCatalog.swift; sourceTree = "<group>"; };
+		47F810058577F27A752C75B6 /* SoraDownloadViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SoraDownloadViewModel.swift; sourceTree = "<group>"; };
+		5A700EBF1190DFD9364F4A3D /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		7C25B6DF6998AB6EAF5509C9 /* GoogleAIVideoTitleGenerator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GoogleAIVideoTitleGenerator.swift; sourceTree = "<group>"; };
+		8B9D6EAF173441B5A9C2E7F1 /* AIChatVoiceController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AIChatVoiceController.swift; sourceTree = "<group>"; };
+		9C609782025C2EAC140E3C0A /* VideoTitleGenerator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoTitleGenerator.swift; sourceTree = "<group>"; };
+		9FD6A04985AAF01313A5C7F5 /* OpenAIAPIKeyStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenAIAPIKeyStore.swift; sourceTree = "<group>"; };
+		B6452505252AFEF454CC41B7 /* .gitkeep */ = {isa = PBXFileReference; path = .gitkeep; sourceTree = "<group>"; };
+		C8C9F558A7523EB1A68DD1DF /* soraninApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = soraninApp.swift; sourceTree = "<group>"; };
+		D789BA449960FF7CE3265C26 /* GoogleAIVideoPromptGenerator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GoogleAIVideoPromptGenerator.swift; sourceTree = "<group>"; };
+		E1AB53DCC534F017FD3627FD /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		EC1B60A6A6E260CDBE8C2310 /* SoraVideoLink.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SoraVideoLink.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXGroup section */
+		8C1DC133F8D51B340A23D5E7 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				38734F2B9BAB0D36DDE09871 /* soranin.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		9C0CE8AC809AA8EB58D072E8 /* soranin */ = {
+			isa = PBXGroup;
+			children = (
+				41BC9B5B4199026334B94739 /* AIModelCatalog.swift */,
+				8B9D6EAF173441B5A9C2E7F1 /* AIChatVoiceController.swift */,
+				26BD2EF5FE3BEE5BB1DF9E1F /* APIKeyValidators.swift */,
+				18CDE3087674D146D6FE6F6E /* ContentView.swift */,
+				3FE6C1FEF9CFD3D380649FD5 /* GoogleAIAPIKeyStore.swift */,
+				D789BA449960FF7CE3265C26 /* GoogleAIVideoPromptGenerator.swift */,
+				30DD2882CBD3FA9C10F20436 /* GoogleAIVideoThumbnailGenerator.swift */,
+				7C25B6DF6998AB6EAF5509C9 /* GoogleAIVideoTitleGenerator.swift */,
+				E1AB53DCC534F017FD3627FD /* Info.plist */,
+				9FD6A04985AAF01313A5C7F5 /* OpenAIAPIKeyStore.swift */,
+				16E2A205A028C90A8925FD2E /* OpenAIVideoPromptGenerator.swift */,
+				1D0659A183C37934B3F13E94 /* OpenAIVideoTitleGenerator.swift */,
+				3EF5A6AC8898825809BE74B7 /* ReelsVideoExporter.swift */,
+				09B7D5D17333E4CF499F9146 /* ShareSheet.swift */,
+				47F810058577F27A752C75B6 /* SoraDownloadViewModel.swift */,
+				C8C9F558A7523EB1A68DD1DF /* soraninApp.swift */,
+				EC1B60A6A6E260CDBE8C2310 /* SoraVideoLink.swift */,
+				9C609782025C2EAC140E3C0A /* VideoTitleGenerator.swift */,
+				AA70BB4ABD7B7D2B47052D76 /* Resources */,
+			);
+			path = soranin;
+			sourceTree = "<group>";
+		};
+		AA70BB4ABD7B7D2B47052D76 /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+				5A700EBF1190DFD9364F4A3D /* Assets.xcassets */,
+				CA5071CBB7E6B00CE0451877 /* Preview Content */,
+			);
+			path = Resources;
+			sourceTree = "<group>";
+		};
+		C808AB0CE94D4595179F05B2 = {
+			isa = PBXGroup;
+			children = (
+				9C0CE8AC809AA8EB58D072E8 /* soranin */,
+				8C1DC133F8D51B340A23D5E7 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		CA5071CBB7E6B00CE0451877 /* Preview Content */ = {
+			isa = PBXGroup;
+			children = (
+				B6452505252AFEF454CC41B7 /* .gitkeep */,
+			);
+			path = "Preview Content";
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		EFF89599415AC5509121097A /* soranin */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = E93B17DFEDEDAC53DC472672 /* Build configuration list for PBXNativeTarget "soranin" */;
+			buildPhases = (
+				8A4779CDD0385C25DD01B5BE /* Sources */,
+				6D51A8C0B6D8A01D51D0B380 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = soranin;
+			packageProductDependencies = (
+			);
+			productName = soranin;
+			productReference = 38734F2B9BAB0D36DDE09871 /* soranin.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		73AF136B1EF3A33C00B07A23 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+					EFF89599415AC5509121097A = {
+						DevelopmentTeam = 8Y29A7CLQ8;
+						ProvisioningStyle = Automatic;
+					};
+				};
+			};
+			buildConfigurationList = D9683F4D48E6A5DFE24D7E44 /* Build configuration list for PBXProject "soranin" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = C808AB0CE94D4595179F05B2;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 8C1DC133F8D51B340A23D5E7 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				EFF89599415AC5509121097A /* soranin */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		6D51A8C0B6D8A01D51D0B380 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				6760005E208F07591ED99D0D /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		8A4779CDD0385C25DD01B5BE /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				15F0D434BF48EBEBE874BD37 /* AIModelCatalog.swift in Sources */,
+				0F4C8AA167E14351A3F0D2C4 /* AIChatVoiceController.swift in Sources */,
+				F906A82FAD823A6BB99D2888 /* APIKeyValidators.swift in Sources */,
+				BFE7985A7AEBDAD079303EF4 /* ContentView.swift in Sources */,
+				AA5EDAE37389695BEEC451F4 /* GoogleAIAPIKeyStore.swift in Sources */,
+				1368BFC4F772579305A405C8 /* GoogleAIVideoPromptGenerator.swift in Sources */,
+				92EF3884099C0738335A44C1 /* GoogleAIVideoThumbnailGenerator.swift in Sources */,
+				DD4322A775D0AFAFEC7D148C /* GoogleAIVideoTitleGenerator.swift in Sources */,
+				6403AF96167F3AE117A68250 /* OpenAIAPIKeyStore.swift in Sources */,
+				50E81EE4E014F2312DBBAACF /* OpenAIVideoPromptGenerator.swift in Sources */,
+				E2CCD310E35B4FEF449C94F3 /* OpenAIVideoTitleGenerator.swift in Sources */,
+				470D382F719102DD7E0A6A0A /* ReelsVideoExporter.swift in Sources */,
+				94AA6AD808015831016C8B39 /* ShareSheet.swift in Sources */,
+				D0DDD6AA1D8E9929591AE32C /* SoraDownloadViewModel.swift in Sources */,
+				9B379696BD50193CA87FBCB6 /* SoraVideoLink.swift in Sources */,
+				EA044A02046A212BB0ED32FF /* VideoTitleGenerator.swift in Sources */,
+				02B99702B2C2352D41A7C5EA /* soraninApp.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		35BAF75732913EA23FE07FEA /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 1;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = 8Y29A7CLQ8;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MARKETING_VERSION = 1.0.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_BUNDLE_IDENTIFIER = com.nin.soranin;
+				PRODUCT_NAME = soranin;
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 6.0;
+			};
+			name = Debug;
+		};
+		69F20E4E6724C09ACB0058E8 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				DEVELOPMENT_ASSET_PATHS = "\"soranin/Resources/Preview Content\"";
+				INFOPLIST_FILE = soranin/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_MODULE_NAME = soranin;
+				SDKROOT = iphoneos;
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		B090C6B078ED00E3BC1009CB /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 1;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = 8Y29A7CLQ8;
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MARKETING_VERSION = 1.0.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_BUNDLE_IDENTIFIER = com.nin.soranin;
+				PRODUCT_NAME = soranin;
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 6.0;
+			};
+			name = Release;
+		};
+		E3E61C79B8C14530F5B875DB /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				DEVELOPMENT_ASSET_PATHS = "\"soranin/Resources/Preview Content\"";
+				INFOPLIST_FILE = soranin/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_MODULE_NAME = soranin;
+				SDKROOT = iphoneos;
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		D9683F4D48E6A5DFE24D7E44 /* Build configuration list for PBXProject "soranin" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				35BAF75732913EA23FE07FEA /* Debug */,
+				B090C6B078ED00E3BC1009CB /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		E93B17DFEDEDAC53DC472672 /* Build configuration list for PBXNativeTarget "soranin" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				69F20E4E6724C09ACB0058E8 /* Debug */,
+				E3E61C79B8C14530F5B875DB /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 73AF136B1EF3A33C00B07A23 /* Project object */;
+}
