@@ -1159,6 +1159,40 @@ async function readJsonBody(req) {
   return JSON.parse(text);
 }
 
+async function normalizeFacebookResolveUrl(rawUrl) {
+  try {
+    const parsed = new URL(String(rawUrl || '').trim());
+    const host = (parsed.hostname || '').toLowerCase();
+    if (!(host === 'fb.watch' || host.endsWith('.fb.watch'))) {
+      return String(rawUrl || '').trim();
+    }
+
+    const response = await fetch(parsed.toString(), {
+      method: 'HEAD',
+      redirect: 'manual',
+      headers: {
+        'user-agent': 'Mozilla/5.0',
+        accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+      }
+    });
+
+    const location = response.headers.get('location');
+    if (!location) {
+      return String(rawUrl || '').trim();
+    }
+
+    const nextUrl = new URL(location, parsed);
+    const videoId = nextUrl.searchParams.get('v');
+    if ((nextUrl.hostname || '').toLowerCase().endsWith('.facebook.com') && videoId) {
+      return `https://www.facebook.com/watch/?v=${videoId}`;
+    }
+
+    return nextUrl.toString();
+  } catch {
+    return String(rawUrl || '').trim();
+  }
+}
+
 async function resolveFacebookVideo(req, res, body) {
   const rawUrl = String(body?.url || body?.raw_input || '').trim();
   if (!rawUrl) {
@@ -1169,9 +1203,10 @@ async function resolveFacebookVideo(req, res, body) {
   const quality = ['auto', 'high', 'low'].includes(requestedQuality) ? requestedQuality : 'auto';
 
   try {
+    const normalizedInput = await normalizeFacebookResolveUrl(rawUrl);
     const { stdout } = await execFileAsync(
       'python3',
-      [FACEBOOK_RESOLVE_SCRIPT, rawUrl, quality],
+      [FACEBOOK_RESOLVE_SCRIPT, normalizedInput, quality],
       {
         cwd: __dirname,
         timeout: 120000,
