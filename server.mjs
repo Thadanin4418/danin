@@ -1,4 +1,5 @@
 import http from 'node:http';
+import https from 'node:https';
 import fsSync from 'node:fs';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
@@ -1159,6 +1160,41 @@ async function readJsonBody(req) {
   return JSON.parse(text);
 }
 
+function requestManualRedirect(rawUrl, method = 'HEAD') {
+  return new Promise((resolve, reject) => {
+    const parsed = new URL(rawUrl);
+    const client = parsed.protocol === 'https:' ? https : http;
+    const request = client.request(
+      parsed,
+      {
+        method,
+        headers: {
+          'user-agent': 'Mozilla/5.0',
+          accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+        }
+      },
+      (response) => {
+        const location = response.headers.location
+          ? new URL(response.headers.location, parsed).toString()
+          : '';
+        response.resume();
+        response.on('end', () => {
+          resolve({
+            statusCode: response.statusCode || 0,
+            location
+          });
+        });
+      }
+    );
+
+    request.setTimeout(10000, () => {
+      request.destroy(new Error('Timeout while resolving Facebook URL.'));
+    });
+    request.on('error', reject);
+    request.end();
+  });
+}
+
 async function normalizeFacebookResolveUrl(rawUrl) {
   try {
     const parsed = new URL(String(rawUrl || '').trim());
@@ -1167,27 +1203,25 @@ async function normalizeFacebookResolveUrl(rawUrl) {
       return String(rawUrl || '').trim();
     }
 
-    const response = await fetch(parsed.toString(), {
-      method: 'HEAD',
-      redirect: 'manual',
-      headers: {
-        'user-agent': 'Mozilla/5.0',
-        accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+    for (const method of ['HEAD', 'GET']) {
+      try {
+        const probe = await requestManualRedirect(parsed.toString(), method);
+        if (!probe.location) {
+          continue;
+        }
+
+        const nextUrl = new URL(probe.location, parsed);
+        const videoId = nextUrl.searchParams.get('v');
+        if ((nextUrl.hostname || '').toLowerCase().endsWith('.facebook.com') && videoId) {
+          return `https://www.facebook.com/watch/?v=${videoId}`;
+        }
+
+        return nextUrl.toString();
+      } catch {
+        continue;
       }
-    });
-
-    const location = response.headers.get('location');
-    if (!location) {
-      return String(rawUrl || '').trim();
     }
-
-    const nextUrl = new URL(location, parsed);
-    const videoId = nextUrl.searchParams.get('v');
-    if ((nextUrl.hostname || '').toLowerCase().endsWith('.facebook.com') && videoId) {
-      return `https://www.facebook.com/watch/?v=${videoId}`;
-    }
-
-    return nextUrl.toString();
+    return String(rawUrl || '').trim();
   } catch {
     return String(rawUrl || '').trim();
   }
