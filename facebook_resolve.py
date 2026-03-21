@@ -8,9 +8,9 @@ from pathlib import Path
 
 def bootstrap_import_path() -> None:
     here = Path(__file__).resolve().parent
-    for candidate in [here, here.parent]:
+    for candidate in [here / "pydeps", here, here.parent]:
         value = str(candidate)
-        if value not in sys.path:
+        if candidate.exists() and value not in sys.path:
             sys.path.insert(0, value)
 
 
