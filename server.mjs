@@ -1195,6 +1195,26 @@ function requestManualRedirect(rawUrl, method = 'HEAD') {
   });
 }
 
+async function requestManualRedirectWithCurl(rawUrl) {
+  const { stdout } = await execFileAsync(
+    'curl',
+    ['-sSI', '-A', 'Mozilla/5.0', rawUrl],
+    {
+      cwd: __dirname,
+      timeout: 10000,
+      maxBuffer: 512 * 1024
+    }
+  );
+  const locationLine = String(stdout || '')
+    .split(/\r?\n/)
+    .find((line) => /^location:/i.test(String(line || '')));
+  return {
+    location: locationLine
+      ? locationLine.replace(/^location:\s*/i, '').trim()
+      : ''
+  };
+}
+
 async function normalizeFacebookResolveUrl(rawUrl) {
   try {
     const parsed = new URL(String(rawUrl || '').trim());
@@ -1221,6 +1241,19 @@ async function normalizeFacebookResolveUrl(rawUrl) {
         continue;
       }
     }
+
+    try {
+      const curlProbe = await requestManualRedirectWithCurl(parsed.toString());
+      if (curlProbe.location) {
+        const nextUrl = new URL(curlProbe.location, parsed);
+        const videoId = nextUrl.searchParams.get('v');
+        if ((nextUrl.hostname || '').toLowerCase().endsWith('.facebook.com') && videoId) {
+          return `https://www.facebook.com/watch/?v=${videoId}`;
+        }
+        return nextUrl.toString();
+      }
+    } catch {}
+
     return String(rawUrl || '').trim();
   } catch {
     return String(rawUrl || '').trim();
