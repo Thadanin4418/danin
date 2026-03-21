@@ -139,6 +139,8 @@ def _follow_facebook_redirect(url: str) -> str | None:
                 if not isinstance(location, str) or not location.strip():
                     break
                 next_url = _strip_url_punctuation(urljoin(current, location.strip()))
+                if "facebook.com/watch" in next_url or "/reel/" in next_url or "/share/" in next_url:
+                    return next_url
                 if not next_url or next_url.lower() == current.lower():
                     break
                 current = next_url
