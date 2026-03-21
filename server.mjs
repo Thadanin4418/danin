@@ -13,6 +13,7 @@ const __dirname = path.dirname(__filename);
 const ENV_PATH = path.join(__dirname, '.env');
 const execFileAsync = promisify(execFile);
 const FACEBOOK_RESOLVE_SCRIPT = path.join(__dirname, 'facebook_resolve.py');
+const FACEBOOK_SHORT_RESOLVE_SCRIPT = path.join(__dirname, 'facebook_short_url_resolve.py');
 
 function loadEnvFile(filePath) {
   try {
@@ -1215,6 +1216,22 @@ async function requestManualRedirectWithCurl(rawUrl) {
   };
 }
 
+async function requestManualRedirectWithPython(rawUrl) {
+  const { stdout } = await execFileAsync(
+    'python3',
+    [FACEBOOK_SHORT_RESOLVE_SCRIPT, rawUrl],
+    {
+      cwd: __dirname,
+      timeout: 10000,
+      maxBuffer: 512 * 1024
+    }
+  );
+  const payload = JSON.parse(String(stdout || '{}'));
+  return {
+    location: String(payload?.normalized_url || '').trim()
+  };
+}
+
 async function normalizeFacebookResolveUrl(rawUrl) {
   try {
     const parsed = new URL(String(rawUrl || '').trim());
@@ -1251,6 +1268,13 @@ async function normalizeFacebookResolveUrl(rawUrl) {
           return `https://www.facebook.com/watch/?v=${videoId}`;
         }
         return nextUrl.toString();
+      }
+    } catch {}
+
+    try {
+      const pythonProbe = await requestManualRedirectWithPython(parsed.toString());
+      if (pythonProbe.location) {
+        return pythonProbe.location;
       }
     } catch {}
 
@@ -2067,6 +2091,7 @@ const server = http.createServer(async (req, res) => {
       now: new Date().toISOString(),
       buyConfigured: getBuyConfig().enabled,
       facebookResolveEnabled: true,
+      facebookResolveMode: 'node-http+curl+python-short',
       trialPolicy: sanitizeSettings(db)
     });
   }
