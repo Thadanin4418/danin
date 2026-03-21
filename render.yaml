@@ -4,7 +4,7 @@ services:
     runtime: node
     plan: free
     region: singapore
-    buildCommand: npm install && python3 -m pip install --target ./pydeps yt-dlp
+    buildCommand: npm install
     startCommand: npm start
     healthCheckPath: /health
     envVars:
