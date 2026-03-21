@@ -10,7 +10,7 @@ import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urljoin, urlparse
 
 
 CHUNK_SIZE = 1024 * 512
@@ -114,20 +114,38 @@ def _strip_url_punctuation(value: str) -> str:
 
 
 def _follow_facebook_redirect(url: str) -> str | None:
-    request = urllib.request.Request(
-        url,
-        headers={
-            "User-Agent": "Mozilla/5.0",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        },
-        method="GET",
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=30) as response:
-            final_url = _strip_url_punctuation(response.geturl().strip())
-            return final_url or None
-    except Exception:
-        return None
+    class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            return None
+
+    opener = urllib.request.build_opener(_NoRedirectHandler)
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    }
+    current = url
+
+    for method in ("HEAD", "GET"):
+        for _ in range(5):
+            request = urllib.request.Request(current, headers=headers, method=method)
+            try:
+                with opener.open(request, timeout=30) as response:
+                    final_url = _strip_url_punctuation(response.geturl().strip())
+                    return final_url or None
+            except urllib.error.HTTPError as exc:
+                if exc.code not in {301, 302, 303, 307, 308}:
+                    break
+                location = exc.headers.get("Location") or exc.headers.get("location")
+                if not isinstance(location, str) or not location.strip():
+                    break
+                next_url = _strip_url_punctuation(urljoin(current, location.strip()))
+                if not next_url or next_url.lower() == current.lower():
+                    break
+                current = next_url
+            except Exception:
+                break
+        current = url
+    return None
 
 
 def normalize_supported_facebook_url(value: str) -> str | None:
