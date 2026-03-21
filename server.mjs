@@ -3,11 +3,15 @@ import fsSync from 'node:fs';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const ENV_PATH = path.join(__dirname, '.env');
+const execFileAsync = promisify(execFile);
+const FACEBOOK_RESOLVE_SCRIPT = path.join(__dirname, 'facebook_resolve.py');
 
 function loadEnvFile(filePath) {
   try {
@@ -1155,6 +1159,43 @@ async function readJsonBody(req) {
   return JSON.parse(text);
 }
 
+async function resolveFacebookVideo(req, res, body) {
+  const rawUrl = String(body?.url || body?.raw_input || '').trim();
+  if (!rawUrl) {
+    return jsonResponse(res, 400, { ok: false, message: 'url is required.' });
+  }
+
+  const requestedQuality = String(body?.quality || 'auto').trim().toLowerCase();
+  const quality = ['auto', 'high', 'low'].includes(requestedQuality) ? requestedQuality : 'auto';
+
+  try {
+    const { stdout } = await execFileAsync(
+      'python3',
+      [FACEBOOK_RESOLVE_SCRIPT, rawUrl, quality],
+      {
+        cwd: __dirname,
+        timeout: 120000,
+        maxBuffer: 10 * 1024 * 1024
+      }
+    );
+
+    const payload = JSON.parse(String(stdout || '').trim() || '{}');
+    return jsonResponse(res, 200, {
+      ok: true,
+      ...payload
+    });
+  } catch (error) {
+    const stderrText = String(error?.stderr || '').trim();
+    const stdoutText = String(error?.stdout || '').trim();
+    const message = stderrText || stdoutText || error?.message || 'Facebook resolve failed.';
+    const statusCode = /required|supported|no direct|could not|failed/i.test(message) ? 400 : 500;
+    return jsonResponse(res, statusCode, {
+      ok: false,
+      message
+    });
+  }
+}
+
 function generateLicenseKey({ deviceId, days, expiresAt }) {
   const normalizedDeviceId = String(deviceId || '').trim().toUpperCase();
   if (!normalizedDeviceId) {
@@ -1923,6 +1964,7 @@ const server = http.createServer(async (req, res) => {
       product: PRODUCT_CODE,
       now: new Date().toISOString(),
       buyConfigured: getBuyConfig().enabled,
+      facebookResolveEnabled: true,
       trialPolicy: sanitizeSettings(db)
     });
   }
@@ -1966,6 +2008,10 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && req.url === '/api/validate') {
       const body = await readJsonBody(req);
       return await validateLicense(req, res, body);
+    }
+    if (req.method === 'POST' && (req.url === '/facebook-resolve' || req.url === '/api/facebook/resolve')) {
+      const body = await readJsonBody(req);
+      return await resolveFacebookVideo(req, res, body);
     }
     if (req.method === 'POST' && req.url === '/api/admin/revoke') {
       const body = await readJsonBody(req);
