@@ -12,7 +12,10 @@ Clean Git repo for the current `soranin` iOS app, the Mac `Soranin.app` source, 
 - `RELEASE_NOTES.md`
 - `RELEASE_TEMPLATE.md`
 - `START_CONTROL_MAC.command`
+- `START_REMOTE_RELAY.command`
 - `IOS_MAC_CONTROL.md`
+- `REMOTE_RELAY.md`
+- `render.yaml`
 
 ## Current purpose
 
@@ -63,6 +66,12 @@ xcodebuild -project soranin-ios/soranin.xcodeproj -scheme soranin -sdk iphonesim
 
 ```bash
 python3 scripts/reels_dashboard_server.py
+```
+
+### Remote relay server
+
+```bash
+python3 scripts/mac_control_relay_server.py
 ```
 
 ## Recommended setup
@@ -140,6 +149,7 @@ More details:
 - `Soranin.app` opens and manages the Facebook runner
 - Chrome automation runs on the Mac
 - the local controller server receives jobs from iPhone
+- optional remote relay can bridge iPhone and Mac across different networks
 
 ### iPhone side
 

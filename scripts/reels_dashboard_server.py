@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import base64
 import json
+import html
+import hmac
+import mimetypes
 import os
 import re
 import shlex
@@ -9,11 +13,14 @@ import shutil
 import subprocess
 import threading
 import time
+import getpass
+import socket
 from collections import deque
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib import error as urllib_error, request as urllib_request
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from facebook_video_downloader import (
     DownloadError as FacebookDownloadError,
@@ -21,7 +28,7 @@ from facebook_video_downloader import (
     VALID_QUALITIES as FACEBOOK_VALID_QUALITIES,
     resolve_facebook_download_payload,
 )
-from soranin_paths import API_KEYS_FILE, ROOT_DIR, script_path
+from soranin_paths import API_KEYS_FILE, CONTROL_RELAY_CONFIG_FILE, ROOT_DIR, script_path
 
 
 HOST = "0.0.0.0"
@@ -37,15 +44,290 @@ AI_PROVIDER_DEFAULT = "openai"
 AI_PROVIDER_OPENAI = "openai"
 AI_PROVIDER_GEMINI = "gemini"
 VIDEO_ID_PATTERN = re.compile(r"\b(?:s_|gen_)[A-Za-z0-9_-]{8,}\b", re.IGNORECASE)
+DEFAULT_CONTROL_RELAY_POLL_SECONDS = 3.0
+ALLOWED_SOURCE_VIDEO_EXTENSIONS = {".mp4", ".mov", ".m4v", ".avi", ".mkv"}
+CONTENT_TYPE_EXTENSION_MAP = {
+    "video/mp4": ".mp4",
+    "video/quicktime": ".mov",
+    "video/x-m4v": ".m4v",
+    "video/x-msvideo": ".avi",
+    "video/x-matroska": ".mkv",
+    "application/octet-stream": ".mp4",
+}
+FACEBOOK_PROGRESS_PATTERN = re.compile(r"^\[facebook-progress\]\s*(\d{1,3})\|(.*)$")
+
+
+def current_mac_user_name() -> str:
+    value = (os.environ.get("USER") or "").strip()
+    if value:
+        return value
+    try:
+        value = getpass.getuser().strip()
+    except Exception:
+        value = ""
+    if value:
+        return value
+    return Path.home().name
+
+
+def current_mac_device_name() -> str:
+    try:
+        proc = subprocess.run(
+            ["scutil", "--get", "ComputerName"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        value = (proc.stdout or "").strip()
+        if value:
+            return value
+    except Exception:
+        pass
+    value = (socket.gethostname() or "").strip()
+    return value or "Mac"
+
+
+def current_mac_display_name() -> str:
+    return f"{current_mac_device_name()} • user {current_mac_user_name()}"
+
+
+def show_mac_notification(title: str, message: str) -> None:
+    safe_title = (title or "Soranin").strip()[:120]
+    safe_message = (message or "").strip()[:240]
+    if not safe_message:
+        safe_message = "Done."
+
+    script = (
+        f"display notification {json.dumps(safe_message)} "
+        f"with title {json.dumps(safe_title)}"
+    )
+    try:
+        subprocess.Popen(
+            ["osascript", "-e", script],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception:
+        pass
+
+
+def sanitize_alert_text(value: str, fallback: str, limit: int) -> str:
+    text = str(value or "").strip()
+    if not text:
+        text = fallback
+    return text[:limit]
+
+
+def load_control_relay_config() -> dict[str, object]:
+    payload: dict[str, object] = {}
+    if CONTROL_RELAY_CONFIG_FILE.exists():
+        try:
+            parsed = json.loads(CONTROL_RELAY_CONFIG_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            parsed = {}
+        if isinstance(parsed, dict):
+            payload.update(parsed)
+
+    relay_url = str(os.environ.get("SORANIN_CONTROL_RELAY_URL") or payload.get("relay_url") or "").strip()
+    relay_user_name = str(
+        os.environ.get("SORANIN_CONTROL_RELAY_USER_NAME")
+        or payload.get("relay_user_name")
+        or ""
+    ).strip()
+    relay_mac_name = str(
+        os.environ.get("SORANIN_CONTROL_RELAY_MAC_NAME")
+        or payload.get("relay_mac_name")
+        or ""
+    ).strip()
+    relay_secret_token = str(
+        os.environ.get("SORANIN_CONTROL_RELAY_SECRET_TOKEN")
+        or payload.get("relay_secret_token")
+        or payload.get("secret_token")
+        or ""
+    ).strip()
+    control_password = str(
+        os.environ.get("SORANIN_CONTROL_PASSWORD")
+        or payload.get("control_password")
+        or payload.get("password")
+        or ""
+    ).strip()
+    poll_seconds_raw = str(os.environ.get("SORANIN_CONTROL_RELAY_POLL_SECONDS") or payload.get("poll_seconds") or "").strip()
+    try:
+        poll_seconds = float(poll_seconds_raw) if poll_seconds_raw else DEFAULT_CONTROL_RELAY_POLL_SECONDS
+    except Exception:
+        poll_seconds = DEFAULT_CONTROL_RELAY_POLL_SECONDS
+    poll_seconds = max(1.0, poll_seconds)
+    return {
+        "relay_url": relay_url.rstrip("/"),
+        "relay_user_name": relay_user_name,
+        "relay_mac_name": relay_mac_name,
+        "relay_secret_token": relay_secret_token,
+        "control_password": control_password,
+        "poll_seconds": poll_seconds,
+    }
+
+
+def control_relay_base_url() -> str:
+    return str(load_control_relay_config().get("relay_url") or "").strip()
+
+
+def control_relay_poll_seconds() -> float:
+    try:
+        return float(load_control_relay_config().get("poll_seconds") or DEFAULT_CONTROL_RELAY_POLL_SECONDS)
+    except Exception:
+        return DEFAULT_CONTROL_RELAY_POLL_SECONDS
+
+
+def normalize_relay_label(value: str, fallback: str) -> str:
+    text = re.sub(r"[^A-Za-z0-9._-]+", "-", str(value or "").strip()).strip("-._")
+    return text or fallback
+
+
+def control_relay_user_name() -> str:
+    config = load_control_relay_config()
+    return normalize_relay_label(str(config.get("relay_user_name") or current_mac_user_name()), "user")
+
+
+def control_relay_mac_name() -> str:
+    config = load_control_relay_config()
+    return normalize_relay_label(str(config.get("relay_mac_name") or current_mac_device_name()), "mac")
+
+
+def control_relay_secret_token() -> str:
+    config = load_control_relay_config()
+    raw = str(
+        os.environ.get("SORANIN_CONTROL_RELAY_SECRET_TOKEN")
+        or config.get("relay_secret_token")
+        or config.get("secret_token")
+        or ""
+    ).strip()
+    return normalize_relay_label(raw, "")
+
+
+def control_relay_client_token() -> str:
+    secret = control_relay_secret_token()
+    if not secret:
+        return ""
+    return f"{control_relay_user_name()}-{control_relay_mac_name()}-{secret}"
+
+
+def control_relay_client_base_url() -> str:
+    base = control_relay_base_url()
+    token = control_relay_client_token()
+    if not base or not token:
+        return ""
+    return f"{base}/client/{quote(token, safe='')}"
+
+
+def control_password() -> str:
+    return str(load_control_relay_config().get("control_password") or "").strip()
+
+
+def control_password_required() -> bool:
+    return bool(control_password())
+
+
+def relay_provided_control_password(job: dict[str, object]) -> str:
+    payload = job.get("payload")
+    if isinstance(payload, dict):
+        value = str(payload.get("__control_password") or "").strip()
+        if value:
+            return value
+    query = job.get("query")
+    if isinstance(query, dict):
+        value = str(query.get("__control_password") or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def relay_control_password_ok(provided_password: str) -> bool:
+    expected = control_password()
+    if not expected:
+        return True
+    provided = str(provided_password or "").strip()
+    return bool(provided) and hmac.compare_digest(provided, expected)
+
+
+def relay_password_error_response() -> tuple[int, dict[str, object]]:
+    return HTTPStatus.UNAUTHORIZED, {
+        "ok": False,
+        "message": "Enter the Mac control password to continue.",
+        "password_required": True,
+    }
+
+
+def relay_request_json(method: str, url: str, payload: dict[str, object] | None = None, timeout: float = 15.0) -> dict[str, object]:
+    data: bytes | None = None
+    headers = {"Accept": "application/json"}
+    if payload is not None:
+        data = json.dumps(payload).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    request = urllib_request.Request(url, data=data, headers=headers, method=method.upper())
+    try:
+        with urllib_request.urlopen(request, timeout=timeout) as response:
+            raw = response.read().decode("utf-8", errors="replace")
+    except urllib_error.HTTPError as exc:
+        raw = exc.read().decode("utf-8", errors="replace")
+        try:
+            parsed = json.loads(raw)
+        except Exception:
+            parsed = {}
+        message = str(parsed.get("message") or raw or f"Relay request failed with HTTP {exc.code}.").strip()
+        raise RuntimeError(message)
+    except urllib_error.URLError as exc:
+        raise RuntimeError(str(exc.reason or exc)) from exc
+
+    if not raw.strip():
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except Exception as exc:
+        raise RuntimeError(f"Relay returned invalid JSON: {raw[:200]}") from exc
+    if not isinstance(parsed, dict):
+        raise RuntimeError("Relay returned invalid JSON payload.")
+    return parsed
 
 
 def source_videos(root: Path) -> list[Path]:
-    exts = {".mp4", ".mov", ".m4v", ".avi", ".mkv"}
     return sorted(
         path
         for path in root.iterdir()
-        if path.is_file() and path.suffix.lower() in exts and not path.name.startswith(".")
+        if path.is_file() and path.suffix.lower() in ALLOWED_SOURCE_VIDEO_EXTENSIONS and not path.name.startswith(".")
     )
+
+
+def sanitize_source_video_filename(raw_name: str, content_type: str = "") -> str:
+    text = unquote(str(raw_name or "").strip())
+    candidate = Path(text).name
+    stem = Path(candidate).stem.strip() if candidate else ""
+    ext = Path(candidate).suffix.lower() if candidate else ""
+
+    if ext not in ALLOWED_SOURCE_VIDEO_EXTENSIONS:
+        ext = CONTENT_TYPE_EXTENSION_MAP.get(content_type.lower().strip(), ".mp4")
+    if ext not in ALLOWED_SOURCE_VIDEO_EXTENSIONS:
+        ext = ".mp4"
+
+    safe_stem = re.sub(r"[^A-Za-z0-9._ -]+", "_", stem).strip(" ._-")
+    if not safe_stem:
+        safe_stem = "iphone_source_video"
+
+    return f"{safe_stem}{ext}"
+
+
+def unique_source_video_target(file_name: str) -> Path:
+    target = ROOT_DIR / file_name
+    if not target.exists():
+        return target
+
+    stem = target.stem
+    ext = target.suffix
+    counter = 2
+    while True:
+        candidate = ROOT_DIR / f"{stem}_{counter}{ext}"
+        if not candidate.exists():
+            return candidate
+        counter += 1
 
 
 def package_dirs(root: Path) -> list[Path]:
@@ -58,6 +340,103 @@ def package_dirs(root: Path) -> list[Path]:
                 continue
             packages.append(path)
     return sorted(packages, key=lambda item: int(item.name.split("_", 1)[0]))
+
+
+def package_path_for_name(package_name: str) -> Path:
+    raw = str(package_name or "").strip()
+    if not raw or "/" in raw or "\\" in raw or ".." in raw:
+        raise ValueError("Invalid package name.")
+    path = (ROOT_DIR / raw).resolve()
+    try:
+        path.relative_to(ROOT_DIR.resolve())
+    except Exception as exc:
+        raise ValueError("Package path is outside the root folder.") from exc
+    return path
+
+
+def preferred_reels_base_name(package_dir: Path) -> str:
+    package_name = package_dir.name
+    prefix = package_name.split("_", 1)[0].strip()
+    if prefix.isdigit():
+        return f"Reels{prefix}"
+    return package_dir.stem
+
+
+def preferred_package_media_path(package_dir: Path, extensions: set[str], preferred_names: list[str]) -> Path | None:
+    lowered_exts = {ext.lower().lstrip(".") for ext in extensions}
+    for preferred_name in preferred_names:
+        candidate = package_dir / preferred_name
+        if candidate.exists() and candidate.is_file():
+            return candidate
+
+    candidates = [
+        path
+        for path in package_dir.iterdir()
+        if path.is_file() and path.suffix.lower().lstrip(".") in lowered_exts and not path.name.startswith(".")
+    ]
+    if not candidates:
+        return None
+    return sorted(candidates)[0]
+
+
+def load_package_card(package_dir: Path) -> dict[str, object] | None:
+    if not package_dir.exists() or not package_dir.is_dir():
+        return None
+
+    html_path = package_dir / "copy_title.html"
+    base_name = preferred_reels_base_name(package_dir)
+    video_path = preferred_package_media_path(
+        package_dir,
+        {"mp4", "mov", "m4v"},
+        [f"{base_name}.mp4", "edited_reel_9x16_hd_0.90x_15s.mp4"],
+    )
+    thumb_path = preferred_package_media_path(
+        package_dir,
+        {"jpg", "jpeg", "png"},
+        [f"{base_name}.jpg", "thumbnail_1080x1920.jpg"],
+    )
+
+    html_text = ""
+    try:
+        html_text = html_path.read_text(encoding="utf-8")
+    except Exception:
+        html_text = ""
+
+    source_match = re.search(r'<p class="meta">(.*?)</p>', html_text, re.IGNORECASE | re.DOTALL)
+    title_match = re.search(r'<textarea id="titleField" readonly>(.*?)</textarea>', html_text, re.IGNORECASE | re.DOTALL)
+    source_name = html.unescape((source_match.group(1) if source_match else "").strip()) or (video_path.name if video_path else package_dir.name)
+    title = html.unescape((title_match.group(1) if title_match else "").strip()) or "No title found."
+
+    return {
+        "id": package_dir.name,
+        "package_name": package_dir.name,
+        "source_name": source_name,
+        "video_name": video_path.name if video_path else "",
+        "title": re.sub(r"\s+", " ", title).strip(),
+        "has_thumbnail": bool(thumb_path and thumb_path.exists()),
+        "thumbnail_name": thumb_path.name if thumb_path else "",
+    }
+
+
+def load_package_cards() -> list[dict[str, object]]:
+    cards: list[dict[str, object]] = []
+    for package_dir in reversed(package_dirs(ROOT_DIR)):
+        card = load_package_card(package_dir)
+        if card:
+            cards.append(card)
+    return cards
+
+
+def thumbnail_path_for_package(package_name: str) -> Path | None:
+    package_dir = package_path_for_name(package_name)
+    if not package_dir.exists() or not package_dir.is_dir():
+        return None
+    base_name = preferred_reels_base_name(package_dir)
+    return preferred_package_media_path(
+        package_dir,
+        {"jpg", "jpeg", "png"},
+        [f"{base_name}.jpg", "thumbnail_1080x1920.jpg"],
+    )
 
 
 def normalize_video_ids(values: list[str]) -> list[str]:
@@ -380,14 +759,55 @@ def run_facebook_preflight(payload: dict[str, object]) -> dict[str, object]:
     }
 
 
+def build_facebook_post_bootstrap_response(chrome_name: str = "", page_name: str = "") -> dict[str, object]:
+    profile_state = find_profile_state(ROOT_DIR / ".fb_reels_publish_state.json", chrome_name, page_name)
+    mac_user_name = current_mac_user_name()
+    mac_device_name = current_mac_device_name()
+    return {
+        "ok": True,
+        "profiles": [item["name"] for item in load_chrome_profiles()],
+        "default_root": str(ROOT_DIR),
+        "memory_summary": format_state_summary(profile_state),
+        "mac_user_name": mac_user_name,
+        "mac_device_name": mac_device_name,
+        "mac_display_name": f"{mac_device_name} • user {mac_user_name}",
+        "relay_enabled": bool(control_relay_base_url() and control_relay_client_token()),
+        "relay_base_url": control_relay_base_url(),
+        "relay_client_token": control_relay_client_token(),
+        "relay_client_url": control_relay_client_base_url(),
+        "relay_user_name": control_relay_user_name(),
+        "relay_mac_name": control_relay_mac_name(),
+        "password_required": control_password_required(),
+    }
+
+
 class ManagerState:
     def __init__(self) -> None:
         self.lock = threading.Lock()
         self.proc: subprocess.Popen[str] | None = None
         self.remote_running = False
         self.logs: deque[str] = deque(maxlen=500)
+        self.alerts: deque[dict[str, object]] = deque(maxlen=32)
+        self.next_alert_id = 1
         self.status = "Idle"
         self.detail = "Ready."
+        self.progress_percent = 0
+        self.progress_label = ""
+
+    def emit_alert(self, title: str, message: str, level: str = "info") -> None:
+        safe_title = sanitize_alert_text(title, "Soranin", 120)
+        safe_message = sanitize_alert_text(message, "Done.", 240)
+        safe_level = sanitize_alert_text(level, "info", 24).lower()
+        with self.lock:
+            alert = {
+                "id": self.next_alert_id,
+                "title": safe_title,
+                "message": safe_message,
+                "level": safe_level,
+                "created_at": time.time(),
+            }
+            self.next_alert_id += 1
+            self.alerts.append(alert)
 
     def append_log(self, line: str) -> None:
         with self.lock:
@@ -395,6 +815,17 @@ class ManagerState:
             self._update_status_from_line(line)
 
     def _update_status_from_line(self, line: str) -> None:
+        progress_match = FACEBOOK_PROGRESS_PATTERN.match(line)
+        if progress_match:
+            try:
+                self.progress_percent = max(0, min(100, int(progress_match.group(1))))
+            except Exception:
+                self.progress_percent = 0
+            self.progress_label = progress_match.group(2).strip()
+            self.status = "Running"
+            if self.progress_label:
+                self.detail = self.progress_label
+            return
         if line.startswith("Found "):
             self.status = "Running"
             self.detail = line
@@ -435,6 +866,8 @@ class ManagerState:
             self.logs.append("WAIT... Processing videos.")
             self.status = "Running"
             self.detail = "Starting batch..."
+            self.progress_percent = 0
+            self.progress_label = "Starting batch..."
 
             command = (
                 "source ~/.zshrc >/dev/null 2>&1; "
@@ -448,7 +881,8 @@ class ManagerState:
                 bufsize=1,
             )
             threading.Thread(target=self._consume_output, daemon=True).start()
-            return True, "Batch started."
+        self.emit_alert("Soranin on Mac", "Batch started on this Mac.")
+        return True, "Batch started."
 
     def start_remote(self, video_ids: list[str]) -> tuple[bool, str]:
         normalized = normalize_video_ids(video_ids)
@@ -466,7 +900,13 @@ class ManagerState:
             self.logs.append(f"[remote] Received {len(normalized)} id(s).")
             self.status = "Running"
             self.detail = f"Preparing remote download ({len(normalized)} item(s))..."
+            self.progress_percent = 0
+            self.progress_label = self.detail
 
+        self.emit_alert(
+            "New URL on Mac",
+            f"Received {len(normalized)} link(s) from iPhone. Preparing download...",
+        )
         threading.Thread(target=self._run_remote_flow, args=(normalized,), daemon=True).start()
         return True, f"Remote flow started for {len(normalized)} item(s)."
 
@@ -499,6 +939,12 @@ class ManagerState:
             self.logs.append(f"[facebook-post] Folders: {' '.join(packages)}")
             self.status = "Running"
             self.detail = f"Preparing Facebook post run ({len(packages)} folder(s))..."
+            self.progress_percent = 0
+            self.progress_label = self.detail
+        self.emit_alert(
+            "Facebook post on Mac",
+            f"Preparing {len(packages)} folder(s) for page {page_name}.",
+        )
 
         thread = threading.Thread(
             target=self._run_facebook_post_flow,
@@ -568,6 +1014,7 @@ class ManagerState:
                 self.proc = process
                 self.status = "Running"
                 self.detail = "Facebook post batch running..."
+                self.progress_label = self.detail
 
             if process.stdout is not None:
                 for raw_line in process.stdout:
@@ -577,16 +1024,29 @@ class ManagerState:
                     self.append_log(line if line.startswith("[") else f"[facebook-post] {line}")
 
             returncode = process.wait()
+            should_emit_done = False
+            should_emit_failed = False
+            failed_message = ""
             with self.lock:
                 if returncode == 0:
                     self.logs.append("DONE")
                     self.status = "Done"
                     self.detail = "Facebook post batch complete."
+                    self.progress_percent = 100
+                    self.progress_label = "Facebook post batch complete."
+                    should_emit_done = True
                 else:
                     self.logs.append("FAILED")
                     self.status = "Failed"
                     self.detail = f"Facebook post batch failed (exit {returncode})."
+                    self.progress_label = self.detail
+                    should_emit_failed = True
+                    failed_message = f"Facebook post batch failed with exit code {returncode}."
                 self.proc = None
+            if should_emit_done:
+                self.emit_alert("Facebook post done", "Facebook post batch finished on this Mac.")
+            elif should_emit_failed:
+                self.emit_alert("Facebook post failed", failed_message, "error")
             return
         except Exception as exc:
             with self.lock:
@@ -596,6 +1056,8 @@ class ManagerState:
                 self.logs.append("FAILED")
                 self.status = "Failed"
                 self.detail = f"Facebook post flow failed: {exc}"
+                self.progress_label = self.detail
+            self.emit_alert("Facebook post failed", str(exc), "error")
             return
 
     def _run_remote_flow(self, video_ids: list[str]) -> None:
@@ -607,6 +1069,10 @@ class ManagerState:
         )
 
         try:
+            self.emit_alert(
+                "Running download on Mac",
+                f"Downloading {len(video_ids)} item(s) on this Mac now.",
+            )
             proc = subprocess.Popen(
                 ["/bin/zsh", "-lc", command],
                 stdout=subprocess.PIPE,
@@ -632,9 +1098,19 @@ class ManagerState:
                     self.logs.append("FAILED")
                     self.status = "Failed"
                     self.detail = f"Remote download failed (exit {returncode})."
+                    self.progress_label = self.detail
+                self.emit_alert(
+                    "Mac download failed",
+                    f"Remote download failed with exit code {returncode}.",
+                    "error",
+                )
                 return
 
             self.append_log("[remote] Download complete. Starting batch...")
+            self.emit_alert(
+                "Download done on Mac",
+                "Download finished. Starting edit / batch now.",
+            )
             with self.lock:
                 self.remote_running = False
             ok, message = self.start()
@@ -643,6 +1119,8 @@ class ManagerState:
                     self.logs.append(f"[remote] {message}")
                     self.status = "Failed"
                     self.detail = message
+                    self.progress_label = self.detail
+                self.emit_alert("Mac batch failed", message, "error")
             return
         except Exception as exc:
             with self.lock:
@@ -651,6 +1129,8 @@ class ManagerState:
                 self.logs.append("FAILED")
                 self.status = "Failed"
                 self.detail = f"Remote flow failed: {exc}"
+                self.progress_label = self.detail
+            self.emit_alert("Mac remote flow failed", str(exc), "error")
             return
 
     def _consume_output(self) -> None:
@@ -665,17 +1145,30 @@ class ManagerState:
                 self.append_log(raw_line.rstrip())
 
         returncode = proc.wait()
+        should_emit_done = False
+        should_emit_failed = False
+        failed_message = ""
         with self.lock:
             if returncode == 0:
                 self.logs.append("DONE")
                 if self.status == "Running":
                     self.status = "Done"
                     self.detail = "Batch complete."
+                self.progress_percent = 100
+                self.progress_label = self.detail
+                should_emit_done = True
             else:
                 self.logs.append("FAILED")
                 self.status = "Failed"
                 self.detail = f"Exit code {returncode}"
+                self.progress_label = self.detail
+                should_emit_failed = True
+                failed_message = f"Batch failed with exit code {returncode}."
             self.proc = None
+        if should_emit_done:
+            self.emit_alert("Mac edit done", "Download / edit flow finished on this Mac.")
+        elif should_emit_failed:
+            self.emit_alert("Mac batch failed", failed_message, "error")
 
     def snapshot(self) -> dict[str, object]:
         ROOT_DIR.mkdir(parents=True, exist_ok=True)
@@ -684,25 +1177,206 @@ class ManagerState:
         openai_key = resolve_api_key("OPENAI_API_KEY")
         gemini_key = resolve_api_key("GEMINI_API_KEY", "GOOGLE_API_KEY")
         provider = resolve_ai_provider()
+        mac_user_name = current_mac_user_name()
+        mac_device_name = current_mac_device_name()
+        mac_display_name = f"{mac_device_name} • user {mac_user_name}"
         with self.lock:
             is_running = self.remote_running or (self.proc is not None and self.proc.poll() is None)
             return {
                 "status": self.status,
                 "detail": self.detail,
+                "progress_percent": self.progress_percent,
+                "progress_label": self.progress_label,
                 "running": is_running,
                 "remote_running": self.remote_running,
                 "source_count": len(sources),
                 "package_count": len(packages),
                 "latest_package": packages[-1].name if packages else "-",
                 "logs": list(self.logs),
+                "alerts": list(self.alerts),
+                "latest_alert": self.alerts[-1] if self.alerts else None,
                 "openai_key_status": mask_key(openai_key),
                 "gemini_key_status": mask_key(gemini_key),
                 "ai_provider": provider,
                 "ai_provider_label": provider_label(provider),
+                "mac_user_name": mac_user_name,
+                "mac_device_name": mac_device_name,
+                "mac_display_name": mac_display_name,
+                "relay_enabled": bool(control_relay_base_url() and control_relay_client_token()),
+                "relay_base_url": control_relay_base_url(),
+                "relay_client_token": control_relay_client_token(),
+                "relay_client_url": control_relay_client_base_url(),
+                "relay_user_name": control_relay_user_name(),
+                "relay_mac_name": control_relay_mac_name(),
+                "password_required": control_password_required(),
             }
 
 
 STATE = ManagerState()
+
+
+def execute_relay_job(job: dict[str, object]) -> tuple[int, dict[str, object]]:
+    request_path = str(job.get("request_path") or "").strip()
+    payload = job.get("payload")
+    if not isinstance(payload, dict):
+        payload = {}
+    query = job.get("query")
+    if not isinstance(query, dict):
+        query = {}
+    provided_password = relay_provided_control_password(job)
+
+    protected_paths = {
+        "/facebook-post-bootstrap",
+        "/facebook-packages",
+        "/source-video-upload",
+        "/facebook-post-preflight",
+        "/facebook-post-run",
+        "/quit-chrome",
+        "/facebook-package-delete",
+        "/remote-run",
+    }
+    if request_path in protected_paths and not relay_control_password_ok(provided_password):
+        return relay_password_error_response()
+
+    if request_path == "/facebook-post-bootstrap":
+        chrome_name = str(query.get("chrome_name") or "").strip()
+        page_name = str(query.get("page_name") or "").strip()
+        return HTTPStatus.OK, build_facebook_post_bootstrap_response(chrome_name, page_name)
+
+    if request_path == "/facebook-packages":
+        return HTTPStatus.OK, {"ok": True, "packages": load_package_cards()}
+
+    if request_path == "/facebook-package-thumbnail":
+        package_name = str(query.get("package_name") or payload.get("package_name") or "").strip()
+        try:
+            thumbnail_path = thumbnail_path_for_package(package_name)
+        except ValueError as exc:
+            return HTTPStatus.BAD_REQUEST, {"ok": False, "message": str(exc)}
+        if thumbnail_path is None:
+            return HTTPStatus.NOT_FOUND, {"ok": False, "message": "Thumbnail not found."}
+        mime_type, _encoding = mimetypes.guess_type(thumbnail_path.name)
+        mime_type = mime_type or "application/octet-stream"
+        return HTTPStatus.OK, {
+            "ok": True,
+            "file_name": thumbnail_path.name,
+            "mime_type": mime_type,
+            "data_base64": base64.b64encode(thumbnail_path.read_bytes()).decode("ascii"),
+        }
+
+    if request_path == "/source-video-upload":
+        file_name = str(payload.get("file_name") or "").strip()
+        content_type = str(payload.get("content_type") or "").strip().lower()
+        file_data_base64 = str(payload.get("file_data_base64") or "").strip()
+        if not file_data_base64:
+            return HTTPStatus.BAD_REQUEST, {"ok": False, "message": "Upload body is empty."}
+        try:
+            body = base64.b64decode(file_data_base64, validate=True)
+        except Exception:
+            return HTTPStatus.BAD_REQUEST, {"ok": False, "message": "Upload body is invalid."}
+        target_name = sanitize_source_video_filename(file_name, content_type)
+        target_path = unique_source_video_target(target_name)
+        try:
+            ROOT_DIR.mkdir(parents=True, exist_ok=True)
+            target_path.write_bytes(body)
+        except Exception as exc:
+            return HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "message": str(exc)}
+        STATE.emit_alert(
+            "New video on Mac",
+            f"{target_path.name} was added to Drop Videos.",
+        )
+        return HTTPStatus.OK, {
+            "ok": True,
+            "message": f"Saved {target_path.name} to Drop Videos on Mac.",
+            "file_name": target_path.name,
+            "saved_path": str(target_path),
+            "source_count": len(source_videos(ROOT_DIR)),
+        }
+
+    if request_path == "/facebook-post-preflight":
+        try:
+            return HTTPStatus.OK, run_facebook_preflight(payload)
+        except Exception as exc:
+            return HTTPStatus.BAD_REQUEST, {"ok": False, "message": str(exc)}
+
+    if request_path == "/facebook-post-run":
+        ok, message = STATE.start_facebook_post(payload)
+        return (HTTPStatus.OK if ok else HTTPStatus.BAD_REQUEST), {"ok": ok, "message": message}
+
+    if request_path == "/quit-chrome":
+        quit_google_chrome()
+        return HTTPStatus.OK, {"ok": True, "message": "Google Chrome quit."}
+
+    if request_path == "/facebook-package-delete":
+        package_name = str(payload.get("package_name") or "").strip()
+        try:
+            package_path = package_path_for_name(package_name)
+        except ValueError as exc:
+            return HTTPStatus.BAD_REQUEST, {"ok": False, "message": str(exc)}
+        if not package_path.exists() or not package_path.is_dir():
+            return HTTPStatus.NOT_FOUND, {"ok": False, "message": "Package not found."}
+        try:
+            shutil.rmtree(package_path)
+        except Exception as exc:
+            return HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "message": str(exc)}
+        return HTTPStatus.OK, {
+            "ok": True,
+            "message": f"Deleted {package_name}.",
+            "package_name": package_name,
+            "packages": load_package_cards(),
+        }
+
+    if request_path == "/remote-run":
+        values: list[str] = []
+        raw_ids = payload.get("video_ids")
+        if isinstance(raw_ids, list):
+            values.extend(str(item) for item in raw_ids)
+        raw_input = str(payload.get("raw_input") or "").strip()
+        if raw_input:
+            values.extend(extract_video_ids_from_text(raw_input))
+        normalized_ids = normalize_video_ids(values)
+        ok, message = STATE.start_remote(normalized_ids)
+        status = HTTPStatus.OK if ok else HTTPStatus.BAD_REQUEST
+        return status, {"ok": ok, "message": message, "count": len(normalized_ids)}
+
+    return HTTPStatus.NOT_FOUND, {"ok": False, "message": f"Unsupported relay job path: {request_path}"}
+
+
+def relay_worker_loop(base_url: str, poll_seconds: float) -> None:
+    client_base_url = control_relay_client_base_url()
+    if not client_base_url:
+        return
+    while True:
+        try:
+            relay_request_json(
+                "POST",
+                f"{client_base_url}/heartbeat",
+                {
+                    "snapshot": STATE.snapshot(),
+                },
+                timeout=10.0,
+            )
+            claimed = relay_request_json("POST", f"{client_base_url}/jobs/claim", {}, timeout=15.0)
+            job = claimed.get("job")
+            if isinstance(job, dict) and job.get("id"):
+                job_id = str(job.get("id"))
+                try:
+                    response_status, response_body = execute_relay_job(job)
+                except Exception as exc:
+                    response_status = int(HTTPStatus.INTERNAL_SERVER_ERROR)
+                    response_body = {"ok": False, "message": str(exc)}
+                relay_request_json(
+                    "POST",
+                    f"{client_base_url}/jobs/{job_id}/finish",
+                    {
+                        "response_status": int(response_status),
+                        "response_body": response_body,
+                    },
+                    timeout=30.0,
+                )
+                continue
+        except Exception:
+            pass
+        time.sleep(max(1.0, poll_seconds))
 
 
 HTML_PAGE = """<!doctype html>
@@ -1161,6 +1835,29 @@ HTML_PAGE = HTML_PAGE.replace("__ROOT_DIR__", str(ROOT_DIR))
 
 
 class ReelsDashboardHandler(BaseHTTPRequestHandler):
+    def _allowed_headers(self) -> str:
+        return "Content-Type, X-Soranin-File-Name, X-Soranin-Password"
+
+    def _request_control_password(self) -> str:
+        return str(self.headers.get("X-Soranin-Password") or "").strip()
+
+    def _require_control_password(self) -> bool:
+        expected = control_password()
+        if not expected:
+            return True
+        provided = self._request_control_password()
+        if provided and hmac.compare_digest(provided, expected):
+            return True
+        self._send_json(
+            {
+                "ok": False,
+                "message": "Enter the Mac control password to continue.",
+                "password_required": True,
+            },
+            HTTPStatus.UNAUTHORIZED,
+        )
+        return False
+
     def _read_json_body(self) -> dict[str, object]:
         length = int(self.headers.get("Content-Length", "0"))
         if length <= 0:
@@ -1172,6 +1869,12 @@ class ReelsDashboardHandler(BaseHTTPRequestHandler):
             return {}
         return payload if isinstance(payload, dict) else {}
 
+    def _read_raw_body(self) -> bytes:
+        length = int(self.headers.get("Content-Length", "0"))
+        if length <= 0:
+            return b""
+        return self.rfile.read(length)
+
     def _send_json(self, payload: dict[str, object], status: int = HTTPStatus.OK) -> None:
         body = json.dumps(payload).encode("utf-8")
         self.send_response(status)
@@ -1179,7 +1882,7 @@ class ReelsDashboardHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Access-Control-Allow-Headers", self._allowed_headers())
         self.end_headers()
         self.wfile.write(body)
 
@@ -1190,7 +1893,23 @@ class ReelsDashboardHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Access-Control-Allow-Headers", self._allowed_headers())
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _send_file(self, file_path: Path) -> None:
+        if not file_path.exists() or not file_path.is_file():
+            self.send_error(HTTPStatus.NOT_FOUND)
+            return
+        body = file_path.read_bytes()
+        content_type, _ = mimetypes.guess_type(file_path.name)
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", content_type or "application/octet-stream")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", self._allowed_headers())
         self.end_headers()
         self.wfile.write(body)
 
@@ -1198,7 +1917,7 @@ class ReelsDashboardHandler(BaseHTTPRequestHandler):
         self.send_response(HTTPStatus.NO_CONTENT)
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Access-Control-Allow-Headers", self._allowed_headers())
         self.send_header("Content-Length", "0")
         self.end_headers()
 
@@ -1211,28 +1930,83 @@ class ReelsDashboardHandler(BaseHTTPRequestHandler):
             self._send_json(STATE.snapshot())
             return
         if parsed.path == "/facebook-post-bootstrap":
+            if not self._require_control_password():
+                return
             query = parse_qs(parsed.query)
             chrome_name = (query.get("chrome_name") or [""])[0]
             page_name = (query.get("page_name") or [""])[0]
-            profile_state = find_profile_state(ROOT_DIR / ".fb_reels_publish_state.json", chrome_name, page_name)
-            self._send_json(
-                {
-                    "ok": True,
-                    "profiles": [item["name"] for item in load_chrome_profiles()],
-                    "default_root": str(ROOT_DIR),
-                    "memory_summary": format_state_summary(profile_state),
-                }
-            )
+            self._send_json(build_facebook_post_bootstrap_response(chrome_name, page_name))
+            return
+        if parsed.path == "/facebook-packages":
+            if not self._require_control_password():
+                return
+            self._send_json({"ok": True, "packages": load_package_cards()}, HTTPStatus.OK)
+            return
+        if parsed.path == "/facebook-package-thumbnail":
+            package_name = (parse_qs(parsed.query).get("package_name") or [""])[0]
+            try:
+                thumbnail_path = thumbnail_path_for_package(package_name)
+            except ValueError:
+                self._send_json({"ok": False, "message": "Invalid package name."}, HTTPStatus.BAD_REQUEST)
+                return
+            if thumbnail_path is None:
+                self._send_json({"ok": False, "message": "Thumbnail not found."}, HTTPStatus.NOT_FOUND)
+                return
+            self._send_file(thumbnail_path)
             return
         self.send_error(HTTPStatus.NOT_FOUND)
 
     def do_POST(self) -> None:
-        if self.path == "/start":
+        parsed = urlparse(self.path)
+        request_path = parsed.path
+
+        if request_path == "/source-video-upload":
+            if not self._require_control_password():
+                return
+            body = self._read_raw_body()
+            if not body:
+                self._send_json({"ok": False, "message": "Upload body is empty."}, HTTPStatus.BAD_REQUEST)
+                return
+
+            query = parse_qs(parsed.query)
+            requested_name = (query.get("file_name") or [""])[0]
+            if not requested_name:
+                requested_name = str(self.headers.get("X-Soranin-File-Name") or "").strip()
+            content_type = str(self.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+            target_name = sanitize_source_video_filename(requested_name, content_type)
+            target_path = unique_source_video_target(target_name)
+            try:
+                ROOT_DIR.mkdir(parents=True, exist_ok=True)
+                target_path.write_bytes(body)
+            except Exception as exc:
+                self._send_json({"ok": False, "message": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+                return
+
+            STATE.emit_alert(
+                "New video on Mac",
+                f"{target_path.name} was added to Drop Videos.",
+            )
+
+            self._send_json(
+                {
+                    "ok": True,
+                    "message": f"Saved {target_path.name} to Drop Videos on Mac.",
+                    "file_name": target_path.name,
+                    "saved_path": str(target_path),
+                    "source_count": len(source_videos(ROOT_DIR)),
+                },
+                HTTPStatus.OK,
+            )
+            return
+
+        if request_path == "/start":
             ok, message = STATE.start()
             code = HTTPStatus.OK if ok else HTTPStatus.CONFLICT
             self._send_json({"ok": ok, "message": message}, code)
             return
-        if self.path == "/remote-run":
+        if request_path == "/remote-run":
+            if not self._require_control_password():
+                return
             payload = self._read_json_body()
             values: list[str] = []
             raw_ids = payload.get("video_ids")
@@ -1264,7 +2038,9 @@ class ReelsDashboardHandler(BaseHTTPRequestHandler):
                     status,
                 )
             return
-        if self.path == "/facebook-post-preflight":
+        if request_path == "/facebook-post-preflight":
+            if not self._require_control_password():
+                return
             payload = self._read_json_body()
             try:
                 result = run_facebook_preflight(payload)
@@ -1279,7 +2055,9 @@ class ReelsDashboardHandler(BaseHTTPRequestHandler):
                 return
             self._send_json(result, HTTPStatus.OK)
             return
-        if self.path == "/facebook-post-run":
+        if request_path == "/facebook-post-run":
+            if not self._require_control_password():
+                return
             payload = self._read_json_body()
             ok, message = STATE.start_facebook_post(payload)
             status = HTTPStatus.OK if ok else HTTPStatus.BAD_REQUEST
@@ -1291,11 +2069,41 @@ class ReelsDashboardHandler(BaseHTTPRequestHandler):
                 status,
             )
             return
-        if self.path == "/quit-chrome":
+        if request_path == "/quit-chrome":
+            if not self._require_control_password():
+                return
             quit_google_chrome()
             self._send_json({"ok": True, "message": "Google Chrome quit."}, HTTPStatus.OK)
             return
-        if self.path == "/save-keys":
+        if request_path == "/facebook-package-delete":
+            if not self._require_control_password():
+                return
+            payload = self._read_json_body()
+            package_name = str(payload.get("package_name") or "").strip()
+            try:
+                package_path = package_path_for_name(package_name)
+            except ValueError as exc:
+                self._send_json({"ok": False, "message": str(exc)}, HTTPStatus.BAD_REQUEST)
+                return
+            if not package_path.exists() or not package_path.is_dir():
+                self._send_json({"ok": False, "message": "Package not found."}, HTTPStatus.NOT_FOUND)
+                return
+            try:
+                shutil.rmtree(package_path)
+            except Exception as exc:
+                self._send_json({"ok": False, "message": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+                return
+            self._send_json(
+                {
+                    "ok": True,
+                    "message": f"Deleted {package_name}.",
+                    "package_name": package_name,
+                    "packages": load_package_cards(),
+                },
+                HTTPStatus.OK,
+            )
+            return
+        if request_path == "/save-keys":
             payload = self._read_json_body()
             openai_key = str(payload.get("openai_key", "")).strip()
             gemini_key = str(payload.get("gemini_key", "")).strip()
@@ -1313,7 +2121,7 @@ class ReelsDashboardHandler(BaseHTTPRequestHandler):
                 }
             )
             return
-        if self.path == "/facebook-resolve":
+        if request_path == "/facebook-resolve":
             payload = self._read_json_body()
             raw_value = str(payload.get("url") or payload.get("raw_input") or "").strip()
             if not raw_value:
@@ -1359,11 +2167,11 @@ class ReelsDashboardHandler(BaseHTTPRequestHandler):
                 HTTPStatus.OK,
             )
             return
-        if self.path == "/open-root":
+        if request_path == "/open-root":
             subprocess.Popen(["open", str(ROOT_DIR)])
             self._send_json({"ok": True})
             return
-        if self.path == "/open-latest":
+        if request_path == "/open-latest":
             packages = package_dirs(ROOT_DIR)
             if packages:
                 subprocess.Popen(["open", str(packages[-1])])
@@ -1379,6 +2187,15 @@ class ReelsDashboardHandler(BaseHTTPRequestHandler):
 
 def main() -> int:
     ROOT_DIR.mkdir(parents=True, exist_ok=True)
+    relay_base_url = control_relay_base_url()
+    relay_client_url = control_relay_client_base_url()
+    if relay_base_url and relay_client_url:
+        threading.Thread(
+            target=relay_worker_loop,
+            args=(relay_base_url, control_relay_poll_seconds()),
+            daemon=True,
+        ).start()
+        print(f"Control relay worker enabled: {relay_client_url}", flush=True)
     server = ThreadingHTTPServer((HOST, PORT), ReelsDashboardHandler)
     print(f"Reels dashboard running at http://{HOST}:{PORT}", flush=True)
     server.serve_forever()

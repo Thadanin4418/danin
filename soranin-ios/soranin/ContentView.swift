@@ -4,6 +4,7 @@ import PhotosUI
 import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
+import UserNotifications
 
 private enum EditorFocusTarget: String, CaseIterable, Identifiable {
     case video = "Video"
@@ -103,9 +104,19 @@ private struct TimelinePlaybackConfiguration {
     let initialAspectRatio: CGFloat
 }
 
+private struct MacControlPackagesCache: Codable {
+    let ownerKey: String
+    let packages: [MacControlPackageCard]
+}
+
 struct ContentView: View {
     @StateObject private var viewModel = SoraDownloadViewModel()
     @AppStorage("macControlServerURL") private var macControlServerURL = ""
+    @AppStorage("macControlRemoteServerURL") private var macControlRemoteServerURL = ""
+    @AppStorage("macControlPassword") private var macControlPassword = ""
+    @AppStorage("macControlNotificationsRequested") private var macControlNotificationsRequested = false
+    @AppStorage("macControlPackagesCacheJSON") private var macControlPackagesCacheJSON = ""
+    @AppStorage("macControlLinkInput") private var macControlLinkInput = ""
     @AppStorage("macPostChromeName") private var macPostChromeName = ""
     @AppStorage("macPostPageName") private var macPostPageName = ""
     @AppStorage("macPostFolders") private var macPostFolders = ""
@@ -118,11 +129,30 @@ struct ContentView: View {
     @State private var showingMergeImporter = false
     @State private var showingGIFImporter = false
     @State private var showingPromptVideoImporter = false
+    @State private var showingMacDropVideoImporter = false
     @State private var showingMacControlSheet = false
     @State private var didAutoLoadMacControlSheet = false
     @State private var macControlProfiles: [String] = []
     @State private var macControlResultMessage = ""
+    @State private var macControlDisplayName = ""
+    @State private var macControlDeviceName = ""
+    @State private var macControlUserName = ""
+    @State private var macControlPackages: [MacControlPackageCard] = []
+    @State private var macControlSelectedPackageIDs: Set<String> = []
+    @State private var macSourceVideoUploadProgress = 0.0
+    @State private var macControlIsOnline = false
+    @State private var macControlLiveProgress = 0.0
+    @State private var macControlLiveProgressLabel = ""
+    @State private var macControlLiveStatusText = ""
+    @State private var lastSeenMacControlRuntimeAlertID = 0
+    @State private var lastMacControlPackagesVerificationAt: Date = .distantPast
+    @State private var lastMacControlPackagesVerificationOwnerKey = ""
+    @State private var macControlStatusTask: Task<Void, Never>?
+    @State private var showingMacActionAlert = false
+    @State private var macActionAlertTitle = ""
+    @State private var macActionAlertMessage = ""
     @State private var isLoadingMacControl = false
+    @AppStorage("mainInputRoutesToMacOnly") private var isSendingMainInputToMac = false
     @State private var isShowingPromptFramePicker = false
     @State private var editorZoomScale = 1.0
     @State private var editorPanOffset = CGSize.zero
@@ -169,7 +199,166 @@ struct ContentView: View {
     private let topAnchorID = "soranin-top-anchor"
 
     var body: some View {
+        bodyView
+    }
+
+    private var bodyBaseView: some View {
         GeometryReader { geometry in
+            rootContent(geometry: geometry)
+        }
+    }
+
+    private var bodyPresentationView: some View {
+        bodyBaseView
+        .sheet(isPresented: $showingShareSheet) {
+            if let fileURL = viewModel.lastSavedFileURL {
+                ShareSheet(items: [fileURL])
+            }
+        }
+        .fullScreenCover(isPresented: $viewModel.isShowingAIChat) {
+            AIChatPopup(
+                model: viewModel,
+                isKhmer: viewModel.appLanguage == .khmer,
+                onClose: {
+                    viewModel.dismissAIChat()
+                }
+            )
+        }
+        .sheet(isPresented: $showingMacControlSheet) {
+            macControlSheetView
+        }
+        .onChange(of: macPostFolders) { _ in
+            syncMacControlSelectedPackagesFromFolders()
+        }
+        .sheet(isPresented: $showingVideoImporter) {
+            PhotoVideoPicker(selectionLimit: 0) { urls in
+                guard !urls.isEmpty else { return }
+                Task {
+                    await viewModel.inputVideosForEditing(from: urls)
+                }
+            }
+        }
+        .sheet(isPresented: $showingMergeImporter) {
+            PhotoVideoPicker(selectionLimit: 0) { urls in
+                guard !urls.isEmpty else { return }
+                Task {
+                    await viewModel.mergeVideosForEditing(from: urls)
+                }
+            }
+        }
+        .sheet(isPresented: $showingGIFImporter) {
+            PhotoGIFPicker { data in
+                guard let data else { return }
+                editorGIFData = data
+                editorGIFPosition = CGPoint(x: 0.8, y: 0.26)
+                editorGIFScale = 1
+                editorGIFRotation = 0
+                selectedEditorTarget = .gif
+                viewModel.statusMessage = "GIF sticker ready. Drag it on the preview before convert."
+            }
+        }
+        .sheet(isPresented: $showingPromptVideoImporter) {
+            PhotoVideoPicker(selectionLimit: 1) { urls in
+                guard !urls.isEmpty else { return }
+                Task {
+                    await viewModel.inputVideoForPrompt(from: urls)
+                }
+            }
+        }
+        .sheet(isPresented: $showingMacDropVideoImporter) {
+            PhotoVideoPicker(selectionLimit: 1) { urls in
+                guard let first = urls.first else { return }
+                uploadPickedVideoToMac(first)
+            }
+        }
+    }
+
+    private var bodyObservedStateView: some View {
+        bodyPresentationView
+        .onChange(of: viewModel.editorVideoURL) { _, _ in
+            resetEditorFraming()
+        }
+        .onChange(of: viewModel.promptInputVideoURL) { _, _ in
+            resetPromptFramePickerFraming()
+        }
+        .onChange(of: viewModel.selectedClipID) { _, newValue in
+            timelineSelectionID = newValue
+            loadSelectedClipSettings()
+        }
+        .onChange(of: viewModel.isShowingOpenAIKeyPrompt) { _, isShowing in
+            if isShowing {
+                openAIAPIKeyDraft = ""
+            } else if focusedField == .openAIKey {
+                focusedField = nil
+            }
+        }
+        .onChange(of: viewModel.isShowingGoogleAIKeyPrompt) { _, isShowing in
+            if isShowing {
+                googleAIAPIKeyDraft = ""
+            } else if focusedField == .googleAIKey {
+                focusedField = nil
+            }
+        }
+        .onChange(of: viewModel.isShowingExportPreview) { _, isShowing in
+            guard isShowing, viewModel.shouldRunAIAutoCreateTitlesWhenExportAppears() else { return }
+            viewModel.markAIAutoCreateTitlesStarted()
+            Task {
+                await viewModel.createTitlesForLatestExport()
+            }
+        }
+        .onChange(of: viewModel.isShowingGeneratedTitles) { _, isShowing in
+            guard isShowing, viewModel.shouldRunAIAutoCopyTitlesWhenPopupAppears() else { return }
+            viewModel.markAIAutoCopyTitlesStarted()
+            Task {
+                await viewModel.copyGeneratedTitlesToClipboard()
+            }
+        }
+        .onChange(of: viewModel.editorClips) { _, _ in
+            if draggedTimelineClipID == nil {
+                syncTimelinePlayheadToSelectedClip()
+            }
+        }
+        .onChange(of: timelineSelectionID) { _, newValue in
+            viewModel.selectClip(newValue)
+            syncTimelinePlayheadToSelectedClip()
+        }
+        .onChange(of: viewModel.photoPreviewURL) { _, newValue in
+            guard newValue != nil else { return }
+            syncPhotoEditorFromVideoEditor()
+        }
+        .onChange(of: editorSettings) { _, newValue in
+            viewModel.updateSelectedClipSettings(newValue)
+        }
+        .onAppear {
+            UIApplication.shared.isIdleTimerDisabled = false
+            timelineSelectionID = viewModel.selectedClipID
+            loadSelectedClipSettings()
+            syncTimelinePlayheadToSelectedClip()
+        }
+    }
+
+    private var bodyView: some View {
+        bodyObservedStateView
+        .alert(macActionAlertTitle, isPresented: $showingMacActionAlert) {
+            Button(tr("OK", "យល់ព្រម"), role: .cancel) {}
+        } message: {
+            Text(macActionAlertMessage)
+        }
+        .toolbar {
+            if !viewModel.isShowingAIChat {
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+
+                    Button("Done") {
+                        focusedField = nil
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func rootContent(geometry: GeometryProxy) -> some View {
             let isWideLayout = geometry.size.width >= 860 || geometry.size.width > geometry.size.height
             let isPhoneLayout = !isWideLayout
             let isCompactPhoneLayout = isPhoneLayout && geometry.size.width < 390
@@ -519,173 +708,6 @@ struct ContentView: View {
             }
             .ignoresSafeArea()
         }
-        .sheet(isPresented: $showingShareSheet) {
-            if let fileURL = viewModel.lastSavedFileURL {
-                ShareSheet(items: [fileURL])
-            }
-        }
-        .fullScreenCover(isPresented: $viewModel.isShowingAIChat) {
-            AIChatPopup(
-                model: viewModel,
-                isKhmer: viewModel.appLanguage == .khmer,
-                onClose: {
-                    viewModel.dismissAIChat()
-                }
-            )
-        }
-        .sheet(isPresented: $showingMacControlSheet) {
-            MacControlSheet(
-                isKhmer: viewModel.appLanguage == .khmer,
-                serverURL: $macControlServerURL,
-                chromeName: $macPostChromeName,
-                pageName: $macPostPageName,
-                folders: $macPostFolders,
-                intervalMinutes: $macPostIntervalMinutes,
-                closeAfterEach: $macPostCloseAfterEach,
-                closeAfterFinish: $macPostCloseAfterFinish,
-                postNowAdvanceSlot: $macPostAdvanceQueue,
-                isLoading: isLoadingMacControl,
-                profiles: macControlProfiles,
-                resultMessage: macControlResultMessage,
-                onClose: {
-                    showingMacControlSheet = false
-                    didAutoLoadMacControlSheet = false
-                },
-                onLoad: {
-                    refreshMacControlBootstrap()
-                },
-                onScan: {
-                    scanMacControlServer()
-                },
-                onSendCurrentInput: {
-                    sendCurrentInputToMac()
-                },
-                onPreflight: {
-                    preflightMacFacebookPost()
-                },
-                onRun: {
-                    runMacFacebookPost()
-                },
-                onQuitChrome: {
-                    quitMacChrome()
-                }
-            )
-            .presentationDetents([.large])
-            .presentationDragIndicator(.visible)
-            .onAppear {
-                guard !didAutoLoadMacControlSheet else { return }
-                didAutoLoadMacControlSheet = true
-                refreshMacControlBootstrap()
-            }
-        }
-        .sheet(isPresented: $showingVideoImporter) {
-            PhotoVideoPicker(selectionLimit: 0) { urls in
-                guard !urls.isEmpty else { return }
-                Task {
-                    await viewModel.inputVideosForEditing(from: urls)
-                }
-            }
-        }
-        .sheet(isPresented: $showingMergeImporter) {
-            PhotoVideoPicker(selectionLimit: 0) { urls in
-                guard !urls.isEmpty else { return }
-                Task {
-                    await viewModel.mergeVideosForEditing(from: urls)
-                }
-            }
-        }
-        .sheet(isPresented: $showingGIFImporter) {
-            PhotoGIFPicker { data in
-                guard let data else { return }
-                editorGIFData = data
-                editorGIFPosition = CGPoint(x: 0.8, y: 0.26)
-                editorGIFScale = 1
-                editorGIFRotation = 0
-                selectedEditorTarget = .gif
-                viewModel.statusMessage = "GIF sticker ready. Drag it on the preview before convert."
-            }
-        }
-        .sheet(isPresented: $showingPromptVideoImporter) {
-            PhotoVideoPicker(selectionLimit: 1) { urls in
-                guard !urls.isEmpty else { return }
-                Task {
-                    await viewModel.inputVideoForPrompt(from: urls)
-                }
-            }
-        }
-        .onChange(of: viewModel.editorVideoURL) { _, _ in
-            resetEditorFraming()
-        }
-        .onChange(of: viewModel.promptInputVideoURL) { _, _ in
-            resetPromptFramePickerFraming()
-        }
-        .onChange(of: viewModel.selectedClipID) { _, newValue in
-            timelineSelectionID = newValue
-            loadSelectedClipSettings()
-        }
-        .onChange(of: viewModel.isShowingOpenAIKeyPrompt) { _, isShowing in
-            if isShowing {
-                openAIAPIKeyDraft = ""
-            } else if focusedField == .openAIKey {
-                focusedField = nil
-            }
-        }
-        .onChange(of: viewModel.isShowingGoogleAIKeyPrompt) { _, isShowing in
-            if isShowing {
-                googleAIAPIKeyDraft = ""
-            } else if focusedField == .googleAIKey {
-                focusedField = nil
-            }
-        }
-        .onChange(of: viewModel.isShowingExportPreview) { _, isShowing in
-            guard isShowing, viewModel.shouldRunAIAutoCreateTitlesWhenExportAppears() else { return }
-            viewModel.markAIAutoCreateTitlesStarted()
-            Task {
-                await viewModel.createTitlesForLatestExport()
-            }
-        }
-        .onChange(of: viewModel.isShowingGeneratedTitles) { _, isShowing in
-            guard isShowing, viewModel.shouldRunAIAutoCopyTitlesWhenPopupAppears() else { return }
-            viewModel.markAIAutoCopyTitlesStarted()
-            Task {
-                await viewModel.copyGeneratedTitlesToClipboard()
-            }
-        }
-        .onChange(of: viewModel.editorClips) { _, _ in
-            if draggedTimelineClipID == nil {
-                syncTimelinePlayheadToSelectedClip()
-            }
-        }
-        .onChange(of: timelineSelectionID) { _, newValue in
-            viewModel.selectClip(newValue)
-            syncTimelinePlayheadToSelectedClip()
-        }
-        .onChange(of: viewModel.photoPreviewURL) { _, newValue in
-            guard newValue != nil else { return }
-            syncPhotoEditorFromVideoEditor()
-        }
-        .onChange(of: editorSettings) { _, newValue in
-            viewModel.updateSelectedClipSettings(newValue)
-        }
-        .onAppear {
-            UIApplication.shared.isIdleTimerDisabled = false
-            timelineSelectionID = viewModel.selectedClipID
-            loadSelectedClipSettings()
-            syncTimelinePlayheadToSelectedClip()
-        }
-        .toolbar {
-            if !viewModel.isShowingAIChat {
-                ToolbarItemGroup(placement: .keyboard) {
-                    Spacer()
-
-                    Button("Done") {
-                        focusedField = nil
-                    }
-                }
-            }
-        }
-    }
-
     private var editorSettings: ReelsEditorSettings {
         ReelsEditorSettings(
             zoomScale: editorZoomScale,
@@ -808,6 +830,89 @@ struct ContentView: View {
         timelinePlayheadTime = 0
     }
 
+    private var macControlSheetView: some View {
+        MacControlSheet(
+            isKhmer: viewModel.appLanguage == .khmer,
+            serverURL: $macControlServerURL,
+            password: $macControlPassword,
+            chromeName: $macPostChromeName,
+            pageName: $macPostPageName,
+            folders: $macPostFolders,
+            manualLinkInput: $macControlLinkInput,
+            intervalMinutes: $macPostIntervalMinutes,
+            closeAfterEach: $macPostCloseAfterEach,
+            closeAfterFinish: $macPostCloseAfterFinish,
+            postNowAdvanceSlot: $macPostAdvanceQueue,
+            isLoading: isLoadingMacControl,
+            profiles: macControlProfiles,
+            macDisplayName: macControlDisplayName,
+            macDeviceName: macControlDeviceName,
+            macUserName: macControlUserName,
+            isOnline: macControlIsOnline,
+            liveStatusText: macControlLiveStatusText,
+            liveProgress: macControlLiveProgress,
+            liveProgressLabel: macControlLiveProgressLabel,
+            packages: macControlPackages,
+            selectedPackageIDs: macControlSelectedPackageIDs,
+            uploadVideoProgress: macSourceVideoUploadProgress,
+            thumbnailURLForPackage: { item in
+                thumbnailURLForMacControlPackage(item)
+            },
+            resultMessage: macControlResultMessage,
+            onClose: {
+                showingMacControlSheet = false
+                didAutoLoadMacControlSheet = false
+            },
+            onLoad: {
+                refreshMacControlBootstrap()
+            },
+            onScan: {
+                scanMacControlServer()
+            },
+            onSendCurrentInput: {
+                sendCurrentInputToMac()
+            },
+            onSendManualLink: {
+                sendManualLinkToMac()
+            },
+            onUploadVideoToMac: {
+                openMacDropVideoPicker()
+            },
+            onTogglePackage: { item in
+                toggleMacControlPackageSelection(item)
+            },
+            onAddSelectedPackages: {
+                addSelectedMacControlPackagesToFolders()
+            },
+            onRefreshPackages: {
+                refreshMacControlPackageCards()
+            },
+            onDeletePackage: { item in
+                deleteMacControlPackage(item)
+            },
+            onPreflight: {
+                preflightMacFacebookPost()
+            },
+            onRun: {
+                runMacFacebookPost()
+            },
+            onQuitChrome: {
+                quitMacChrome()
+            }
+        )
+        .presentationDetents([.large])
+        .presentationDragIndicator(.visible)
+        .onAppear {
+            guard !didAutoLoadMacControlSheet else { return }
+            didAutoLoadMacControlSheet = true
+            refreshMacControlBootstrap()
+            startMacControlStatusPolling()
+        }
+        .onDisappear {
+            stopMacControlStatusPolling()
+        }
+    }
+
     private func presentOverlayInputPopup(_ mode: OverlayInputMode) {
         activeOverlayInputMode = mode
         switch mode {
@@ -882,14 +987,368 @@ struct ContentView: View {
     private func openMacControlSheet() {
         showingMacControlSheet = true
         didAutoLoadMacControlSheet = false
+        normalizeMacControlServerURLsForCurrentDevice()
+        restoreMacControlPackagesCacheIfNeeded()
+        requestMacControlNotificationsIfNeeded()
         if macPostIntervalMinutes <= 0 {
             macPostIntervalMinutes = 30
         }
         if macControlResultMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             macControlResultMessage = tr(
-                "Tap Scan Mac on the same Wi-Fi, or paste your Tailscale URL for remote control.",
-                "សូមចុច Scan Mac ពេលនៅ Wi‑Fi ដូចគ្នា ឬបិទភ្ជាប់ Tailscale URL សម្រាប់គ្រប់គ្រងពីចម្ងាយ។"
+                "Use Scan Mac (Wi-Fi Fast) when you are nearby, or use Remote Mac for Relay / Tailscale access. If one path is unavailable, Soranin will switch to the other automatically.",
+                "ប្រើ Scan Mac (Wi‑Fi Fast) ពេលនៅជិតគ្នា ឬប្រើ Remote Mac សម្រាប់ Relay / Tailscale។ បើមួយណាមិនមាន វានឹងប្តូរទៅមួយទៀតអោយស្វ័យប្រវត្តិ។"
             )
+        }
+    }
+
+    private func startMacControlStatusPolling() {
+        stopMacControlStatusPolling()
+        macControlStatusTask = Task {
+            while !Task.isCancelled {
+                let result = await viewModel.loadMacControlRuntimeStatus(
+                    preferredServerURL: effectiveMacControlCardsServerURL(),
+                    password: macControlPassword
+                )
+                if result.ok {
+                    macControlIsOnline = true
+                    macControlLiveProgress = max(0, min(1, Double(result.progressPercent) / 100.0))
+                    macControlLiveProgressLabel = result.progressLabel
+                    macControlLiveStatusText = [
+                        result.statusText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : result.statusText,
+                        result.detail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : result.detail,
+                    ]
+                    .compactMap { $0 }
+                    .joined(separator: "\n")
+                    let liveMessage = result.message.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !liveMessage.isEmpty {
+                        macControlResultMessage = liveMessage
+                    }
+                    if result.latestAlertID > 0,
+                       result.latestAlertID > lastSeenMacControlRuntimeAlertID {
+                        lastSeenMacControlRuntimeAlertID = result.latestAlertID
+                        let alertTitle = result.latestAlertTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                            ? tr("Mac Update", "ព័ត៌មានពី Mac")
+                            : result.latestAlertTitle
+                        let alertMessage = result.latestAlertMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                            ? liveMessage
+                            : result.latestAlertMessage
+                        if !alertMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            presentMacActionAlert(title: alertTitle, message: alertMessage)
+                        }
+                    }
+                    await silentlyVerifyMacControlPackageCardsIfNeeded()
+                } else {
+                    macControlIsOnline = false
+                    macControlLiveProgress = 0
+                    macControlLiveProgressLabel = ""
+                    macControlLiveStatusText = ""
+                }
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+            }
+        }
+    }
+
+    private func stopMacControlStatusPolling() {
+        macControlStatusTask?.cancel()
+        macControlStatusTask = nil
+    }
+
+    private func requestMacControlNotificationsIfNeeded() {
+        guard !macControlNotificationsRequested else { return }
+        macControlNotificationsRequested = true
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in }
+    }
+
+    private func scheduleMacControlLocalNotification(title: String, message: String) {
+        let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedMessage = message.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedTitle.isEmpty || !trimmedMessage.isEmpty else { return }
+
+        let content = UNMutableNotificationContent()
+        content.title = trimmedTitle.isEmpty ? "soranin" : trimmedTitle
+        content.body = trimmedMessage.isEmpty ? tr("Done on Mac.", "ការងារលើ Mac បានចប់ហើយ។") : trimmedMessage
+        content.sound = .default
+
+        let request = UNNotificationRequest(
+            identifier: "soranin.maccontrol.\(UUID().uuidString)",
+            content: content,
+            trigger: nil
+        )
+        UNUserNotificationCenter.current().add(request)
+    }
+
+    private func bootstrapMessage(
+        from result: (
+            ok: Bool,
+            message: String,
+            profiles: [String],
+            summary: String,
+            macDisplayName: String,
+            macDeviceName: String,
+            macUserName: String,
+            relayClientURL: String,
+            relayEnabled: Bool
+        )
+    ) -> String {
+        let summary = result.summary.trimmingCharacters(in: .whitespacesAndNewlines)
+        return summary.isEmpty ? result.message : "\(result.message)\n\n\(summary)"
+    }
+
+    private func effectiveMacControlCardsServerURL() -> String {
+        let primary = macControlServerURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !primary.isEmpty, !isLoopbackMacControlURL(primary) {
+            return primary
+        }
+        let remote = macControlRemoteServerURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !remote.isEmpty {
+            return remote
+        }
+        return primary
+    }
+
+    private func currentMacControlPackagesOwnerKey() -> String {
+        let remote = macControlRemoteServerURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !remote.isEmpty {
+            return remote.lowercased()
+        }
+        let server = macControlServerURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !server.isEmpty {
+            return server.lowercased()
+        }
+        let display = macControlDisplayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        return display.lowercased()
+    }
+
+    private func persistMacControlPackagesCache(_ packages: [MacControlPackageCard]) {
+        let ownerKey = currentMacControlPackagesOwnerKey()
+        guard !ownerKey.isEmpty else { return }
+        let payload = MacControlPackagesCache(ownerKey: ownerKey, packages: packages)
+        guard let data = try? JSONEncoder().encode(payload),
+              let json = String(data: data, encoding: .utf8) else {
+            return
+        }
+        macControlPackagesCacheJSON = json
+    }
+
+    private func clearMacControlPackagesCache() {
+        macControlPackagesCacheJSON = ""
+        macControlPackages = []
+        macControlSelectedPackageIDs.removeAll()
+        lastMacControlPackagesVerificationOwnerKey = ""
+    }
+
+    private func restoreMacControlPackagesCacheIfNeeded() {
+        guard macControlPackages.isEmpty,
+              let data = macControlPackagesCacheJSON.data(using: .utf8),
+              let payload = try? JSONDecoder().decode(MacControlPackagesCache.self, from: data)
+        else {
+            return
+        }
+        let currentOwner = currentMacControlPackagesOwnerKey()
+        if !currentOwner.isEmpty, payload.ownerKey.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() != currentOwner {
+            clearMacControlPackagesCache()
+            return
+        }
+        macControlPackages = payload.packages
+        syncMacControlSelectedPackagesFromFolders()
+    }
+
+    private func isLikelyRemoteMacControlURL(_ value: String) -> Bool {
+        let text = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !text.isEmpty else { return false }
+        return text.contains("/client/")
+            || text.contains("https://")
+            || !(text.contains("192.168.") || text.contains("10.") || text.contains("172.") || text.contains("127.0.0.1") || text.contains("localhost"))
+    }
+
+    private func isLoopbackMacControlURL(_ value: String) -> Bool {
+        let text = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !text.isEmpty else { return false }
+        return text.contains("127.0.0.1") || text.contains("localhost")
+    }
+
+    private func normalizeMacControlServerURLsForCurrentDevice() {
+        let primary = macControlServerURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        let remote = macControlRemoteServerURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        if isLoopbackMacControlURL(primary) {
+            if !remote.isEmpty {
+                macControlServerURL = remote
+            } else {
+                macControlServerURL = ""
+            }
+        }
+    }
+
+    private func shouldAutoVerifyMacControlPackages() -> Bool {
+        let ownerKey = currentMacControlPackagesOwnerKey()
+        guard !ownerKey.isEmpty else { return false }
+        if ownerKey != lastMacControlPackagesVerificationOwnerKey {
+            return true
+        }
+        return Date().timeIntervalSince(lastMacControlPackagesVerificationAt) >= 15
+    }
+
+    private func silentlyVerifyMacControlPackageCardsIfNeeded() async {
+        guard showingMacControlSheet, !isLoadingMacControl, shouldAutoVerifyMacControlPackages() else {
+            return
+        }
+        let ownerKey = currentMacControlPackagesOwnerKey()
+        let result = await viewModel.loadMacFacebookPackages(
+            preferredServerURL: effectiveMacControlCardsServerURL(),
+            password: macControlPassword
+        )
+        guard result.ok else {
+            if isLikelyRemoteMacControlURL(effectiveMacControlCardsServerURL()) {
+                clearMacControlPackagesCache()
+            }
+            return
+        }
+        macControlPackages = result.packages
+        syncMacControlSelectedPackagesFromFolders()
+        persistMacControlPackagesCache(result.packages)
+        lastMacControlPackagesVerificationOwnerKey = ownerKey
+        lastMacControlPackagesVerificationAt = Date()
+    }
+
+    private func applyMacControlBootstrap(
+        _ result: (
+            ok: Bool,
+            message: String,
+            profiles: [String],
+            summary: String,
+            macDisplayName: String,
+            macDeviceName: String,
+            macUserName: String,
+            relayClientURL: String,
+            relayEnabled: Bool
+        ),
+        serverURL: String? = nil
+    ) {
+        if let serverURL, !serverURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            macControlServerURL = serverURL
+        }
+        macControlProfiles = result.profiles
+        macControlDisplayName = result.macDisplayName
+        macControlDeviceName = result.macDeviceName
+        macControlUserName = result.macUserName
+        if !result.relayClientURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            macControlRemoteServerURL = result.relayClientURL
+            if macControlServerURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                || isLoopbackMacControlURL(macControlServerURL) {
+                macControlServerURL = result.relayClientURL
+            }
+        }
+        normalizeMacControlServerURLsForCurrentDevice()
+        if macPostChromeName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           let first = result.profiles.first {
+            macPostChromeName = first
+        }
+    }
+
+    private func syncMacControlSelectedPackagesFromFolders() {
+        let tokens = macPostFolders
+            .components(separatedBy: CharacterSet(charactersIn: ", \n\t"))
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        let available = Set(macControlPackages.map(\.id))
+        macControlSelectedPackageIDs = Set(tokens).intersection(available)
+    }
+
+    private func syncMacControlFoldersFromSelectedPackages() {
+        let selectedNames = macControlPackages
+            .filter { macControlSelectedPackageIDs.contains($0.id) }
+            .map(\.packageName)
+        macPostFolders = selectedNames.joined(separator: "\n")
+    }
+
+    private func toggleMacControlPackageSelection(_ item: MacControlPackageCard) {
+        if macControlSelectedPackageIDs.contains(item.id) {
+            macControlSelectedPackageIDs.remove(item.id)
+        } else {
+            macControlSelectedPackageIDs.insert(item.id)
+        }
+        syncMacControlFoldersFromSelectedPackages()
+    }
+
+    private func addSelectedMacControlPackagesToFolders() {
+        let selectedNames = macControlPackages
+            .filter { macControlSelectedPackageIDs.contains($0.id) }
+            .map(\.packageName)
+        macPostFolders = selectedNames.joined(separator: "\n")
+        syncMacControlSelectedPackagesFromFolders()
+    }
+
+    private func thumbnailURLForMacControlPackage(_ item: MacControlPackageCard) -> URL? {
+        guard item.hasThumbnail else { return nil }
+        let base = effectiveMacControlCardsServerURL().trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !base.isEmpty,
+              var components = URLComponents(string: base + "/facebook-package-thumbnail") else {
+            return nil
+        }
+        components.queryItems = [URLQueryItem(name: "package_name", value: item.packageName)]
+        return components.url
+    }
+
+    @discardableResult
+    private func loadMacControlPackageCards() async -> String? {
+        let ownerKey = currentMacControlPackagesOwnerKey()
+        let result = await viewModel.loadMacFacebookPackages(
+            preferredServerURL: effectiveMacControlCardsServerURL(),
+            password: macControlPassword
+        )
+        if result.ok {
+            macControlPackages = result.packages
+            syncMacControlSelectedPackagesFromFolders()
+            persistMacControlPackagesCache(result.packages)
+            if !ownerKey.isEmpty {
+                lastMacControlPackagesVerificationOwnerKey = ownerKey
+                lastMacControlPackagesVerificationAt = Date()
+            }
+            let packageNote = result.packages.isEmpty
+                ? tr("No package cards found on Mac.", "មិនទាន់មាន package cards លើ Mac ទេ។")
+                : tr("Loaded \(result.packages.count) package cards from Mac.", "បានទាញ \(result.packages.count) package cards ពី Mac។")
+            if macControlResultMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                macControlResultMessage = packageNote
+            } else if !macControlResultMessage.contains(packageNote) {
+                macControlResultMessage += "\n\n\(packageNote)"
+            }
+            return packageNote
+        } else if isLikelyRemoteMacControlURL(effectiveMacControlCardsServerURL()) {
+            clearMacControlPackagesCache()
+        }
+        return nil
+    }
+
+    private func refreshMacControlPackageCards() {
+        guard !isLoadingMacControl else { return }
+        isLoadingMacControl = true
+        Task {
+            await loadMacControlPackageCards()
+            isLoadingMacControl = false
+        }
+    }
+
+    private func deleteMacControlPackage(_ item: MacControlPackageCard) {
+        guard !isLoadingMacControl else { return }
+        isLoadingMacControl = true
+        macControlResultMessage = tr(
+            "Deleting \(item.packageName) on Mac...",
+            "កំពុងលុប \(item.packageName) លើ Mac..."
+        )
+        Task {
+            let result = await viewModel.deleteMacFacebookPackage(
+                packageName: item.packageName,
+                preferredServerURL: effectiveMacControlCardsServerURL(),
+                password: macControlPassword
+            )
+            if result.ok {
+                macControlPackages = result.packages
+                macControlSelectedPackageIDs.remove(item.id)
+                syncMacControlSelectedPackagesFromFolders()
+                persistMacControlPackagesCache(result.packages)
+            }
+            macControlResultMessage = result.message
+            isLoadingMacControl = false
         }
     }
 
@@ -901,10 +1360,12 @@ struct ContentView: View {
             "កំពុងទាញ Mac control..."
         )
         Task {
+            let originalServerURL = macControlServerURL
             var result = await viewModel.loadMacControlBootstrap(
-                preferredServerURL: macControlServerURL,
+                preferredServerURL: originalServerURL,
                 chromeName: macPostChromeName,
-                pageName: macPostPageName
+                pageName: macPostPageName,
+                password: macControlPassword
             )
 
             if !result.ok, allowDiscovery {
@@ -912,47 +1373,63 @@ struct ContentView: View {
                     "Scanning Wi-Fi for your Mac...",
                     "កំពុងស្កេន Wi-Fi ដើម្បីរក Mac របស់អ្នក..."
                 )
-                let discovery = await viewModel.discoverMacControlServer(preferredServerURL: macControlServerURL)
+                let discovery = await viewModel.discoverMacControlServer(
+                    preferredServerURL: originalServerURL,
+                    includeDirectCandidates: false
+                )
                 if discovery.ok, let discoveredServerURL = discovery.serverURL {
-                    macControlServerURL = discoveredServerURL
                     result = await viewModel.loadMacControlBootstrap(
                         preferredServerURL: discoveredServerURL,
                         chromeName: macPostChromeName,
-                        pageName: macPostPageName
+                        pageName: macPostPageName,
+                        password: macControlPassword
                     )
                     if !result.ok {
-                        let summary = result.summary.trimmingCharacters(in: .whitespacesAndNewlines)
-                        let message = summary.isEmpty ? result.message : "\(result.message)\n\n\(summary)"
-                        macControlResultMessage = "\(discovery.message)\n\n\(message)"
+                        let remoteMessage = bootstrapMessage(from: result)
+                        macControlResultMessage = "\(discovery.message)\n\n\(remoteMessage)"
                         isLoadingMacControl = false
                         return
                     }
-                    macControlProfiles = result.profiles
-                    if macPostChromeName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                       let first = result.profiles.first {
-                        macPostChromeName = first
+                    applyMacControlBootstrap(result, serverURL: discoveredServerURL)
+                    let packageNote = await loadMacControlPackageCards()
+                    macControlResultMessage = [
+                        discovery.message,
+                        bootstrapMessage(from: result),
+                        packageNote
+                    ]
+                    .compactMap { value in
+                        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                        return trimmed.isEmpty ? nil : trimmed
                     }
-                    let summary = result.summary.trimmingCharacters(in: .whitespacesAndNewlines)
-                    let message = summary.isEmpty ? result.message : "\(result.message)\n\n\(summary)"
-                    macControlResultMessage = "\(discovery.message)\n\n\(message)"
+                    .joined(separator: "\n\n")
                     isLoadingMacControl = false
                     return
                 }
                 macControlResultMessage = "\(result.message)\n\n\(discovery.message)"
+                if isLikelyRemoteMacControlURL(originalServerURL) || isLikelyRemoteMacControlURL(macControlRemoteServerURL) {
+                    clearMacControlPackagesCache()
+                }
                 isLoadingMacControl = false
                 return
             }
 
             if result.ok {
-                macControlProfiles = result.profiles
-                if macPostChromeName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                   let first = result.profiles.first {
-                    macPostChromeName = first
+                applyMacControlBootstrap(result)
+                let packageNote = await loadMacControlPackageCards()
+                macControlResultMessage = [
+                    bootstrapMessage(from: result),
+                    packageNote
+                ]
+                .compactMap { value in
+                    let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                    return trimmed.isEmpty ? nil : trimmed
                 }
-                let summary = result.summary.trimmingCharacters(in: .whitespacesAndNewlines)
-                macControlResultMessage = summary.isEmpty ? result.message : "\(result.message)\n\n\(summary)"
+                .joined(separator: "\n\n")
             } else {
                 macControlResultMessage = result.message
+                if isLikelyRemoteMacControlURL(originalServerURL) || isLikelyRemoteMacControlURL(macControlRemoteServerURL) {
+                    clearMacControlPackagesCache()
+                }
             }
             isLoadingMacControl = false
         }
@@ -966,11 +1443,66 @@ struct ContentView: View {
             "កំពុងស្កេន Wi-Fi ដើម្បីរក Mac របស់អ្នក..."
         )
         Task {
-            let discovery = await viewModel.discoverMacControlServer(preferredServerURL: macControlServerURL)
+            let originalServerURL = macControlServerURL
+            let discovery = await viewModel.discoverMacControlServer(
+                preferredServerURL: originalServerURL,
+                includeDirectCandidates: false
+            )
+
             if discovery.ok, let discoveredServerURL = discovery.serverURL {
-                macControlServerURL = discoveredServerURL
+                let localResult = await viewModel.loadMacControlBootstrap(
+                    preferredServerURL: discoveredServerURL,
+                    chromeName: macPostChromeName,
+                    pageName: macPostPageName,
+                    password: macControlPassword
+                )
+                if localResult.ok {
+                    applyMacControlBootstrap(localResult, serverURL: discoveredServerURL)
+                    let packageNote = await loadMacControlPackageCards()
+                    macControlResultMessage = [
+                        discovery.message,
+                        bootstrapMessage(from: localResult),
+                        packageNote
+                    ]
+                    .compactMap { value in
+                        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                        return trimmed.isEmpty ? nil : trimmed
+                    }
+                    .joined(separator: "\n\n")
+                    isLoadingMacControl = false
+                    return
+                }
             }
-            macControlResultMessage = discovery.message
+
+            macControlResultMessage = tr(
+                "Wi-Fi Fast is not available. Switching to Remote Mac...",
+                "Wi‑Fi Fast មិនមានទេ។ កំពុងប្តូរទៅ Remote Mac..."
+            )
+            let remoteResult = await viewModel.loadMacControlBootstrap(
+                preferredServerURL: originalServerURL,
+                chromeName: macPostChromeName,
+                pageName: macPostPageName,
+                password: macControlPassword
+            )
+            if remoteResult.ok {
+                applyMacControlBootstrap(remoteResult)
+                let packageNote = await loadMacControlPackageCards()
+                macControlResultMessage = [
+                    discovery.message,
+                    bootstrapMessage(from: remoteResult),
+                    packageNote
+                ]
+                .compactMap { value in
+                    let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                    return trimmed.isEmpty ? nil : trimmed
+                }
+                .joined(separator: "\n\n")
+            } else {
+                macControlResultMessage = "\(discovery.message)\n\n\(remoteResult.message)"
+                if isLikelyRemoteMacControlURL(originalServerURL) || isLikelyRemoteMacControlURL(macControlRemoteServerURL) {
+                    clearMacControlPackagesCache()
+                }
+            }
             isLoadingMacControl = false
         }
     }
@@ -986,6 +1518,149 @@ struct ContentView: View {
             viewModel.copyMacControlCommandFromInput(preferredServerURL: macControlServerURL)
             try? await Task.sleep(nanoseconds: 800_000_000)
             macControlResultMessage = viewModel.statusMessage
+            isLoadingMacControl = false
+        }
+    }
+
+    private func presentMacActionAlert(title: String, message: String) {
+        requestMacControlNotificationsIfNeeded()
+        macActionAlertTitle = title
+        macActionAlertMessage = message
+        showingMacActionAlert = true
+        scheduleMacControlLocalNotification(title: title, message: message)
+    }
+
+    private func sendMainRawInputToMac() {
+        guard !isLoadingMacControl else { return }
+        let trimmed = viewModel.rawInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            let message = tr(
+                "Paste at least one Sora link first.",
+                "សូម paste Sora link យ៉ាងហោចណាស់ 1 ជាមុនសិន។"
+            )
+            macControlResultMessage = message
+            viewModel.statusMessage = message
+            return
+        }
+
+        isLoadingMacControl = true
+        let loadingMessage = tr(
+            "Sending pasted Sora link to Mac only...",
+            "កំពុងផ្ញើ Sora link ដែលបាន paste ទៅ Mac ប៉ុណ្ណោះ..."
+        )
+        macControlResultMessage = loadingMessage
+        viewModel.statusMessage = loadingMessage
+
+        Task {
+            let result = await viewModel.sendRawInputToMacController(
+                trimmed,
+                preferredServerURL: macControlServerURL,
+                password: macControlPassword
+            )
+            let finalMessage = result.message ?? tr(
+                "Sent to Mac.",
+                "បានផ្ញើទៅ Mac ហើយ។"
+            )
+            macControlResultMessage = finalMessage
+            viewModel.statusMessage = finalMessage
+            if result.ok {
+                presentMacActionAlert(
+                    title: tr("Link Sent to Mac", "បានផ្ញើ Link ទៅ Mac"),
+                    message: finalMessage
+                )
+            }
+            isLoadingMacControl = false
+        }
+    }
+
+    private func sendManualLinkToMac() {
+        guard !isLoadingMacControl else { return }
+        let trimmed = macControlLinkInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            macControlResultMessage = tr(
+                "Paste at least one link first.",
+                "សូម paste link យ៉ាងហោចណាស់ 1 ជាមុនសិន។"
+            )
+            return
+        }
+
+        isLoadingMacControl = true
+        let loadingMessage = tr(
+            "Sending pasted links to Mac download...",
+            "កំពុងផ្ញើ links ដែលបាន paste ទៅ Mac download..."
+        )
+        macControlResultMessage = loadingMessage
+        viewModel.statusMessage = loadingMessage
+
+        Task {
+            let result = await viewModel.sendRawInputToMacController(
+                trimmed,
+                preferredServerURL: macControlServerURL,
+                password: macControlPassword
+            )
+            if result.ok {
+                macControlLinkInput = ""
+            }
+            let finalMessage = result.message ?? tr(
+                "Sent pasted links to Mac.",
+                "បានផ្ញើ links ដែលបាន paste ទៅ Mac ហើយ។"
+            )
+            macControlResultMessage = finalMessage
+            viewModel.statusMessage = finalMessage
+            if result.ok {
+                presentMacActionAlert(
+                    title: tr("Link Sent to Mac", "បានផ្ញើ Link ទៅ Mac"),
+                    message: finalMessage
+                )
+            }
+            isLoadingMacControl = false
+        }
+    }
+
+    private func openMacDropVideoPicker() {
+        guard !isLoadingMacControl else { return }
+        showingMacDropVideoImporter = true
+    }
+
+    private func uploadPickedVideoToMac(_ fileURL: URL) {
+        guard !isLoadingMacControl else { return }
+        let clipLabel = fileURL.deletingPathExtension().lastPathComponent.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        macSourceVideoUploadProgress = 0
+        isLoadingMacControl = true
+        let loadingMessage = tr(
+            "Uploading video to Drop Videos on Mac... 0%",
+            "កំពុង upload video ទៅ Drop Videos លើ Mac... 0%"
+        )
+        macControlResultMessage = loadingMessage
+        viewModel.statusMessage = loadingMessage
+
+        Task {
+            let result = await viewModel.uploadVideoToMacSourceVideos(
+                fileURL: fileURL,
+                displayName: clipLabel,
+                preferredServerURL: macControlServerURL,
+                password: macControlPassword,
+                onProgress: { progress in
+                    macSourceVideoUploadProgress = progress
+                    let percent = Int((progress * 100).rounded())
+                    let progressMessage = tr(
+                        "Uploading video to Drop Videos on Mac... \(percent)%",
+                        "កំពុង upload video ទៅ Drop Videos លើ Mac... \(percent)%"
+                    )
+                    macControlResultMessage = progressMessage
+                    viewModel.statusMessage = progressMessage
+                }
+            )
+            macSourceVideoUploadProgress = result.ok ? 1 : 0
+            macControlResultMessage = result.message
+            viewModel.statusMessage = result.message
+            if result.ok {
+                presentMacActionAlert(
+                    title: tr("Upload Done", "Upload រួចហើយ"),
+                    message: result.message
+                )
+            }
             isLoadingMacControl = false
         }
     }
@@ -1006,7 +1681,8 @@ struct ContentView: View {
                 intervalMinutes: macPostIntervalMinutes,
                 closeAfterEach: macPostCloseAfterEach,
                 closeAfterFinish: macPostCloseAfterFinish,
-                postNowAdvanceSlot: macPostAdvanceQueue
+                postNowAdvanceSlot: macPostAdvanceQueue,
+                password: macControlPassword
             )
             macControlResultMessage = result.summary.isEmpty ? result.message : "\(result.message)\n\n\(result.summary)"
             isLoadingMacControl = false
@@ -1029,7 +1705,8 @@ struct ContentView: View {
                 intervalMinutes: macPostIntervalMinutes,
                 closeAfterEach: macPostCloseAfterEach,
                 closeAfterFinish: macPostCloseAfterFinish,
-                postNowAdvanceSlot: macPostAdvanceQueue
+                postNowAdvanceSlot: macPostAdvanceQueue,
+                password: macControlPassword
             )
             macControlResultMessage = result.message
             isLoadingMacControl = false
@@ -1044,7 +1721,7 @@ struct ContentView: View {
             "កំពុងស្នើឲ្យ Mac បិទ Chrome..."
         )
         Task {
-            let result = await viewModel.quitMacChrome(preferredServerURL: macControlServerURL)
+            let result = await viewModel.quitMacChrome(preferredServerURL: macControlServerURL, password: macControlPassword)
             macControlResultMessage = result.message
             isLoadingMacControl = false
         }
@@ -1166,6 +1843,7 @@ struct ContentView: View {
             }
 
             downloadSaveModeToggle
+            mainLinkRouteToggle
             inputBar
             if !viewModel.downloadStatusBadges.isEmpty {
                 downloadStatusBadgesRow
@@ -1222,6 +1900,68 @@ struct ContentView: View {
         )
     }
 
+    private var mainLinkRouteToggle: some View {
+        Button {
+            focusedField = nil
+            isSendingMainInputToMac.toggle()
+        } label: {
+            HStack(spacing: 12) {
+                Image(systemName: isSendingMainInputToMac ? "laptopcomputer.and.arrow.down" : "iphone")
+                    .font(.system(size: 15, weight: .bold))
+                    .foregroundStyle(.white)
+                    .frame(width: 18)
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(tr("Paste Link Destination", "គោលដៅ Link ដែលបាន Paste"))
+                        .font(.system(size: 12, weight: .bold, design: .rounded))
+                        .foregroundStyle(Color.white.opacity(0.68))
+
+                    Text(
+                        isSendingMainInputToMac
+                            ? tr("Send to Mac Only", "ផ្ញើទៅ Mac ប៉ុណ្ណោះ")
+                            : tr("Use on Phone iOS", "ប្រើលើទូរស័ព្ទ iOS")
+                    )
+                    .font(.system(size: 16, weight: .bold, design: .rounded))
+                    .foregroundStyle(.white)
+                }
+
+                Spacer(minLength: 10)
+
+                Text(isSendingMainInputToMac ? tr("MAC", "MAC") : tr("PHONE", "PHONE"))
+                    .font(.system(size: 11, weight: .bold, design: .rounded))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 7)
+                    .background(
+                        Capsule()
+                            .fill(Color.white.opacity(0.14))
+                    )
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
+            .background(
+                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                    .fill(
+                        isSendingMainInputToMac
+                            ? Color(red: 0.39, green: 0.22, blue: 0.22).opacity(0.92)
+                            : Color(red: 0.15, green: 0.25, blue: 0.38).opacity(0.92)
+                    )
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                    .stroke(
+                        isSendingMainInputToMac
+                            ? Color(red: 1.00, green: 0.55, blue: 0.45).opacity(0.36)
+                            : Color(red: 0.44, green: 0.80, blue: 1.00).opacity(0.32),
+                        lineWidth: 1
+                    )
+            )
+        }
+        .buttonStyle(.plain)
+        .disabled(viewModel.isBusy || isLoadingMacControl)
+        .opacity((viewModel.isBusy || isLoadingMacControl) ? 0.5 : 1)
+    }
+
     private var inputField: some View {
         let isCompactSummary = viewModel.shouldShowConcealedDownloadInputSummary && focusedField != .rawInput
         let iconSize: CGFloat = isCompactSummary ? 30 : 42
@@ -1253,7 +1993,11 @@ struct ContentView: View {
 
             ZStack(alignment: .topLeading) {
                 if viewModel.rawInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    Text(tr("Paste Sora link", "បិទភ្ជាប់ Sora link"))
+                    Text(
+                        isSendingMainInputToMac
+                            ? tr("Paste Sora link to send to Mac", "បិទភ្ជាប់ Sora link ដើម្បីផ្ញើទៅ Mac")
+                            : tr("Paste Sora link", "បិទភ្ជាប់ Sora link")
+                    )
                         .foregroundStyle(Color.white.opacity(0.36))
                         .font(.system(size: 17, weight: .medium, design: .rounded))
                         .padding(.top, 8)
@@ -1569,16 +2313,20 @@ struct ContentView: View {
         AnyView(
             Button {
                 focusedField = nil
-                Task {
-                    await viewModel.downloadVideo()
+                if isSendingMainInputToMac {
+                    sendMainRawInputToMac()
+                } else {
+                    Task {
+                        await viewModel.downloadVideo()
+                    }
                 }
             } label: {
                 HStack(spacing: 12) {
-                    if viewModel.isDownloading {
+                    if viewModel.isDownloading || isLoadingMacControl {
                         ProgressView()
                             .tint(.white)
                     } else {
-                        Image(systemName: "arrow.down.circle.fill")
+                        Image(systemName: isSendingMainInputToMac ? "paperplane.circle.fill" : "arrow.down.circle.fill")
                             .font(.system(size: 20, weight: .semibold))
                     }
 
@@ -1593,23 +2341,42 @@ struct ContentView: View {
                         .fill(
                             LinearGradient(
                                 colors: [
-                                    Color(red: 0.57, green: 0.31, blue: 0.89),
-                                    Color(red: 0.25, green: 0.45, blue: 0.96)
+                                    isSendingMainInputToMac
+                                        ? Color(red: 0.90, green: 0.42, blue: 0.32)
+                                        : Color(red: 0.57, green: 0.31, blue: 0.89),
+                                    isSendingMainInputToMac
+                                        ? Color(red: 0.72, green: 0.22, blue: 0.56)
+                                        : Color(red: 0.25, green: 0.45, blue: 0.96)
                                 ],
                                 startPoint: .leading,
                                 endPoint: .trailing
                             )
                         )
                 )
-                .shadow(color: Color(red: 0.37, green: 0.41, blue: 0.98).opacity(0.45), radius: 24, x: 0, y: 14)
+                .shadow(
+                    color: (
+                        isSendingMainInputToMac
+                            ? Color(red: 0.82, green: 0.31, blue: 0.39)
+                            : Color(red: 0.37, green: 0.41, blue: 0.98)
+                    ).opacity(0.45),
+                    radius: 24,
+                    x: 0,
+                    y: 14
+                )
             }
             .buttonStyle(.plain)
-            .disabled(viewModel.isBusy)
-            .opacity(viewModel.isBusy ? 0.92 : 1)
+            .disabled(viewModel.isBusy || isLoadingMacControl)
+            .opacity((viewModel.isBusy || isLoadingMacControl) ? 0.92 : 1)
         )
     }
 
     private var downloadButtonTitle: String {
+        if isSendingMainInputToMac {
+            return isLoadingMacControl
+                ? tr("Sending to Mac...", "កំពុងផ្ញើទៅ Mac...")
+                : tr("Send to Mac Only", "ផ្ញើទៅ Mac ប៉ុណ្ណោះ")
+        }
+
         guard viewModel.isDownloading else { return tr("Start Download", "ចាប់ផ្ដើមទាញយក") }
         return viewModel.downloadProgress > 0
             ? tr("Downloading \(viewModel.downloadPercentText)", "កំពុងទាញយក \(viewModel.downloadPercentText)")
@@ -9799,20 +10566,39 @@ private struct PhotoVideoPicker: UIViewControllerRepresentable {
 private struct MacControlSheet: View {
     let isKhmer: Bool
     @Binding var serverURL: String
+    @Binding var password: String
     @Binding var chromeName: String
     @Binding var pageName: String
     @Binding var folders: String
+    @Binding var manualLinkInput: String
     @Binding var intervalMinutes: Int
     @Binding var closeAfterEach: Bool
     @Binding var closeAfterFinish: Bool
     @Binding var postNowAdvanceSlot: Bool
     let isLoading: Bool
     let profiles: [String]
+    let macDisplayName: String
+    let macDeviceName: String
+    let macUserName: String
+    let isOnline: Bool
+    let liveStatusText: String
+    let liveProgress: Double
+    let liveProgressLabel: String
+    let packages: [MacControlPackageCard]
+    let selectedPackageIDs: Set<String>
+    let uploadVideoProgress: Double
+    let thumbnailURLForPackage: (MacControlPackageCard) -> URL?
     let resultMessage: String
     let onClose: () -> Void
     let onLoad: () -> Void
     let onScan: () -> Void
     let onSendCurrentInput: () -> Void
+    let onSendManualLink: () -> Void
+    let onUploadVideoToMac: () -> Void
+    let onTogglePackage: (MacControlPackageCard) -> Void
+    let onAddSelectedPackages: () -> Void
+    let onRefreshPackages: () -> Void
+    let onDeletePackage: (MacControlPackageCard) -> Void
     let onPreflight: () -> Void
     let onRun: () -> Void
     let onQuitChrome: () -> Void
@@ -9821,8 +10607,74 @@ private struct MacControlSheet: View {
         NavigationStack {
             ScrollView(showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 16) {
-                    sectionCard(title: tr("Mac Server", "Mac Server"), subtitle: tr("Use Scan Mac on the same Wi-Fi, or paste a Tailscale URL for remote control.", "ប្រើ Scan Mac ពេលនៅ Wi‑Fi ដូចគ្នា ឬបិទភ្ជាប់ Tailscale URL សម្រាប់គ្រប់គ្រងពីចម្ងាយ។")) {
+                    sectionCard(title: tr("Mac Server", "Mac Server"), subtitle: tr("Use Scan Mac (Wi-Fi Fast) when you are nearby, or use Remote Mac with Relay / Tailscale when you are away. If one path is unavailable, Soranin switches to the other automatically.", "ប្រើ Scan Mac (Wi‑Fi Fast) ពេលនៅជិតគ្នា ឬប្រើ Remote Mac ជាមួយ Relay / Tailscale ពេលនៅឆ្ងាយ។ បើមួយណាមិនមាន Soranin នឹងប្តូរទៅមួយទៀតអោយស្វ័យប្រវត្តិ។")) {
                         VStack(alignment: .leading, spacing: 12) {
+                            if !macDisplayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                                VStack(alignment: .leading, spacing: 6) {
+                                    HStack(spacing: 8) {
+                                        Text(tr("Connected Mac", "Mac ដែលបានភ្ជាប់"))
+                                            .font(.system(size: 12, weight: .bold, design: .rounded))
+                                            .foregroundStyle(Color.white.opacity(0.7))
+                                        Spacer(minLength: 0)
+                                        HStack(spacing: 6) {
+                                            Circle()
+                                                .fill(isOnline ? Color.green : Color.red.opacity(0.9))
+                                                .frame(width: 8, height: 8)
+                                            Text(isOnline ? tr("Online", "Online") : tr("Offline", "Offline"))
+                                                .font(.system(size: 11, weight: .bold, design: .rounded))
+                                                .foregroundStyle(.white)
+                                        }
+                                        .padding(.horizontal, 10)
+                                        .padding(.vertical, 6)
+                                        .background((isOnline ? Color.green : Color.red).opacity(0.18), in: Capsule())
+                                    }
+                                    Text(macDisplayName)
+                                        .font(.system(size: 16, weight: .bold, design: .rounded))
+                                        .foregroundStyle(.white)
+                                    if !macDeviceName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !macUserName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                                        Text([
+                                            macDeviceName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : macDeviceName,
+                                            macUserName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : "@\(macUserName)"
+                                        ]
+                                        .compactMap { $0 }
+                                        .joined(separator: " • "))
+                                        .font(.system(size: 12, weight: .medium, design: .rounded))
+                                        .foregroundStyle(Color.white.opacity(0.62))
+                                    }
+                                    if !liveStatusText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                                        Text(liveStatusText)
+                                            .font(.system(size: 12, weight: .medium, design: .rounded))
+                                            .foregroundStyle(Color.white.opacity(0.84))
+                                            .fixedSize(horizontal: false, vertical: true)
+                                    }
+                                    if liveProgress > 0 {
+                                        VStack(alignment: .leading, spacing: 6) {
+                                            HStack {
+                                                Text(liveProgressLabel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? tr("Mac Progress", "ដំណើរការ Mac") : liveProgressLabel)
+                                                    .font(.system(size: 12, weight: .bold, design: .rounded))
+                                                    .foregroundStyle(Color.white.opacity(0.74))
+                                                    .lineLimit(2)
+                                                Spacer()
+                                                Text("\(Int((liveProgress * 100).rounded()))%")
+                                                    .font(.system(size: 12, weight: .bold, design: .rounded))
+                                                    .foregroundStyle(.white)
+                                            }
+                                            ProgressView(value: liveProgress, total: 1)
+                                                .tint(Color.green)
+                                                .progressViewStyle(.linear)
+                                        }
+                                    }
+                                }
+                                .padding(.horizontal, 14)
+                                .padding(.vertical, 12)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                        .stroke(Color.white.opacity(0.08), lineWidth: 1)
+                                )
+                            }
+
                             TextField(tr("Server URL", "Server URL"), text: $serverURL)
                                 .textInputAutocapitalization(.never)
                                 .autocorrectionDisabled()
@@ -9831,19 +10683,26 @@ private struct MacControlSheet: View {
                                 .padding(.vertical, 12)
                                 .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
 
-                            Text(tr("Same Wi-Fi: tap Scan Mac. Different Wi-Fi or cellular: paste the Tailscale URL from Soranin.app on your Mac.", "Wi‑Fi ដូចគ្នា៖ ចុច Scan Mac។ Wi‑Fi ផ្សេង ឬ cellular៖ បិទភ្ជាប់ Tailscale URL ពី Soranin.app លើ Mac របស់អ្នក។"))
+                            SecureField(tr("Mac Password (optional)", "ពាក្យសម្ងាត់ Mac (optional)"), text: $password)
+                                .textInputAutocapitalization(.never)
+                                .autocorrectionDisabled()
+                                .padding(.horizontal, 14)
+                                .padding(.vertical, 12)
+                                .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+
+                            Text(tr("Same Wi-Fi: tap Scan Mac (Wi-Fi Fast + Cards). Different Wi-Fi or cellular: paste the Relay or Tailscale URL, then tap Remote Mac + Cards. If one path fails, the other is tried automatically.", "Wi‑Fi ដូចគ្នា៖ ចុច Scan Mac (Wi‑Fi Fast + Cards)។ Wi‑Fi ផ្សេង ឬ cellular៖ បិទភ្ជាប់ Relay ឬ Tailscale URL រួចចុច Remote Mac + Cards។ បើមួយណាមិនបាន វានឹងសាកមួយទៀតអោយស្វ័យប្រវត្តិ។"))
                                 .font(.system(size: 12, weight: .medium, design: .rounded))
                                 .foregroundStyle(Color.white.opacity(0.62))
 
                             HStack(spacing: 10) {
                                 actionButton(
-                                    title: tr("Scan Mac", "ស្កេន Mac"),
+                                    title: tr("Scan Mac (Wi-Fi Fast + Cards)", "ស្កេន Mac (Wi‑Fi Fast + Cards)"),
                                     systemImage: "dot.radiowaves.left.and.right",
                                     isPrimary: false,
                                     action: onScan
                                 )
                                 actionButton(
-                                    title: tr("Load Mac", "ទាញពី Mac"),
+                                    title: tr("Remote Mac + Cards", "Remote Mac + Cards"),
                                     systemImage: "arrow.clockwise",
                                     isPrimary: true,
                                     action: onLoad
@@ -9946,8 +10805,155 @@ private struct MacControlSheet: View {
                         }
                     }
 
-                    sectionCard(title: tr("Quick Actions", "Quick Actions"), subtitle: tr("Send current Sora input or run Facebook posting.", "ផ្ញើ Sora input បច្ចុប្បន្ន ឬរត់ Facebook posting។")) {
+                    sectionCard(title: tr("Select From App Cards", "ជ្រើសពី App Cards"), subtitle: tr("These cards load from the connected Mac only. Tap cards to select folders, or delete a package on the Mac.", "cards ទាំងនេះទាញពី Mac ដែលបានភ្ជាប់ប៉ុណ្ណោះ។ ចុច card ដើម្បីជ្រើស folder ឬលុប package លើ Mac។")) {
                         VStack(alignment: .leading, spacing: 12) {
+                            HStack {
+                                Text("\(packages.count)")
+                                    .font(.system(size: 12, weight: .bold, design: .rounded))
+                                    .foregroundStyle(.white)
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 6)
+                                    .background(Color.white.opacity(0.10), in: Capsule())
+                                Spacer()
+                                Button(tr("Refresh", "Refresh")) {
+                                    onRefreshPackages()
+                                }
+                                .buttonStyle(.plain)
+                                .font(.system(size: 13, weight: .bold, design: .rounded))
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 10)
+                                .background(Color.white.opacity(0.08), in: Capsule())
+                                    .disabled(isLoading)
+                            }
+
+                            Text(tr("Tap a card to auto add its folder to the Folders box. Tap again to remove it automatically.", "ចុច card ដើម្បីបញ្ចូល folder ទៅក្នុង Folders box ស្វ័យប្រវត្តិ។ ចុចម្តងទៀតដើម្បីដកចេញវិញស្វ័យប្រវត្តិ។"))
+                                .font(.system(size: 12, weight: .medium, design: .rounded))
+                                .foregroundStyle(Color.white.opacity(0.66))
+
+                            if packages.isEmpty {
+                                Text(tr("No package cards loaded yet. Connect to Mac first. Cards should auto-load; use Refresh only if you want to reload them.", "មិនទាន់មាន package cards នៅឡើយទេ។ សូមភ្ជាប់ទៅ Mac ជាមុនសិន។ cards គួរតែ load ស្វ័យប្រវត្តិ ហើយប្រើ Refresh តែពេលចង់ reload ប៉ុណ្ណោះ។"))
+                                    .font(.system(size: 13, weight: .medium, design: .rounded))
+                                    .foregroundStyle(Color.white.opacity(0.64))
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(.vertical, 8)
+                            } else {
+                                LazyVGrid(columns: [GridItem(.adaptive(minimum: 150, maximum: 220), spacing: 12)], spacing: 12) {
+                                    ForEach(packages) { item in
+                                        macPackageCard(item)
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    sectionCard(title: tr("Quick Actions", "Quick Actions"), subtitle: tr("Send links to Mac only, pick a video from this iPhone for Mac Drop Videos, or run Facebook posting.", "ផ្ញើ link ទៅ Mac ប៉ុណ្ណោះ, ជ្រើស video ពី iPhone នេះទៅ Drop Videos លើ Mac, ឬរត់ Facebook posting។")) {
+                        VStack(alignment: .leading, spacing: 12) {
+                            fieldLabel(tr("Send Sora link to Mac only", "ផ្ញើ Sora link ទៅ Mac ប៉ុណ្ណោះ"))
+                            ZStack(alignment: .topLeading) {
+                                TextEditor(text: $manualLinkInput)
+                                    .frame(minHeight: 76)
+                                    .scrollContentBackground(.hidden)
+                                    .padding(8)
+                                    .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                                if manualLinkInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                                    Text(tr("Paste one Sora link or ID here. It will send to Mac only, not download on this iPhone.", "paste Sora link ឬ ID មួយនៅទីនេះ។ វានឹងផ្ញើទៅ Mac ប៉ុណ្ណោះ មិន download លើ iPhone នេះទេ។"))
+                                        .font(.system(size: 14, weight: .medium, design: .rounded))
+                                        .foregroundStyle(Color.white.opacity(0.38))
+                                        .padding(.horizontal, 20)
+                                        .padding(.vertical, 20)
+                                        .allowsHitTesting(false)
+                                }
+                            }
+
+                            Button {
+                                onSendManualLink()
+                            } label: {
+                                HStack(spacing: 8) {
+                                    Image(systemName: "link")
+                                    Text(tr("Send Link to Mac Only", "ផ្ញើ Link ទៅ Mac ប៉ុណ្ណោះ"))
+                                }
+                                .font(.system(size: 15, weight: .bold, design: .rounded))
+                                .foregroundStyle(.white)
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 14)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                        .fill(
+                                            LinearGradient(
+                                                colors: [Color.orange.opacity(0.94), Color.pink.opacity(0.88)],
+                                                startPoint: .leading,
+                                                endPoint: .trailing
+                                            )
+                                        )
+                                )
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(isLoading || manualLinkInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                            .opacity((isLoading || manualLinkInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) ? 0.5 : 1)
+
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text(tr("Pick video from this iPhone for Mac Drop Videos", "ជ្រើស video ពី iPhone នេះទៅ Drop Videos លើ Mac"))
+                                    .font(.system(size: 12, weight: .bold, design: .rounded))
+                                    .foregroundStyle(Color.white.opacity(0.68))
+                                Text(
+                                    tr(
+                                        "Pick a video from this iPhone and Soranin will upload it straight into Drop Videos / Sora source videos on the connected Mac.",
+                                        "ជ្រើស video មួយពី iPhone នេះ ហើយ Soranin នឹង upload វាទៅ Drop Videos / Sora source videos លើ Mac ដែលបានភ្ជាប់ដោយផ្ទាល់។"
+                                    )
+                                )
+                                .font(.system(size: 14, weight: .semibold, design: .rounded))
+                                .foregroundStyle(.white)
+                                .fixedSize(horizontal: false, vertical: true)
+                            }
+
+                            if uploadVideoProgress > 0, uploadVideoProgress < 1 {
+                                VStack(alignment: .leading, spacing: 8) {
+                                    HStack {
+                                        Text(tr("Upload progress", "ដំណើរការ upload"))
+                                            .font(.system(size: 12, weight: .bold, design: .rounded))
+                                            .foregroundStyle(Color.white.opacity(0.68))
+                                        Spacer()
+                                        Text("\(Int((uploadVideoProgress * 100).rounded()))%")
+                                            .font(.system(size: 12, weight: .bold, design: .rounded))
+                                            .foregroundStyle(.white)
+                                    }
+
+                                    ProgressView(value: uploadVideoProgress, total: 1)
+                                        .tint(Color(red: 0.34, green: 0.88, blue: 0.93))
+                                        .progressViewStyle(.linear)
+                                }
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 12)
+                                .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                            }
+
+                            Button {
+                                onUploadVideoToMac()
+                            } label: {
+                                HStack(spacing: 8) {
+                                    Image(systemName: "video.badge.plus")
+                                    Text(tr("Pick Video From iPhone", "ជ្រើស Video ពី iPhone"))
+                                }
+                                .font(.system(size: 15, weight: .bold, design: .rounded))
+                                .foregroundStyle(.white)
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 14)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                        .fill(
+                                            LinearGradient(
+                                                colors: [Color.teal.opacity(0.95), Color.blue.opacity(0.88)],
+                                                startPoint: .leading,
+                                                endPoint: .trailing
+                                            )
+                                        )
+                                )
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(isLoading)
+                            .opacity(isLoading ? 0.5 : 1)
+
                             HStack(spacing: 10) {
                                 actionButton(
                                     title: tr("Send Current Links", "ផ្ញើ Links បច្ចុប្បន្ន"),
@@ -10070,6 +11076,86 @@ private struct MacControlSheet: View {
         .buttonStyle(.plain)
         .disabled(isLoading)
         .opacity(isLoading ? 0.65 : 1)
+    }
+
+    private func macPackageCard(_ item: MacControlPackageCard) -> some View {
+        let isSelected = selectedPackageIDs.contains(item.id)
+        return VStack(alignment: .leading, spacing: 10) {
+            ZStack(alignment: .topTrailing) {
+                Group {
+                    if let imageURL = thumbnailURLForPackage(item) {
+                        AsyncImage(url: imageURL) { phase in
+                            switch phase {
+                            case .success(let image):
+                                image
+                                    .resizable()
+                                    .scaledToFill()
+                            case .failure(_):
+                                roundedCardPlaceholder(symbol: "photo")
+                            default:
+                                roundedCardPlaceholder(symbol: "photo")
+                            }
+                        }
+                    } else {
+                        roundedCardPlaceholder(symbol: "video")
+                    }
+                }
+                .frame(height: 170)
+                .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+
+                Button {
+                    onDeletePackage(item)
+                } label: {
+                    Image(systemName: "trash")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(.white)
+                        .padding(9)
+                        .background(Color.black.opacity(0.42), in: Circle())
+                }
+                .buttonStyle(.plain)
+                .padding(10)
+                .disabled(isLoading)
+            }
+
+            Text(item.packageName)
+                .font(.system(size: 13, weight: .bold, design: .rounded))
+                .foregroundStyle(.white)
+                .lineLimit(1)
+
+            Text(item.title)
+                .font(.system(size: 12, weight: .medium, design: .rounded))
+                .foregroundStyle(Color.white.opacity(0.74))
+                .lineLimit(2)
+
+            Text(item.sourceName)
+                .font(.system(size: 11, weight: .medium, design: .rounded))
+                .foregroundStyle(Color.white.opacity(0.52))
+                .lineLimit(1)
+        }
+        .padding(10)
+        .background(
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .fill(isSelected ? Color.white.opacity(0.12) : Color.white.opacity(0.05))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .stroke(isSelected ? Color.cyan.opacity(0.95) : Color.white.opacity(0.08), lineWidth: isSelected ? 2 : 1)
+        )
+        .contentShape(Rectangle())
+        .onTapGesture {
+            onTogglePackage(item)
+        }
+        .opacity(isLoading ? 0.74 : 1)
+    }
+
+    private func roundedCardPlaceholder(symbol: String) -> some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(Color.white.opacity(0.08))
+            Image(systemName: symbol)
+                .font(.system(size: 28, weight: .semibold))
+                .foregroundStyle(Color.white.opacity(0.5))
+        }
     }
 
     private func fieldLabel(_ text: String) -> some View {

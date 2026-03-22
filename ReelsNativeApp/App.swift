@@ -1,9 +1,11 @@
 import SwiftUI
 import AppKit
+import ApplicationServices
 import AVFoundation
 import AVKit
 import Darwin
 import Foundation
+import Network
 import UniformTypeIdentifiers
 
 private struct SoraninBundledRuntimePaths: Decodable {
@@ -19,6 +21,67 @@ private func expandedPath(_ raw: String) -> String {
 
 private func fileURL(from raw: String, isDirectory: Bool = false) -> URL {
     URL(fileURLWithPath: expandedPath(raw), isDirectory: isDirectory)
+}
+
+private func currentMacUserName() -> String {
+    let value = NSUserName().trimmingCharacters(in: .whitespacesAndNewlines)
+    if !value.isEmpty {
+        return value
+    }
+    return FileManager.default.homeDirectoryForCurrentUser.lastPathComponent
+}
+
+private func currentMacDeviceName() -> String {
+    if let localized = Host.current().localizedName?.trimmingCharacters(in: .whitespacesAndNewlines),
+       !localized.isEmpty {
+        return localized
+    }
+    let hostName = ProcessInfo.processInfo.hostName.trimmingCharacters(in: .whitespacesAndNewlines)
+    return hostName.isEmpty ? "Mac" : hostName
+}
+
+struct MacControlAppAlert: Identifiable, Equatable {
+    let id: Int
+    let title: String
+    let message: String
+    let level: String
+}
+
+struct MacControlServerAlertPayload: Decodable {
+    let id: Int?
+    let title: String?
+    let message: String?
+    let level: String?
+
+    var normalizedAlert: MacControlAppAlert? {
+        guard let id, id > 0 else { return nil }
+        let trimmedTitle = (title ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedMessage = (message ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return MacControlAppAlert(
+            id: id,
+            title: trimmedTitle.isEmpty ? "Soranin" : trimmedTitle,
+            message: trimmedMessage.isEmpty ? "Done." : trimmedMessage,
+            level: (level ?? "info").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        )
+    }
+}
+
+struct MacControlServerStatusPayload: Decodable {
+    let status: String?
+    let detail: String?
+    let running: Bool?
+    let remoteRunning: Bool?
+    let alerts: [MacControlServerAlertPayload]?
+    let latestAlert: MacControlServerAlertPayload?
+
+    private enum CodingKeys: String, CodingKey {
+        case status
+        case detail
+        case running
+        case remoteRunning = "remote_running"
+        case alerts
+        case latestAlert = "latest_alert"
+    }
 }
 
 private func firstEnvironmentValue(_ names: [String]) -> String? {
@@ -113,6 +176,7 @@ private let postLinksDownloaderScript = soraninScriptsDirURL.appendingPathCompon
 private let aiChatBridgeScript = soraninScriptsDirURL.appendingPathComponent("ai_chat_bridge.py")
 private let aiChatHistoryFile = preferredRuntimeFile(named: ".soranin_ai_chat_history.json")
 private let aiChatPendingRequestFile = preferredRuntimeFile(named: ".soranin_ai_chat_pending_request.json")
+private let controlRelayConfigFile = preferredRuntimeFile(named: "control_relay.json", envNames: ["SORANIN_CONTROL_RELAY_CONFIG_FILE"])
 private let chromeProfileAssignmentsFile = preferredRuntimeFile(named: ".soranin_chrome_profile_links.json")
 private let soraCompletedDownloadIDsFile = preferredRuntimeFile(named: ".soranin_completed_sora_ids.json")
 private let geminiLiveEndpoint = URL(string: "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent")!
@@ -163,6 +227,99 @@ private func normalizedFacebookRunnerPackageName(_ value: String) -> String {
         return "\(trimmed)_Reels_Package"
     }
     return trimmed
+}
+
+private func loadControlRelayConfigObject() -> [String: Any] {
+    guard let data = try? Data(contentsOf: controlRelayConfigFile),
+          let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+        return [:]
+    }
+    return object
+}
+
+private func persistControlRelayConfigObject(_ object: [String: Any]) {
+    guard let data = try? JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted]) else {
+        return
+    }
+    try? data.write(to: controlRelayConfigFile, options: [.atomic])
+    try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: controlRelayConfigFile.path)
+}
+
+private func loadSavedFacebookControlPassword() -> String {
+    String(describing: loadControlRelayConfigObject()["control_password"] ?? "")
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+}
+
+private func persistFacebookControlPassword(_ value: String) {
+    var object = loadControlRelayConfigObject()
+    let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    if trimmed.isEmpty {
+        object.removeValue(forKey: "control_password")
+    } else {
+        object["control_password"] = trimmed
+    }
+    persistControlRelayConfigObject(object)
+}
+
+private func normalizedControlRelayURLString(_ value: String) -> String {
+    var text = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    while text.hasSuffix("/") {
+        text.removeLast()
+    }
+    return text
+}
+
+private func normalizedControlRelayLabel(_ value: String, fallback: String) -> String {
+    let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return fallback }
+    let allowed = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-")
+    let mapped = trimmed.unicodeScalars.map { scalar -> String in
+        allowed.contains(scalar) ? String(scalar) : "-"
+    }
+    let collapsed = mapped.joined()
+        .replacingOccurrences(of: "-{2,}", with: "-", options: .regularExpression)
+        .trimmingCharacters(in: CharacterSet(charactersIn: "-._"))
+    return collapsed.isEmpty ? fallback : collapsed
+}
+
+private func loadSavedControlRelayURL() -> String {
+    normalizedControlRelayURLString(String(describing: loadControlRelayConfigObject()["relay_url"] ?? ""))
+}
+
+private func loadSavedControlRelayUserName() -> String {
+    normalizedControlRelayLabel(String(describing: loadControlRelayConfigObject()["relay_user_name"] ?? ""), fallback: normalizedControlRelayLabel(currentMacUserName(), fallback: "user"))
+}
+
+private func loadSavedControlRelayMacName() -> String {
+    normalizedControlRelayLabel(String(describing: loadControlRelayConfigObject()["relay_mac_name"] ?? ""), fallback: normalizedControlRelayLabel(currentMacDeviceName(), fallback: "mac"))
+}
+
+private func loadSavedControlRelaySecretToken() -> String {
+    normalizedControlRelayLabel(String(describing: loadControlRelayConfigObject()["relay_secret_token"] ?? ""), fallback: "")
+}
+
+private func loadSavedControlRelayPollSeconds() -> Double {
+    let raw = String(describing: loadControlRelayConfigObject()["poll_seconds"] ?? "")
+    if let value = Double(raw), value.isFinite {
+        return max(1.0, value)
+    }
+    return 3.0
+}
+
+private func controlRelayClientToken(userName: String, macName: String, secretToken: String) -> String {
+    let safeUser = normalizedControlRelayLabel(userName, fallback: "user")
+    let safeMac = normalizedControlRelayLabel(macName, fallback: "mac")
+    let safeSecret = normalizedControlRelayLabel(secretToken, fallback: "")
+    guard !safeSecret.isEmpty else { return "" }
+    return "\(safeUser)-\(safeMac)-\(safeSecret)"
+}
+
+private func controlRelayClientURL(relayURL: String, userName: String, macName: String, secretToken: String) -> String {
+    let base = normalizedControlRelayURLString(relayURL)
+    let token = controlRelayClientToken(userName: userName, macName: macName, secretToken: secretToken)
+    guard !base.isEmpty, !token.isEmpty else { return "" }
+    let escapedToken = token.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? token
+    return "\(base)/client/\(escapedToken)"
 }
 
 private func nonLoopbackIPv4Interfaces() -> [(name: String, address: String)] {
@@ -3257,7 +3414,15 @@ final class ReelsModel: ObservableObject {
     @Published var aiChatAttachmentURLs: [URL] = []
     @Published var facebookControlServerLANURLs: [String] = []
     @Published var facebookControlServerTailscaleURLs: [String] = []
+    @Published var facebookControlServerRelayBaseURL = ""
+    @Published var facebookControlServerRelayClientURL = ""
+    @Published var facebookControlServerRelayUserName = ""
+    @Published var facebookControlServerRelayMacName = ""
+    @Published var facebookControlServerRelayPollSeconds = 3.0
     @Published var isFacebookControlServerOnline = false
+    @Published var isInternetOnline = false
+    @Published var isAccessibilityTrusted = false
+    @Published var macControlAppAlert: MacControlAppAlert?
 
     private var process: Process?
     private var outputPipe: Pipe?
@@ -3296,18 +3461,30 @@ final class ReelsModel: ObservableObject {
     private var dashboardServerProcess: Process?
     private var dashboardServerOutputPipe: Pipe?
     private var didLaunchDashboardServer = false
+    private var pendingMacControlAppAlerts: [MacControlAppAlert] = []
+    private var lastSeenMacControlAlertID = 0
+    private var isRefreshingFacebookControlServerStatus = false
+    private var hasRequestedAccessibilityPromptThisLaunch = false
+    private var internetPathMonitor: NWPathMonitor?
+    private let internetPathMonitorQueue = DispatchQueue(label: "soranin.internet.monitor")
 
     init() {
         activeReelsModelForAppLifecycle = self
         chromeProfileAssignments = loadChromeProfileAssignments()
         completedSoraDownloadIDs = loadCompletedSoraDownloadIDs()
         refreshMetadata()
+        refreshAccessibilityPermissionStatus()
+        startInternetPathMonitor()
         DispatchQueue.main.async { [weak self] in
             self?.ensureFacebookControlServerRunning()
             self?.refreshFacebookControlServerConnectionInfo()
         }
         bootstrapAIChatSessions()
         resumePendingAIChatRequestIfNeeded()
+    }
+
+    deinit {
+        internetPathMonitor?.cancel()
     }
 
     var isBusy: Bool {
@@ -3324,6 +3501,27 @@ final class ReelsModel: ObservableObject {
 
     var preferredFacebookControlServerTailscaleURL: String? {
         facebookControlServerTailscaleURLs.first
+    }
+
+    var preferredFacebookControlServerRelayURL: String? {
+        let trimmed = facebookControlServerRelayClientURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    var facebookControlServerUserName: String {
+        currentMacUserName()
+    }
+
+    var facebookControlServerDeviceName: String {
+        currentMacDeviceName()
+    }
+
+    var facebookControlServerDisplayName: String {
+        "\(facebookControlServerDeviceName) • user \(facebookControlServerUserName)"
+    }
+
+    var internetStatusLabel: String {
+        isInternetOnline ? "Online" : "Offline"
     }
 
     var healthStatusReportText: String {
@@ -3372,6 +3570,29 @@ final class ReelsModel: ObservableObject {
         openAIKeyStatus = maskKey(saved["OPENAI_API_KEY"])
         geminiKeyStatus = maskKey(saved["GEMINI_API_KEY"] ?? saved["GOOGLE_API_KEY"])
         refreshChromeProfilesAsync()
+    }
+
+    func refreshAccessibilityPermissionStatus() {
+        isAccessibilityTrusted = AXIsProcessTrusted()
+        if isAccessibilityTrusted {
+            hasRequestedAccessibilityPromptThisLaunch = false
+        }
+    }
+
+    func requestAccessibilityPermissionPrompt() {
+        guard !hasRequestedAccessibilityPromptThisLaunch else { return }
+        hasRequestedAccessibilityPromptThisLaunch = true
+        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
+        isAccessibilityTrusted = AXIsProcessTrustedWithOptions(options)
+        if isAccessibilityTrusted {
+            hasRequestedAccessibilityPromptThisLaunch = false
+        }
+    }
+
+    func openAccessibilitySettings() {
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
+            NSWorkspace.shared.open(url)
+        }
     }
 
     func pasteClipboardSoraLinks() {
@@ -3753,9 +3974,9 @@ final class ReelsModel: ObservableObject {
             return
         }
 
-        let packageNames = parseFacebookRunnerPackageNames(packageNamesText)
-        if let missingPackage = firstMissingFacebookPackageName(in: packageNames) {
-            showToast("Package not found: \(missingPackage)")
+        let packageNames = existingFacebookPackageNames(from: parseFacebookRunnerPackageNames(packageNamesText))
+        if packageNames.isEmpty {
+            showToast("No existing package folder found.")
             return
         }
 
@@ -3801,20 +4022,26 @@ final class ReelsModel: ObservableObject {
             return
         }
 
+        refreshAccessibilityPermissionStatus()
+        guard isAccessibilityTrusted else {
+            if hasRequestedAccessibilityPromptThisLaunch {
+                showToast("Accessibility is still pending. Turn on Soranin, then quit and reopen the app once.")
+            } else {
+                requestAccessibilityPermissionPrompt()
+                showToast("Allow Keyboard Control, then quit and reopen Soranin once before running again.")
+            }
+            return
+        }
+
         let normalizedPageName = normalizedFacebookRunnerPageName(pageName)
         guard !normalizedPageName.isEmpty else {
             showToast("Enter a Facebook page name.")
             return
         }
 
-        let packageNames = parseFacebookRunnerPackageNames(packageNamesText)
+        let packageNames = existingFacebookPackageNames(from: parseFacebookRunnerPackageNames(packageNamesText))
         guard !packageNames.isEmpty else {
-            showToast("Enter at least one package folder.")
-            return
-        }
-
-        if let missingPackage = firstMissingFacebookPackageName(in: packageNames) {
-            showToast("Package not found: \(missingPackage)")
+            showToast("No existing package folder found.")
             return
         }
 
@@ -3850,26 +4077,41 @@ final class ReelsModel: ObservableObject {
             )
         }
 
-        if openChromeFirst, let selectedProfile, !selectedProfile.isOnline {
-            openChromeProfile(selectedProfile)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) { [weak self] in
+        let relaunchSelectedProfileAndRun = { [weak self] in
+            guard let self else { return }
+            guard let selectedProfile else {
+                launchRun()
+                return
+            }
+            self.openChromeProfile(selectedProfile)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) { [weak self] in
                 self?.refreshChromeProfiles()
                 launchRun()
             }
-        } else {
-            launchRun()
+        }
+
+        // Facebook Runner is most stable when it always starts from a clean Chrome state.
+        quitGoogleChromeCompletely(shouldShowToast: false) {
+            if openChromeFirst || selectedProfile != nil {
+                relaunchSelectedProfileAndRun()
+            } else {
+                launchRun()
+            }
         }
     }
 
-    func quitGoogleChromeCompletely() {
+    func quitGoogleChromeCompletely(shouldShowToast: Bool = true, completion: (() -> Void)? = nil) {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
         process.arguments = ["-e", "tell application \"Google Chrome\" to quit"]
         do {
             try process.run()
-            showToast("Closing Google Chrome...")
+            if shouldShowToast {
+                showToast("Closing Google Chrome...")
+            }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
                 self?.refreshChromeProfiles()
+                completion?()
             }
         } catch {
             showToast("Failed to quit Google Chrome.")
@@ -3915,6 +4157,13 @@ final class ReelsModel: ObservableObject {
             }
         }
         return nil
+    }
+
+    private func existingFacebookPackageNames(from packageNames: [String]) -> [String] {
+        packageNames.filter { packageName in
+            let candidate = rootDir.appendingPathComponent(packageName, isDirectory: true)
+            return FileManager.default.fileExists(atPath: candidate.path)
+        }
     }
 
     private func deleteFacebookRunnerPackagesAfterSuccess(_ packageNames: [String]) {
@@ -5014,15 +5263,129 @@ final class ReelsModel: ObservableObject {
     }
 
     func refreshFacebookControlServerConnectionInfo() {
-        facebookControlServerLANURLs = nonLoopbackIPv4Interfaces()
+        let lanURLs = nonLoopbackIPv4Interfaces()
             .map { reelsDashboardBaseURLString(forHost: $0.address) }
-        facebookControlServerTailscaleURLs = tailscaleIPv4Addresses()
+        let tailscaleURLs = tailscaleIPv4Addresses()
             .map { reelsDashboardBaseURLString(forHost: $0) }
-        pingFacebookControlServer { [weak self] isOnline in
-            DispatchQueue.main.async {
-                self?.isFacebookControlServerOnline = isOnline
+        let relayURL = loadSavedControlRelayURL()
+        let relayUserName = loadSavedControlRelayUserName()
+        let relayMacName = loadSavedControlRelayMacName()
+        let relaySecretToken = loadSavedControlRelaySecretToken()
+        let relayClientURL = controlRelayClientURL(
+            relayURL: relayURL,
+            userName: relayUserName,
+            macName: relayMacName,
+            secretToken: relaySecretToken
+        )
+        let relayPollSeconds = loadSavedControlRelayPollSeconds()
+
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.facebookControlServerLANURLs = lanURLs
+            self.facebookControlServerTailscaleURLs = tailscaleURLs
+            self.facebookControlServerRelayBaseURL = relayURL
+            self.facebookControlServerRelayClientURL = relayClientURL
+            self.facebookControlServerRelayUserName = relayUserName
+            self.facebookControlServerRelayMacName = relayMacName
+            self.facebookControlServerRelayPollSeconds = relayPollSeconds
+            self.pingFacebookControlServer { [weak self] isOnline in
+                DispatchQueue.main.async {
+                    self?.isFacebookControlServerOnline = isOnline
+                }
             }
         }
+    }
+
+    private func startInternetPathMonitor() {
+        let monitor = NWPathMonitor()
+        internetPathMonitor = monitor
+        monitor.pathUpdateHandler = { [weak self] path in
+            DispatchQueue.main.async {
+                self?.isInternetOnline = path.status == .satisfied
+            }
+        }
+        monitor.start(queue: internetPathMonitorQueue)
+    }
+
+    func refreshFacebookControlServerRuntimeStatus() {
+        guard !isRefreshingFacebookControlServerStatus else { return }
+        isRefreshingFacebookControlServerStatus = true
+
+        var request = URLRequest(url: reelsDashboardServerStatusURL)
+        request.timeoutInterval = 1.5
+
+        URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
+            guard let self else { return }
+
+            func finish(_ block: @escaping @MainActor () -> Void) {
+                DispatchQueue.main.async {
+                    self.isRefreshingFacebookControlServerStatus = false
+                    block()
+                }
+            }
+
+            guard error == nil,
+                  let httpResponse = response as? HTTPURLResponse,
+                  (200 ... 299).contains(httpResponse.statusCode),
+                  let data
+            else {
+                finish {
+                    self.isFacebookControlServerOnline = false
+                }
+                return
+            }
+
+            guard let payload = try? JSONDecoder().decode(MacControlServerStatusPayload.self, from: data) else {
+                finish {
+                    self.isFacebookControlServerOnline = true
+                }
+                return
+            }
+
+            finish {
+                self.isFacebookControlServerOnline = true
+                self.consumeFacebookControlServerAlerts(from: payload)
+            }
+        }.resume()
+    }
+
+    func dismissMacControlAppAlert() {
+        if pendingMacControlAppAlerts.isEmpty {
+            macControlAppAlert = nil
+            return
+        }
+        macControlAppAlert = pendingMacControlAppAlerts.removeFirst()
+    }
+
+    private func consumeFacebookControlServerAlerts(from payload: MacControlServerStatusPayload) {
+        var incoming = (payload.alerts ?? []).compactMap(\.normalizedAlert)
+        if let latest = payload.latestAlert?.normalizedAlert,
+           !incoming.contains(where: { $0.id == latest.id }) {
+            incoming.append(latest)
+        }
+        guard !incoming.isEmpty else { return }
+
+        let unseen = incoming
+            .filter { $0.id > lastSeenMacControlAlertID }
+            .sorted { $0.id < $1.id }
+
+        guard !unseen.isEmpty else { return }
+        lastSeenMacControlAlertID = max(lastSeenMacControlAlertID, unseen.map(\.id).max() ?? lastSeenMacControlAlertID)
+
+        for alert in unseen {
+            enqueueMacControlAppAlert(alert)
+        }
+    }
+
+    private func enqueueMacControlAppAlert(_ alert: MacControlAppAlert) {
+        if macControlAppAlert?.id == alert.id || pendingMacControlAppAlerts.contains(where: { $0.id == alert.id }) {
+            return
+        }
+        if macControlAppAlert == nil {
+            macControlAppAlert = alert
+            return
+        }
+        pendingMacControlAppAlerts.append(alert)
     }
 
     func copyFacebookControlServerURL(_ value: String) {
@@ -5035,6 +5398,63 @@ final class ReelsModel: ObservableObject {
         showToast("Server URL copied.")
     }
 
+    func saveFacebookControlRelaySettings(
+        relayURL: String,
+        userName: String,
+        macName: String,
+        secretToken: String,
+        pollSeconds: Double
+    ) {
+        let trimmedURL = normalizedControlRelayURLString(relayURL)
+        guard !trimmedURL.isEmpty else {
+            showToast("Enter Relay URL first.")
+            return
+        }
+        guard URL(string: trimmedURL) != nil else {
+            showToast("Relay URL is not valid.")
+            return
+        }
+        let safeUser = normalizedControlRelayLabel(userName, fallback: normalizedControlRelayLabel(currentMacUserName(), fallback: "user"))
+        let safeMac = normalizedControlRelayLabel(macName, fallback: normalizedControlRelayLabel(currentMacDeviceName(), fallback: "mac"))
+        let safeSecret = normalizedControlRelayLabel(secretToken, fallback: "")
+        guard !safeSecret.isEmpty else {
+            showToast("Enter Secret Token first.")
+            return
+        }
+
+        var object = loadControlRelayConfigObject()
+        object["relay_url"] = trimmedURL
+        object["relay_user_name"] = safeUser
+        object["relay_mac_name"] = safeMac
+        object["relay_secret_token"] = safeSecret
+        object["poll_seconds"] = max(1.0, pollSeconds)
+        persistControlRelayConfigObject(object)
+        refreshFacebookControlServerConnectionInfo()
+        restartFacebookControlServerWithToast("Remote relay saved. Mac control server restarting...")
+    }
+
+    func clearFacebookControlRelaySettings() {
+        var object = loadControlRelayConfigObject()
+        object.removeValue(forKey: "relay_url")
+        object.removeValue(forKey: "relay_user_name")
+        object.removeValue(forKey: "relay_mac_name")
+        object.removeValue(forKey: "relay_secret_token")
+        object.removeValue(forKey: "poll_seconds")
+        persistControlRelayConfigObject(object)
+        refreshFacebookControlServerConnectionInfo()
+        restartFacebookControlServerWithToast("Remote relay cleared. Mac control server restarting...")
+    }
+
+    private func restartFacebookControlServerWithToast(_ message: String) {
+        stopFacebookControlServer()
+        showToast(message)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
+            self?.ensureFacebookControlServerRunning()
+            self?.refreshFacebookControlServerConnectionInfo()
+            self?.refreshFacebookControlServerRuntimeStatus()
+        }
+    }
+
     func ensureFacebookControlServerRunning(showToastIfStarted: Bool = false) {
         if let dashboardServerProcess, dashboardServerProcess.isRunning {
             refreshFacebookControlServerConnectionInfo()
@@ -5044,13 +5464,13 @@ final class ReelsModel: ObservableObject {
 
         pingFacebookControlServer { [weak self] isOnline in
             guard let self else { return }
-            if isOnline {
-                DispatchQueue.main.async {
+            DispatchQueue.main.async {
+                if isOnline {
                     self.refreshFacebookControlServerConnectionInfo()
+                } else {
+                    self.startFacebookControlServer(showToastIfStarted: showToastIfStarted)
                 }
-                return
             }
-            self.startFacebookControlServer(showToastIfStarted: showToastIfStarted)
         }
     }
 
@@ -5067,6 +5487,12 @@ final class ReelsModel: ObservableObject {
     }
 
     private func startFacebookControlServer(showToastIfStarted: Bool) {
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async { [weak self] in
+                self?.startFacebookControlServer(showToastIfStarted: showToastIfStarted)
+            }
+            return
+        }
         guard dashboardServerProcess == nil || dashboardServerProcess?.isRunning != true else { return }
 
         let pipe = Pipe()
@@ -10782,6 +11208,62 @@ struct FacebookRunnerPackageCard: View {
     }
 }
 
+struct MacControlAlertPanel: View {
+    let alert: MacControlAppAlert
+    let onDismiss: () -> Void
+
+    private var accentColor: Color {
+        alert.level == "error" ? Color.red.opacity(0.9) : SoraninPalette.accentEnd
+    }
+
+    private var iconName: String {
+        alert.level == "error" ? "exclamationmark.triangle.fill" : "desktopcomputer.and.arrow.down"
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: iconName)
+                    .font(.system(size: 18, weight: .bold))
+                    .foregroundStyle(accentColor)
+                    .frame(width: 28, height: 28)
+                    .background(
+                        Circle()
+                            .fill(accentColor.opacity(0.16))
+                    )
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(alert.title)
+                        .font(.system(size: 16, weight: .bold))
+                        .foregroundStyle(SoraninPalette.primaryText)
+                    Text(alert.message)
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(SoraninPalette.secondaryText)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Spacer(minLength: 8)
+
+                Button("OK") {
+                    onDismiss()
+                }
+                .buttonStyle(SoraninSecondaryButtonStyle(compact: true))
+            }
+        }
+        .padding(16)
+        .frame(maxWidth: 420, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(SoraninPalette.cardStrong)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(accentColor, lineWidth: 1)
+        )
+        .shadow(color: Color.black.opacity(0.28), radius: 20, y: 12)
+    }
+}
+
 struct FacebookRunnerSheet: View {
     @ObservedObject var model: ReelsModel
     @Binding var selectedProfileDirectoryName: String
@@ -10795,7 +11277,16 @@ struct FacebookRunnerSheet: View {
     @Binding var deleteFoldersAfterSuccess: Bool
 
     @Environment(\.dismiss) private var dismiss
+    @AppStorage("soranin.facebookControlPassword") private var facebookControlPassword = ""
     @State private var selectedPackageIDs: Set<String> = []
+    @State private var showingControlPasswordEditor = false
+    @State private var controlPasswordDraft = ""
+    @State private var controlPasswordConfirm = ""
+    @State private var relayBaseURLDraft = ""
+    @State private var relayUserNameDraft = ""
+    @State private var relayMacNameDraft = ""
+    @State private var relaySecretTokenDraft = ""
+    @State private var relayPollSeconds = 3.0
 
     private var selectedProfile: ChromeProfileItem? {
         let trimmed = selectedProfileDirectoryName.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -10825,6 +11316,132 @@ struct FacebookRunnerSheet: View {
 
     private var serverStatusTint: Color {
         model.isFacebookControlServerOnline ? SoraninPalette.success : Color(red: 1.0, green: 0.42, blue: 0.42)
+    }
+
+    private var internetStatusTint: Color {
+        model.isInternetOnline ? SoraninPalette.success : Color(red: 1.0, green: 0.42, blue: 0.42)
+    }
+
+    private var hasSavedControlPassword: Bool {
+        !facebookControlPassword.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private var controlPasswordStatusTint: Color {
+        hasSavedControlPassword ? SoraninPalette.success : Color(red: 1.0, green: 0.42, blue: 0.42)
+    }
+
+    private var canSaveControlPassword: Bool {
+        let trimmedDraft = controlPasswordDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedConfirm = controlPasswordConfirm.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !trimmedDraft.isEmpty && trimmedDraft == trimmedConfirm
+    }
+
+    private var normalizedRelayBaseURL: String {
+        normalizedControlRelayURLString(relayBaseURLDraft)
+    }
+
+    private var normalizedRelayUserName: String {
+        normalizedControlRelayLabel(relayUserNameDraft, fallback: normalizedControlRelayLabel(currentMacUserName(), fallback: "user"))
+    }
+
+    private var normalizedRelayMacName: String {
+        normalizedControlRelayLabel(relayMacNameDraft, fallback: normalizedControlRelayLabel(currentMacDeviceName(), fallback: "mac"))
+    }
+
+    private var normalizedRelaySecretToken: String {
+        normalizedControlRelayLabel(relaySecretTokenDraft, fallback: "")
+    }
+
+    private var relayClientURLPreview: String {
+        controlRelayClientURL(
+            relayURL: normalizedRelayBaseURL,
+            userName: normalizedRelayUserName,
+            macName: normalizedRelayMacName,
+            secretToken: normalizedRelaySecretToken
+        )
+    }
+
+    private var hasSavedRelaySettings: Bool {
+        !model.facebookControlServerRelayClientURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private var canSaveRelaySettings: Bool {
+        !normalizedRelayBaseURL.isEmpty && !normalizedRelaySecretToken.isEmpty && URL(string: normalizedRelayBaseURL) != nil
+    }
+
+    private func beginEditingControlPassword() {
+        let current = facebookControlPassword.trimmingCharacters(in: .whitespacesAndNewlines)
+        controlPasswordDraft = current
+        controlPasswordConfirm = current
+        showingControlPasswordEditor = true
+    }
+
+    private func saveControlPasswordFromEditor() {
+        let trimmed = controlPasswordDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        let confirmed = controlPasswordConfirm.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            showLocalToast("Enter a password first.")
+            return
+        }
+        guard trimmed == confirmed else {
+            showLocalToast("Password confirm does not match.")
+            return
+        }
+        facebookControlPassword = trimmed
+        showingControlPasswordEditor = false
+        showLocalToast("iPhone Control password saved.")
+    }
+
+    private func clearSavedControlPassword() {
+        facebookControlPassword = ""
+        controlPasswordDraft = ""
+        controlPasswordConfirm = ""
+        showingControlPasswordEditor = false
+        showLocalToast("iPhone Control password cleared.")
+    }
+
+    private func loadRelayEditorFromSavedConfig() {
+        relayBaseURLDraft = model.facebookControlServerRelayBaseURL
+        relayUserNameDraft = model.facebookControlServerRelayUserName.isEmpty ? loadSavedControlRelayUserName() : model.facebookControlServerRelayUserName
+        relayMacNameDraft = model.facebookControlServerRelayMacName.isEmpty ? loadSavedControlRelayMacName() : model.facebookControlServerRelayMacName
+        relaySecretTokenDraft = loadSavedControlRelaySecretToken()
+        relayPollSeconds = max(1.0, model.facebookControlServerRelayPollSeconds)
+    }
+
+    private func saveRelaySettingsFromEditor() {
+        guard canSaveRelaySettings else {
+            showLocalToast("Add Relay URL and Secret Token first.")
+            return
+        }
+        model.saveFacebookControlRelaySettings(
+            relayURL: normalizedRelayBaseURL,
+            userName: normalizedRelayUserName,
+            macName: normalizedRelayMacName,
+            secretToken: normalizedRelaySecretToken,
+            pollSeconds: relayPollSeconds
+        )
+        relayBaseURLDraft = normalizedRelayBaseURL
+        relayUserNameDraft = normalizedRelayUserName
+        relayMacNameDraft = normalizedRelayMacName
+        relaySecretTokenDraft = normalizedRelaySecretToken
+    }
+
+    private func clearRelaySettingsFromEditor() {
+        model.clearFacebookControlRelaySettings()
+        relayBaseURLDraft = ""
+        relayUserNameDraft = normalizedControlRelayLabel(currentMacUserName(), fallback: "user")
+        relayMacNameDraft = normalizedControlRelayLabel(currentMacDeviceName(), fallback: "mac")
+        relaySecretTokenDraft = ""
+        relayPollSeconds = 3.0
+    }
+
+    private func showLocalToast(_ message: String) {
+        model.toastMessage = message
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.4) {
+            if model.toastMessage == message {
+                model.toastMessage = nil
+            }
+        }
     }
 
     @ViewBuilder
@@ -10864,12 +11481,20 @@ struct FacebookRunnerSheet: View {
         selectedPackageIDs = Set(parsedPackageNames).intersection(available)
     }
 
+    private func syncFoldersTextFromSelectedCards() {
+        let selectedNames = model.editedPackages
+            .filter { selectedPackageIDs.contains($0.id) }
+            .map(\.packageName)
+        packageNamesText = selectedNames.joined(separator: "\n")
+    }
+
     private func togglePackage(_ item: EditedPackageItem) {
         if selectedPackageIDs.contains(item.id) {
             selectedPackageIDs.remove(item.id)
         } else {
             selectedPackageIDs.insert(item.id)
         }
+        syncFoldersTextFromSelectedCards()
     }
 
     private func addSelectedPackagesToFolders() {
@@ -10887,399 +11512,758 @@ struct FacebookRunnerSheet: View {
 
     private func useCurrentAppSelection() {
         selectedPackageIDs = model.selectedEditedPackageIDs.intersection(Set(model.editedPackages.map(\.id)))
-        addSelectedPackagesToFolders()
+        syncFoldersTextFromSelectedCards()
     }
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            HStack(alignment: .top, spacing: 12) {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Facebook Runner")
-                        .font(.system(size: 24, weight: .bold))
-                        .foregroundStyle(SoraninPalette.primaryText)
-                    Text("Run Facebook Reels preflight and batch upload inside Soranin.")
-                        .font(.system(size: 13, weight: .medium))
+    private func pruneMissingPackagesFromText(showToast: Bool = false) {
+        let available = Set(model.editedPackages.map(\.packageName))
+        let parsed = parsedPackageNames
+        guard !parsed.isEmpty else { return }
+        let kept = parsed.filter { available.contains($0) }
+        let removed = parsed.filter { !available.contains($0) }
+        if kept != parsed {
+            packageNamesText = kept.joined(separator: "\n")
+            selectedPackageIDs.formIntersection(Set(model.editedPackages.map(\.id)))
+            if showToast, !removed.isEmpty {
+                showLocalToast("Removed missing folder: \(removed.joined(separator: ", "))")
+            }
+        }
+    }
+
+    private var headerSection: some View {
+        HStack(alignment: .top, spacing: 12) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Facebook Runner")
+                    .font(.system(size: 24, weight: .bold))
+                    .foregroundStyle(SoraninPalette.primaryText)
+                Text("Run Facebook Reels preflight and batch upload inside Soranin.")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(SoraninPalette.secondaryText)
+            }
+            Spacer()
+            Text(model.isBusy ? model.status : "Ready")
+                .font(.system(size: 13, weight: .bold))
+                .foregroundStyle(SoraninPalette.primaryText)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(
+                    Capsule(style: .continuous)
+                        .fill(SoraninPalette.cardSoft)
+                )
+                .overlay(
+                    Capsule(style: .continuous)
+                        .stroke(SoraninPalette.border, lineWidth: 1)
+                )
+        }
+    }
+
+    private var iphoneControlSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("iPhone Control")
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundStyle(SoraninPalette.secondaryText)
+                    Text("Use Wi-Fi URL for fast nearby control, or use your own Relay URL for remote control.")
+                        .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(SoraninPalette.secondaryText)
                 }
                 Spacer()
-                Text(model.isBusy ? model.status : "Ready")
-                    .font(.system(size: 13, weight: .bold))
+                HStack(spacing: 8) {
+                    Circle()
+                        .fill(internetStatusTint)
+                        .frame(width: 9, height: 9)
+                    Text("Internet \(model.internetStatusLabel)")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(SoraninPalette.primaryText)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(
+                    Capsule(style: .continuous)
+                        .fill(SoraninPalette.cardSoft)
+                )
+                .overlay(
+                    Capsule(style: .continuous)
+                        .stroke(SoraninPalette.border, lineWidth: 1)
+                )
+
+                HStack(spacing: 8) {
+                    Circle()
+                        .fill(serverStatusTint)
+                        .frame(width: 9, height: 9)
+                    Text(model.isFacebookControlServerOnline ? "Online" : "Offline")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(SoraninPalette.primaryText)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(
+                    Capsule(style: .continuous)
+                        .fill(SoraninPalette.cardSoft)
+                )
+                .overlay(
+                    Capsule(style: .continuous)
+                        .stroke(SoraninPalette.border, lineWidth: 1)
+                )
+
+                Button("Refresh URLs") {
+                    model.refreshFacebookControlServerConnectionInfo()
+                }
+                .buttonStyle(SoraninSecondaryButtonStyle(compact: true))
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("This Mac")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(SoraninPalette.secondaryText)
+                Text(model.facebookControlServerDisplayName)
+                    .font(.system(size: 15, weight: .bold))
                     .foregroundStyle(SoraninPalette.primaryText)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
+                Text("\(model.facebookControlServerDeviceName) • @\(model.facebookControlServerUserName)")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(SoraninPalette.secondaryText)
+            }
+            .padding(14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .fill(SoraninPalette.cardSoft)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .stroke(SoraninPalette.border, lineWidth: 1)
+            )
+
+            controlRelaySection
+
+            Group {
+                if let relayURL = model.preferredFacebookControlServerRelayURL, !relayURL.isEmpty {
+                    serverURLRow(title: "Remote Mac (Relay)", value: relayURL, isPrimary: true)
+                    Text("Use this URL when your iPhone is on another Wi-Fi or cellular. Relay URL stays the same even when your home IP changes.")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(SoraninPalette.secondaryText)
+                        .padding(.top, -2)
+                } else if let tailscaleURL = model.preferredFacebookControlServerTailscaleURL {
+                    serverURLRow(title: "Remote Mac (Tailscale)", value: tailscaleURL, isPrimary: true)
+                    Text("Use this URL when your iPhone is on another Wi-Fi or cellular. Tailscale must be installed on both Mac and iPhone.")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(SoraninPalette.secondaryText)
+                        .padding(.top, -2)
+                } else {
+                    Text("Remote control outside your home network needs either your own Relay URL or Tailscale. Save relay settings below, or install Tailscale on both devices, then tap Refresh URLs.")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(SoraninPalette.secondaryText)
+                        .padding(14)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(
+                            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                .fill(SoraninPalette.cardStrong)
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                .stroke(SoraninPalette.border, lineWidth: 1)
+                        )
+                }
+            }
+
+            Group {
+                if let lanURL = model.preferredFacebookControlServerLANURL {
+                    serverURLRow(title: "Scan Mac (Wi-Fi Fast)", value: lanURL, isPrimary: model.preferredFacebookControlServerRelayURL == nil && model.preferredFacebookControlServerTailscaleURL == nil)
+                } else {
+                    Text("No Wi-Fi IP found yet. Connect Mac to the same network as your iPhone, then tap Refresh URLs.")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(SoraninPalette.secondaryText)
+                        .padding(14)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(
+                            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                .fill(SoraninPalette.cardStrong)
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                .stroke(SoraninPalette.border, lineWidth: 1)
+                        )
+                }
+            }
+
+            serverURLRow(title: "Local Mac URL", value: model.facebookControlServerLocalURL)
+            controlPasswordSection
+
+            if model.facebookControlServerTailscaleURLs.count > 1 {
+                ForEach(Array(model.facebookControlServerTailscaleURLs.dropFirst()), id: \.self) { url in
+                    serverURLRow(title: "Other Tailscale URL", value: url)
+                }
+            }
+
+            if model.facebookControlServerLANURLs.count > 1 {
+                ForEach(Array(model.facebookControlServerLANURLs.dropFirst()), id: \.self) { url in
+                    serverURLRow(title: "Other Network URL", value: url)
+                }
+            }
+        }
+        .padding(16)
+        .background(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(SoraninPalette.cardStrong)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(SoraninPalette.border, lineWidth: 1)
+        )
+    }
+
+    private var controlRelaySection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .center, spacing: 10) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Remote Relay")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(SoraninPalette.secondaryText)
+                    Text("Use your own relay server so iPhone can connect from any internet. Same Wi-Fi still uses Scan Mac.")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(SoraninPalette.secondaryText)
+                }
+                Spacer()
+                HStack(spacing: 8) {
+                    Circle()
+                        .fill(hasSavedRelaySettings ? SoraninPalette.success : Color(red: 1.0, green: 0.42, blue: 0.42))
+                        .frame(width: 9, height: 9)
+                    Text(hasSavedRelaySettings ? "Relay On" : "Relay Off")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(SoraninPalette.primaryText)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(
+                    Capsule(style: .continuous)
+                        .fill(SoraninPalette.cardSoft)
+                )
+                .overlay(
+                    Capsule(style: .continuous)
+                        .stroke(SoraninPalette.border, lineWidth: 1)
+                )
+            }
+
+            if !relayClientURLPreview.isEmpty {
+                serverURLRow(title: hasSavedRelaySettings ? "Relay Client URL" : "Relay Preview URL", value: hasSavedRelaySettings ? model.facebookControlServerRelayClientURL : relayClientURLPreview, isPrimary: false)
+            }
+
+            TextField("https://your-relay.example.com", text: $relayBaseURLDraft)
+                .textFieldStyle(.plain)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 12)
+                .background(
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .fill(SoraninPalette.cardStrong)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .stroke(SoraninPalette.border, lineWidth: 1)
+                )
+                .foregroundStyle(SoraninPalette.primaryText)
+
+            HStack(spacing: 10) {
+                TextField("user label", text: $relayUserNameDraft)
+                    .textFieldStyle(.plain)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 12)
+                    .background(
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .fill(SoraninPalette.cardStrong)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .stroke(SoraninPalette.border, lineWidth: 1)
+                    )
+                    .foregroundStyle(SoraninPalette.primaryText)
+
+                TextField("mac label", text: $relayMacNameDraft)
+                    .textFieldStyle(.plain)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 12)
+                    .background(
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .fill(SoraninPalette.cardStrong)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .stroke(SoraninPalette.border, lineWidth: 1)
+                    )
+                    .foregroundStyle(SoraninPalette.primaryText)
+            }
+
+            HStack(spacing: 10) {
+                SecureField("secret token", text: $relaySecretTokenDraft)
+                    .textFieldStyle(.plain)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 12)
+                    .background(
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .fill(SoraninPalette.cardStrong)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .stroke(SoraninPalette.border, lineWidth: 1)
+                    )
+                    .foregroundStyle(SoraninPalette.primaryText)
+
+                Stepper(value: $relayPollSeconds, in: 1...30, step: 1) {
+                    Text("Poll: \(Int(relayPollSeconds))s")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(SoraninPalette.primaryText)
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 12)
+                .background(
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .fill(SoraninPalette.cardStrong)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .stroke(SoraninPalette.border, lineWidth: 1)
+                )
+            }
+
+            HStack(spacing: 10) {
+                Button("Save Relay") {
+                    saveRelaySettingsFromEditor()
+                }
+                .buttonStyle(SoraninPrimaryButtonStyle(compact: true))
+                .disabled(!canSaveRelaySettings)
+
+                Button("Reload") {
+                    loadRelayEditorFromSavedConfig()
+                    model.refreshFacebookControlServerConnectionInfo()
+                }
+                .buttonStyle(SoraninSecondaryButtonStyle(compact: true))
+
+                if hasSavedRelaySettings {
+                    Button("Clear Relay") {
+                        clearRelaySettingsFromEditor()
+                    }
+                    .buttonStyle(SoraninSecondaryButtonStyle(compact: true))
+                }
+            }
+
+            Text("After Save Relay, Soranin restarts the local control server and starts the relay worker. iPhone can then use the Relay Client URL plus your Control Password.")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(SoraninPalette.secondaryText)
+        }
+    }
+
+    private var controlPasswordSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .center, spacing: 10) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Control Password")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(SoraninPalette.secondaryText)
+                    Text("Require a password before iPhone can connect to this Mac.")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(SoraninPalette.secondaryText)
+                }
+                Spacer()
+                HStack(spacing: 8) {
+                    Circle()
+                        .fill(controlPasswordStatusTint)
+                        .frame(width: 9, height: 9)
+                    Text(hasSavedControlPassword ? "Password On" : "Password Off")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(SoraninPalette.primaryText)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(
+                    Capsule(style: .continuous)
+                        .fill(SoraninPalette.cardSoft)
+                )
+                .overlay(
+                    Capsule(style: .continuous)
+                        .stroke(SoraninPalette.border, lineWidth: 1)
+                )
+
+                Button(showingControlPasswordEditor ? "Close" : "Set Password") {
+                    if showingControlPasswordEditor {
+                        showingControlPasswordEditor = false
+                    } else {
+                        beginEditingControlPassword()
+                    }
+                }
+                .buttonStyle(SoraninSecondaryButtonStyle(compact: true))
+
+                if hasSavedControlPassword {
+                    Button("Clear Password") {
+                        clearSavedControlPassword()
+                    }
+                    .buttonStyle(SoraninSecondaryButtonStyle(compact: true))
+                }
+            }
+
+            if showingControlPasswordEditor {
+                VStack(alignment: .leading, spacing: 8) {
+                    SecureField("New password for iPhone Control Mac", text: $controlPasswordDraft)
+                        .textFieldStyle(.plain)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 12)
+                        .background(
+                            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                .fill(SoraninPalette.cardStrong)
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                .stroke(SoraninPalette.border, lineWidth: 1)
+                        )
+                        .foregroundStyle(SoraninPalette.primaryText)
+
+                    SecureField("Confirm password", text: $controlPasswordConfirm)
+                        .textFieldStyle(.plain)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 12)
+                        .background(
+                            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                .fill(SoraninPalette.cardStrong)
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                .stroke(SoraninPalette.border, lineWidth: 1)
+                        )
+                        .foregroundStyle(SoraninPalette.primaryText)
+
+                    HStack(spacing: 10) {
+                        Button("Save Password") {
+                            saveControlPasswordFromEditor()
+                        }
+                        .buttonStyle(SoraninPrimaryButtonStyle(compact: true))
+                        .disabled(!canSaveControlPassword)
+
+                        Button("Cancel") {
+                            showingControlPasswordEditor = false
+                        }
+                        .buttonStyle(SoraninSecondaryButtonStyle(compact: true))
+                    }
+                }
+            }
+
+            Text("When password is on, both Scan Mac and Remote Mac on iPhone must enter this password before connecting.")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(SoraninPalette.secondaryText)
+        }
+    }
+
+    private var chromeProfileSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Chrome Profile")
+                .font(.system(size: 13, weight: .bold))
+                .foregroundStyle(SoraninPalette.secondaryText)
+
+            HStack(spacing: 10) {
+                Picker("Chrome Profile", selection: $selectedProfileDirectoryName) {
+                    Text("Use current Chrome").tag("")
+                    ForEach(model.chromeProfiles) { item in
+                        Text(item.displayName + (item.isOnline ? " • Online" : ""))
+                            .tag(item.directoryName)
+                    }
+                }
+                .pickerStyle(.menu)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 12)
+                .background(
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .fill(SoraninPalette.cardStrong)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .stroke(SoraninPalette.border, lineWidth: 1)
+                )
+
+                Button("Refresh") {
+                    model.refreshChromeProfiles()
+                }
+                .buttonStyle(SoraninSecondaryButtonStyle(compact: true))
+
+                if let selectedProfile {
+                    Button("Open") {
+                        model.openChromeProfile(selectedProfile)
+                    }
+                    .buttonStyle(SoraninSecondaryButtonStyle(compact: true))
+                }
+            }
+
+            if let selectedProfile {
+                HStack(spacing: 10) {
+                    Text(selectedProfile.displayName)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(SoraninPalette.primaryText)
+                    ChromeProfileStatusPill(isOnline: selectedProfile.isOnline)
+                }
+            } else {
+                Text("If Chrome is already on the correct profile, leave this blank.")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(SoraninPalette.secondaryText)
+            }
+        }
+    }
+
+    private var pageSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Facebook Page")
+                .font(.system(size: 13, weight: .bold))
+                .foregroundStyle(SoraninPalette.secondaryText)
+
+            TextField("Nin Fishing", text: $pageName)
+                .textFieldStyle(.plain)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 12)
+                .background(
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .fill(SoraninPalette.cardStrong)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .stroke(SoraninPalette.border, lineWidth: 1)
+                )
+                .foregroundStyle(SoraninPalette.primaryText)
+        }
+    }
+
+    private var foldersSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Folders")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundStyle(SoraninPalette.secondaryText)
+                Spacer()
+                Text("\(parsedPackageNames.count)")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(SoraninPalette.primaryText)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
                     .background(
                         Capsule(style: .continuous)
                             .fill(SoraninPalette.cardSoft)
                     )
-                    .overlay(
-                        Capsule(style: .continuous)
-                            .stroke(SoraninPalette.border, lineWidth: 1)
-                    )
             }
+
+            TextEditor(text: $packageNamesText)
+                .scrollContentBackground(.hidden)
+                .font(.system(size: 13, weight: .regular, design: .monospaced))
+                .foregroundStyle(SoraninPalette.primaryText)
+                .padding(10)
+                .frame(minHeight: 120)
+                .background(
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .fill(SoraninPalette.cardStrong)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .stroke(SoraninPalette.border, lineWidth: 1)
+                )
+
+            Text(parsedPackageNames.isEmpty ? "Enter package names separated by spaces or new lines." : parsedPackageNames.joined(separator: "  •  "))
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(SoraninPalette.secondaryText)
+        }
+    }
+
+    private var selectionSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("Select From App Cards")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundStyle(SoraninPalette.secondaryText)
+                Spacer()
+                Button("Use App Selected") {
+                    useCurrentAppSelection()
+                }
+                .buttonStyle(SoraninSecondaryButtonStyle(compact: true))
+                .disabled(model.selectedEditedPackageIDs.isEmpty)
+            }
+
+            Text("Tap a card to add its folder to the Folders box. Tap again to remove it automatically.")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(SoraninPalette.secondaryText)
 
             ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    VStack(alignment: .leading, spacing: 12) {
-                        HStack {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text("iPhone Control")
-                                    .font(.system(size: 13, weight: .bold))
-                                    .foregroundStyle(SoraninPalette.secondaryText)
-                                Text("Paste the Wi-Fi URL into iPhone > Control Mac > Server URL.")
-                                    .font(.system(size: 12, weight: .medium))
-                                    .foregroundStyle(SoraninPalette.secondaryText)
-                            }
-                            Spacer()
-                            HStack(spacing: 8) {
-                                Circle()
-                                    .fill(serverStatusTint)
-                                    .frame(width: 9, height: 9)
-                                Text(model.isFacebookControlServerOnline ? "Online" : "Offline")
-                                    .font(.system(size: 12, weight: .bold))
-                                    .foregroundStyle(SoraninPalette.primaryText)
-                            }
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 8)
-                            .background(
-                                Capsule(style: .continuous)
-                                    .fill(SoraninPalette.cardSoft)
-                            )
-                            .overlay(
-                                Capsule(style: .continuous)
-                                    .stroke(SoraninPalette.border, lineWidth: 1)
-                            )
-
-                            Button("Refresh URLs") {
-                                model.refreshFacebookControlServerConnectionInfo()
-                            }
-                            .buttonStyle(SoraninSecondaryButtonStyle(compact: true))
-                        }
-
-                        if let tailscaleURL = model.preferredFacebookControlServerTailscaleURL {
-                            serverURLRow(title: "Tailscale URL", value: tailscaleURL, isPrimary: true)
-                            Text("Use this URL when your iPhone is on another Wi-Fi or cellular. Tailscale must be installed on both Mac and iPhone.")
-                                .font(.system(size: 12, weight: .medium))
-                                .foregroundStyle(SoraninPalette.secondaryText)
-                                .padding(.top, -2)
-                        } else {
-                            Text("Remote control outside your home network needs Tailscale on both devices. Install Tailscale, sign in to the same account, then tap Refresh URLs.")
-                                .font(.system(size: 12, weight: .medium))
-                                .foregroundStyle(SoraninPalette.secondaryText)
-                                .padding(14)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .background(
-                                    RoundedRectangle(cornerRadius: 16, style: .continuous)
-                                        .fill(SoraninPalette.cardStrong)
-                                )
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 16, style: .continuous)
-                                        .stroke(SoraninPalette.border, lineWidth: 1)
-                                )
-                        }
-
-                        if let lanURL = model.preferredFacebookControlServerLANURL {
-                            serverURLRow(title: "Mac URL for Same Wi-Fi", value: lanURL, isPrimary: model.preferredFacebookControlServerTailscaleURL == nil)
-                        } else {
-                            Text("No Wi-Fi IP found yet. Connect Mac to the same network as your iPhone, then tap Refresh URLs.")
-                                .font(.system(size: 12, weight: .medium))
-                                .foregroundStyle(SoraninPalette.secondaryText)
-                                .padding(14)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .background(
-                                    RoundedRectangle(cornerRadius: 16, style: .continuous)
-                                        .fill(SoraninPalette.cardStrong)
-                                )
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 16, style: .continuous)
-                                        .stroke(SoraninPalette.border, lineWidth: 1)
-                                )
-                        }
-
-                        serverURLRow(title: "Local Mac URL", value: model.facebookControlServerLocalURL)
-
-                        if model.facebookControlServerTailscaleURLs.count > 1 {
-                            ForEach(Array(model.facebookControlServerTailscaleURLs.dropFirst()), id: \.self) { url in
-                                serverURLRow(title: "Other Tailscale URL", value: url)
-                            }
-                        }
-
-                        if model.facebookControlServerLANURLs.count > 1 {
-                            ForEach(Array(model.facebookControlServerLANURLs.dropFirst()), id: \.self) { url in
-                                serverURLRow(title: "Other Network URL", value: url)
-                            }
-                        }
-                    }
-                    .padding(16)
-                    .background(
-                        RoundedRectangle(cornerRadius: 18, style: .continuous)
-                            .fill(SoraninPalette.cardStrong)
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 18, style: .continuous)
-                            .stroke(SoraninPalette.border, lineWidth: 1)
-                    )
-
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Chrome Profile")
-                            .font(.system(size: 13, weight: .bold))
-                            .foregroundStyle(SoraninPalette.secondaryText)
-
-                        HStack(spacing: 10) {
-                            Picker("Chrome Profile", selection: $selectedProfileDirectoryName) {
-                                Text("Use current Chrome").tag("")
-                                ForEach(model.chromeProfiles) { item in
-                                    Text(item.displayName + (item.isOnline ? " • Online" : ""))
-                                        .tag(item.directoryName)
-                                }
-                            }
-                            .pickerStyle(.menu)
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 12)
-                            .background(
-                                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                                    .fill(SoraninPalette.cardStrong)
-                            )
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                                    .stroke(SoraninPalette.border, lineWidth: 1)
-                            )
-
-                            Button("Refresh") {
-                                model.refreshChromeProfiles()
-                            }
-                            .buttonStyle(SoraninSecondaryButtonStyle(compact: true))
-
-                            if let selectedProfile {
-                                Button("Open") {
-                                    model.openChromeProfile(selectedProfile)
-                                }
-                                .buttonStyle(SoraninSecondaryButtonStyle(compact: true))
-                            }
-                        }
-
-                        if let selectedProfile {
-                            HStack(spacing: 10) {
-                                Text(selectedProfile.displayName)
-                                    .font(.system(size: 13, weight: .semibold))
-                                    .foregroundStyle(SoraninPalette.primaryText)
-                                ChromeProfileStatusPill(isOnline: selectedProfile.isOnline)
-                            }
-                        } else {
-                            Text("If Chrome is already on the correct profile, leave this blank.")
-                                .font(.system(size: 12, weight: .medium))
-                                .foregroundStyle(SoraninPalette.secondaryText)
-                        }
-                    }
-
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Facebook Page")
-                            .font(.system(size: 13, weight: .bold))
-                            .foregroundStyle(SoraninPalette.secondaryText)
-
-                        TextField("Nin Fishing", text: $pageName)
-                            .textFieldStyle(.plain)
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 12)
-                            .background(
-                                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                                    .fill(SoraninPalette.cardStrong)
-                            )
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                                    .stroke(SoraninPalette.border, lineWidth: 1)
-                            )
-                            .foregroundStyle(SoraninPalette.primaryText)
-                    }
-
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack {
-                            Text("Folders")
-                                .font(.system(size: 13, weight: .bold))
-                                .foregroundStyle(SoraninPalette.secondaryText)
-                            Spacer()
-                            Text("\(parsedPackageNames.count)")
-                                .font(.system(size: 12, weight: .bold))
-                                .foregroundStyle(SoraninPalette.primaryText)
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 6)
-                                .background(
-                                    Capsule(style: .continuous)
-                                        .fill(SoraninPalette.cardSoft)
-                                )
-                        }
-
-                        TextEditor(text: $packageNamesText)
-                            .scrollContentBackground(.hidden)
-                            .font(.system(size: 13, weight: .regular, design: .monospaced))
-                            .foregroundStyle(SoraninPalette.primaryText)
-                            .padding(10)
-                            .frame(minHeight: 120)
-                            .background(
-                                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                                    .fill(SoraninPalette.cardStrong)
-                            )
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                                    .stroke(SoraninPalette.border, lineWidth: 1)
-                            )
-
-                        Text(parsedPackageNames.isEmpty ? "Enter package names separated by spaces or new lines." : parsedPackageNames.joined(separator: "  •  "))
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundStyle(SoraninPalette.secondaryText)
-                    }
-
-                    VStack(alignment: .leading, spacing: 10) {
-                        HStack {
-                            Text("Select From App Cards")
-                                .font(.system(size: 13, weight: .bold))
-                                .foregroundStyle(SoraninPalette.secondaryText)
-                            Spacer()
-                            Button("Add Selected") {
-                                addSelectedPackagesToFolders()
-                            }
-                            .buttonStyle(SoraninSecondaryButtonStyle(compact: true))
-                            .disabled(selectedPackageIDs.isEmpty)
-
-                            Button("Use App Selected") {
-                                useCurrentAppSelection()
-                            }
-                            .buttonStyle(SoraninSecondaryButtonStyle(compact: true))
-                            .disabled(model.selectedEditedPackageIDs.isEmpty)
-                        }
-
-                        ScrollView {
-                            LazyVGrid(columns: [GridItem(.adaptive(minimum: 170, maximum: 200), spacing: 10)], spacing: 10) {
-                                ForEach(model.editedPackages) { item in
-                                    FacebookRunnerPackageCard(
-                                        item: item,
-                                        isSelected: selectedPackageIDs.contains(item.id),
-                                        onToggle: { togglePackage(item) }
-                                    )
-                                }
-                            }
-                            .padding(.trailing, 4)
-                        }
-                        .frame(minHeight: 220, maxHeight: 320)
-                        .padding(10)
-                        .background(
-                            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                                .fill(SoraninPalette.cardStrong)
-                        )
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                                .stroke(SoraninPalette.border, lineWidth: 1)
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 170, maximum: 200), spacing: 10)], spacing: 10) {
+                    ForEach(model.editedPackages) { item in
+                        FacebookRunnerPackageCard(
+                            item: item,
+                            isSelected: selectedPackageIDs.contains(item.id),
+                            onToggle: { togglePackage(item) }
                         )
                     }
+                }
+                .padding(.trailing, 4)
+            }
+            .frame(minHeight: 220, maxHeight: 320)
+            .padding(10)
+            .background(
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .fill(SoraninPalette.cardStrong)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .stroke(SoraninPalette.border, lineWidth: 1)
+            )
+        }
+    }
 
-                    VStack(alignment: .leading, spacing: 12) {
-                        Stepper(value: $intervalMinutes, in: 1...720, step: 30) {
-                            Text("Interval: \(intervalMinutes) minute(s)")
-                                .font(.system(size: 13, weight: .semibold))
-                                .foregroundStyle(SoraninPalette.primaryText)
-                        }
-
-                        Toggle("Open selected Chrome profile first if it is offline", isOn: $openChromeFirst)
-                        Toggle("Close Chrome after each package", isOn: $closeAfterEach)
-                        Toggle("Close Chrome after finish", isOn: $closeAfterFinish)
-                        Toggle("Post now but keep queue moving", isOn: $postNowAdvanceSlot)
-                        Toggle("Delete folders after successful run", isOn: $deleteFoldersAfterSuccess)
-                    }
-                    .toggleStyle(.switch)
+    private var optionsSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Stepper(value: $intervalMinutes, in: 1...720, step: 30) {
+                Text("Interval: \(intervalMinutes) minute(s)")
+                    .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(SoraninPalette.primaryText)
-                    .padding(16)
-                    .background(
-                        RoundedRectangle(cornerRadius: 18, style: .continuous)
-                            .fill(SoraninPalette.cardStrong)
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 18, style: .continuous)
-                            .stroke(SoraninPalette.border, lineWidth: 1)
-                    )
-
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("Root Folder")
-                            .font(.system(size: 12, weight: .bold))
-                            .foregroundStyle(SoraninPalette.secondaryText)
-                        Text(rootDir.path)
-                            .font(.system(size: 12, weight: .medium, design: .monospaced))
-                            .foregroundStyle(SoraninPalette.primaryText)
-                        Text("State File")
-                            .font(.system(size: 12, weight: .bold))
-                            .foregroundStyle(SoraninPalette.secondaryText)
-                            .padding(.top, 6)
-                        Text(facebookTimingStateFile.path)
-                            .font(.system(size: 12, weight: .medium, design: .monospaced))
-                            .foregroundStyle(SoraninPalette.primaryText)
-                        Text("iPhone Control: Mac app auto starts the local control server on port 8765.")
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundStyle(SoraninPalette.secondaryText)
-                            .padding(.top, 6)
-                    }
-                    .padding(16)
-                    .background(
-                        RoundedRectangle(cornerRadius: 18, style: .continuous)
-                            .fill(SoraninPalette.cardStrong)
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 18, style: .continuous)
-                            .stroke(SoraninPalette.border, lineWidth: 1)
-                    )
-                }
             }
 
-            HStack(spacing: 10) {
-                Button("Preflight") {
-                    model.runFacebookRunnerPreflight(
-                        profileDirectoryName: selectedProfileDirectoryName,
-                        pageName: pageName,
-                        packageNamesText: packageNamesText,
-                        intervalMinutes: intervalMinutes
-                    )
-                }
-                .buttonStyle(SoraninSecondaryButtonStyle(compact: false))
-                .disabled(!canPreflight)
+            Toggle("Open selected Chrome profile first if it is offline", isOn: $openChromeFirst)
+            Toggle("Close Chrome after each package", isOn: $closeAfterEach)
+            Toggle("Close Chrome after finish", isOn: $closeAfterFinish)
+            Toggle("Post now but keep queue moving", isOn: $postNowAdvanceSlot)
+            Toggle("Delete folders after successful run", isOn: $deleteFoldersAfterSuccess)
+        }
+        .toggleStyle(.switch)
+        .foregroundStyle(SoraninPalette.primaryText)
+        .padding(16)
+        .background(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(SoraninPalette.cardStrong)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(SoraninPalette.border, lineWidth: 1)
+        )
+    }
 
-                Button("Run") {
-                    model.runFacebookRunnerBatch(
-                        profileDirectoryName: selectedProfileDirectoryName,
-                        pageName: pageName,
-                        packageNamesText: packageNamesText,
-                        intervalMinutes: intervalMinutes,
-                        closeAfterEach: closeAfterEach,
-                        closeAfterFinish: closeAfterFinish,
-                        postNowAdvanceSlot: postNowAdvanceSlot,
-                        openChromeFirst: openChromeFirst,
-                        deleteFoldersAfterSuccess: deleteFoldersAfterSuccess
-                    )
-                }
-                .buttonStyle(SoraninPrimaryButtonStyle(compact: false))
-                .disabled(!canRun)
+    private var infoSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Root Folder")
+                .font(.system(size: 12, weight: .bold))
+                .foregroundStyle(SoraninPalette.secondaryText)
+            Text(rootDir.path)
+                .font(.system(size: 12, weight: .medium, design: .monospaced))
+                .foregroundStyle(SoraninPalette.primaryText)
+            Text("State File")
+                .font(.system(size: 12, weight: .bold))
+                .foregroundStyle(SoraninPalette.secondaryText)
+                .padding(.top, 6)
+            Text(facebookTimingStateFile.path)
+                .font(.system(size: 12, weight: .medium, design: .monospaced))
+                .foregroundStyle(SoraninPalette.primaryText)
+            Text("iPhone Control: Mac app auto starts the local control server on port 8765.")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(SoraninPalette.secondaryText)
+                .padding(.top, 6)
+        }
+        .padding(16)
+        .background(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(SoraninPalette.cardStrong)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(SoraninPalette.border, lineWidth: 1)
+        )
+    }
 
-                Button("Quit Chrome") {
-                    model.quitGoogleChromeCompletely()
-                }
-                .buttonStyle(SoraninSecondaryButtonStyle(compact: false))
-
-                Spacer()
-
-                Button("Done") {
-                    dismiss()
-                }
-                .buttonStyle(SoraninSecondaryButtonStyle(compact: false))
+    private var actionSection: some View {
+        HStack(spacing: 10) {
+            Button("Preflight") {
+                pruneMissingPackagesFromText(showToast: true)
+                model.runFacebookRunnerPreflight(
+                    profileDirectoryName: selectedProfileDirectoryName,
+                    pageName: pageName,
+                    packageNamesText: packageNamesText,
+                    intervalMinutes: intervalMinutes
+                )
             }
+            .buttonStyle(SoraninSecondaryButtonStyle(compact: false))
+            .disabled(!canPreflight)
+
+            Button("Run") {
+                pruneMissingPackagesFromText(showToast: true)
+                model.runFacebookRunnerBatch(
+                    profileDirectoryName: selectedProfileDirectoryName,
+                    pageName: pageName,
+                    packageNamesText: packageNamesText,
+                    intervalMinutes: intervalMinutes,
+                    closeAfterEach: closeAfterEach,
+                    closeAfterFinish: closeAfterFinish,
+                    postNowAdvanceSlot: postNowAdvanceSlot,
+                    openChromeFirst: openChromeFirst,
+                    deleteFoldersAfterSuccess: deleteFoldersAfterSuccess
+                )
+            }
+            .buttonStyle(SoraninPrimaryButtonStyle(compact: false))
+            .disabled(!canRun)
+
+            Button("Quit Chrome") {
+                model.quitGoogleChromeCompletely()
+            }
+            .buttonStyle(SoraninSecondaryButtonStyle(compact: false))
+
+            Spacer()
+
+            Button("Done") {
+                dismiss()
+            }
+            .buttonStyle(SoraninSecondaryButtonStyle(compact: false))
+        }
+    }
+
+    private var formSection: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            iphoneControlSection
+            chromeProfileSection
+            pageSection
+            foldersSection
+            selectionSection
+            optionsSection
+            infoSection
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            headerSection
+
+            ScrollView {
+                formSection
+            }
+
+            actionSection
         }
         .padding(24)
         .background(SoraninPalette.bgTop)
         .frame(minWidth: 760, idealWidth: 900, maxWidth: 1040, minHeight: 620)
+        .overlay(alignment: .topTrailing) {
+            if let alert = model.macControlAppAlert {
+                MacControlAlertPanel(alert: alert) {
+                    model.dismissMacControlAppAlert()
+                }
+                .padding(18)
+                .transition(.move(edge: .top).combined(with: .opacity))
+                .zIndex(50)
+            }
+        }
         .onAppear {
+            if facebookControlPassword.isEmpty {
+                facebookControlPassword = loadSavedFacebookControlPassword()
+            }
+            controlPasswordDraft = facebookControlPassword
+            controlPasswordConfirm = facebookControlPassword
+            loadRelayEditorFromSavedConfig()
             model.refreshChromeProfiles()
             model.ensureFacebookControlServerRunning()
             model.refreshFacebookControlServerConnectionInfo()
+            model.refreshFacebookControlServerRuntimeStatus()
             if selectedProfileDirectoryName.isEmpty,
                let firstOnline = model.chromeProfiles.first(where: { $0.isOnline }) {
                 selectedProfileDirectoryName = firstOnline.directoryName
             }
             syncSelectedPackageIDsFromText()
+            pruneMissingPackagesFromText()
         }
         .onChange(of: model.chromeProfiles) { profiles in
             if selectedProfileDirectoryName.isEmpty,
@@ -11289,6 +12273,17 @@ struct FacebookRunnerSheet: View {
         }
         .onChange(of: packageNamesText) { _ in
             syncSelectedPackageIDsFromText()
+        }
+        .onChange(of: model.editedPackages.map(\.packageName)) { _ in
+            pruneMissingPackagesFromText()
+            syncSelectedPackageIDsFromText()
+        }
+        .onChange(of: facebookControlPassword) { newValue in
+            persistFacebookControlPassword(newValue)
+            if !showingControlPasswordEditor {
+                controlPasswordDraft = newValue
+                controlPasswordConfirm = newValue
+            }
         }
     }
 }
@@ -11603,6 +12598,7 @@ struct ContentView: View {
                     .onReceive(timer) { _ in
                         model.refreshMetadata()
                         model.refreshFacebookControlServerConnectionInfo()
+                        model.refreshFacebookControlServerRuntimeStatus()
                     }
                     .onChange(of: model.soraInput) { _ in
                         model.normalizeSoraInputAfterEdit()
@@ -11649,6 +12645,14 @@ struct ContentView: View {
                         .transition(.move(edge: .bottom).combined(with: .opacity))
                         .zIndex(20)
                 }
+
+                if let alert = model.macControlAppAlert {
+                    MacControlAlertPanel(alert: alert) {
+                        model.dismissMacControlAppAlert()
+                    }
+                    .padding(20)
+                    .zIndex(30)
+                }
             }
         }
         .frame(minWidth: 820, minHeight: 620)
@@ -11657,6 +12661,7 @@ struct ContentView: View {
             model.setAIChatVisibility(false)
             model.ensureFacebookControlServerRunning()
             model.refreshFacebookControlServerConnectionInfo()
+            model.refreshFacebookControlServerRuntimeStatus()
             model.scheduleAutoHealthCheckIfNeeded()
         }
     }

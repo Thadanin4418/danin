@@ -1451,12 +1451,30 @@ private struct MacControlBootstrapResponse: Decodable {
     let message: String?
     let profiles: [String]?
     let memorySummary: String?
+    let macUserName: String?
+    let macDeviceName: String?
+    let macDisplayName: String?
+    let relayEnabled: Bool?
+    let relayBaseURL: String?
+    let relayClientToken: String?
+    let relayClientURL: String?
+    let relayUserName: String?
+    let relayMacName: String?
 
     private enum CodingKeys: String, CodingKey {
         case ok
         case message
         case profiles
         case memorySummary = "memory_summary"
+        case macUserName = "mac_user_name"
+        case macDeviceName = "mac_device_name"
+        case macDisplayName = "mac_display_name"
+        case relayEnabled = "relay_enabled"
+        case relayBaseURL = "relay_base_url"
+        case relayClientToken = "relay_client_token"
+        case relayClientURL = "relay_client_url"
+        case relayUserName = "relay_user_name"
+        case relayMacName = "relay_mac_name"
     }
 }
 
@@ -1466,8 +1484,105 @@ private struct MacFacebookPostResponse: Decodable {
     let summary: String?
 }
 
+struct MacControlPackageCard: Codable, Identifiable, Equatable {
+    let id: String
+    let packageName: String
+    let sourceName: String
+    let videoName: String
+    let title: String
+    let hasThumbnail: Bool
+    let thumbnailName: String
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case packageName = "package_name"
+        case sourceName = "source_name"
+        case videoName = "video_name"
+        case title
+        case hasThumbnail = "has_thumbnail"
+        case thumbnailName = "thumbnail_name"
+    }
+}
+
+private struct MacControlPackagesResponse: Decodable {
+    let ok: Bool?
+    let message: String?
+    let packages: [MacControlPackageCard]?
+}
+
+private struct MacControlPackageDeleteResponse: Decodable {
+    let ok: Bool?
+    let message: String?
+    let packageName: String?
+    let packages: [MacControlPackageCard]?
+
+    private enum CodingKeys: String, CodingKey {
+        case ok
+        case message
+        case packageName = "package_name"
+        case packages
+    }
+}
+
+private struct MacSourceVideoUploadResponse: Decodable {
+    let ok: Bool?
+    let message: String?
+    let fileName: String?
+    let savedPath: String?
+    let sourceCount: Int?
+
+    private enum CodingKeys: String, CodingKey {
+        case ok
+        case message
+        case fileName = "file_name"
+        case savedPath = "saved_path"
+        case sourceCount = "source_count"
+    }
+}
+
 private struct MacControlStatusResponse: Decodable {
     let status: String?
+    let detail: String?
+    let progressPercent: Int?
+    let progressLabel: String?
+    let message: String?
+    let passwordRequired: Bool?
+    let macUserName: String?
+    let macDeviceName: String?
+    let macDisplayName: String?
+    let relayEnabled: Bool?
+    let relayBaseURL: String?
+    let relayClientToken: String?
+    let relayClientURL: String?
+    let relayUserName: String?
+    let relayMacName: String?
+    let latestAlert: MacControlServerAlertEnvelope?
+
+    private enum CodingKeys: String, CodingKey {
+        case status
+        case detail
+        case progressPercent = "progress_percent"
+        case progressLabel = "progress_label"
+        case message
+        case passwordRequired = "password_required"
+        case macUserName = "mac_user_name"
+        case macDeviceName = "mac_device_name"
+        case macDisplayName = "mac_display_name"
+        case relayEnabled = "relay_enabled"
+        case relayBaseURL = "relay_base_url"
+        case relayClientToken = "relay_client_token"
+        case relayClientURL = "relay_client_url"
+        case relayUserName = "relay_user_name"
+        case relayMacName = "relay_mac_name"
+        case latestAlert = "latest_alert"
+    }
+}
+
+private struct MacControlServerAlertEnvelope: Decodable {
+    let id: Int?
+    let title: String?
+    let message: String?
+    let level: String?
 }
 
 @MainActor
@@ -1481,6 +1596,8 @@ final class SoraDownloadViewModel: ObservableObject {
     private static let didClearLegacyOpenAIKeyDefaultsKey = "didClearLegacyOpenAIKey"
     private static let completedDownloadIDsDefaultsKey = "completedSoraDownloadIDs"
     private static let macControlServerURLDefaultsKey = "macControlServerURL"
+    private static let macControlRemoteServerURLDefaultsKey = "macControlRemoteServerURL"
+    private static let macControlPasswordDefaultsKey = "macControlPassword"
     private static let historiesFileName = "generated-text-history.json"
     private static let historiesFolderName = "History"
     private static let historyThumbnailsFolderName = "HistoryThumbs"
@@ -3980,6 +4097,28 @@ final class SoraDownloadViewModel: ObservableObject {
         UserDefaults.standard.set(normalized, forKey: Self.macControlServerURLDefaultsKey)
     }
 
+    private func persistMacControlRemoteServerURL(_ value: String?) {
+        guard let normalized = Self.normalizedMacControlServerURLString(value) else {
+            return
+        }
+        UserDefaults.standard.set(normalized, forKey: Self.macControlRemoteServerURLDefaultsKey)
+    }
+
+    private func resolvedMacControlPassword(_ preferredPassword: String? = nil) -> String {
+        let preferred = preferredPassword?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !preferred.isEmpty {
+            return preferred
+        }
+        return (UserDefaults.standard.string(forKey: Self.macControlPasswordDefaultsKey) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func applyMacControlPassword(_ password: String, to request: inout URLRequest) {
+        let trimmed = password.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        request.setValue(trimmed, forHTTPHeaderField: "X-Soranin-Password")
+    }
+
     private func macControlBaseURLCandidates(preferredServerURL: String? = nil) -> [URL] {
         var rawValues: [String] = []
         if let preferred = Self.normalizedMacControlServerURLString(preferredServerURL) {
@@ -3989,6 +4128,11 @@ final class SoraDownloadViewModel: ObservableObject {
             UserDefaults.standard.string(forKey: Self.macControlServerURLDefaultsKey)
         ) {
             rawValues.append(saved)
+        }
+        if let remote = Self.normalizedMacControlServerURLString(
+            UserDefaults.standard.string(forKey: Self.macControlRemoteServerURLDefaultsKey)
+        ) {
+            rawValues.append(remote)
         }
         rawValues.append("http://127.0.0.1:8765")
         rawValues.append("http://localhost:8765")
@@ -4005,21 +4149,24 @@ final class SoraDownloadViewModel: ObservableObject {
     }
 
     func discoverMacControlServer(
-        preferredServerURL: String = ""
+        preferredServerURL: String = "",
+        includeDirectCandidates: Bool = true
     ) async -> (ok: Bool, message: String, serverURL: String?, candidates: [String]) {
-        let directCandidates = macControlBaseURLCandidates(preferredServerURL: preferredServerURL)
-        if let found = await Self.firstReachableMacControlURL(in: directCandidates) {
-            let normalized = found.absoluteString
-            persistMacControlServerURL(normalized)
-            return (
-                true,
-                text(
-                    "Found your Mac controller at \(normalized).",
-                    "រកឃើញ Mac controller របស់អ្នកនៅ \(normalized)។"
-                ),
-                normalized,
-                [normalized]
-            )
+        if includeDirectCandidates {
+            let directCandidates = macControlBaseURLCandidates(preferredServerURL: preferredServerURL)
+            if let found = await Self.firstReachableMacControlURL(in: directCandidates) {
+                let normalized = found.absoluteString
+                persistMacControlServerURL(normalized)
+                return (
+                    true,
+                    text(
+                        "Found your Mac controller at \(normalized).",
+                        "រកឃើញ Mac controller របស់អ្នកនៅ \(normalized)។"
+                    ),
+                    normalized,
+                    [normalized]
+                )
+            }
         }
 
         let prefixes = Self.activeLocalIPv4SubnetPrefixes()
@@ -4124,11 +4271,86 @@ final class SoraDownloadViewModel: ObservableObject {
         return (false, lastErrorMessage)
     }
 
+    func sendRawInputToMacController(
+        _ rawInput: String,
+        preferredServerURL: String? = nil,
+        password: String = ""
+    ) async -> (ok: Bool, message: String?) {
+        let trimmed = rawInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return (false, text("Paste at least one link first.", "សូម paste link យ៉ាងហោចណាស់ 1 ជាមុនសិន។"))
+        }
+
+        let payload: [String: Any] = [
+            "raw_input": trimmed
+        ]
+
+        guard let body = try? JSONSerialization.data(withJSONObject: payload, options: []) else {
+            return (false, text("Could not create request payload.", "មិនអាចបង្កើត payload សម្រាប់ request បានទេ។"))
+        }
+
+        var lastErrorMessage: String?
+
+        for baseURL in macControlBaseURLCandidates(preferredServerURL: preferredServerURL) {
+            let endpoint = baseURL.appending(path: "remote-run")
+            var request = URLRequest(url: endpoint)
+            request.httpMethod = "POST"
+            request.timeoutInterval = 45
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            applyMacControlPassword(resolvedMacControlPassword(password), to: &request)
+            request.httpBody = body
+
+            do {
+                let (data, response) = try await URLSession.shared.data(for: request)
+                guard let httpResponse = response as? HTTPURLResponse else {
+                    lastErrorMessage = text("Mac server response is invalid.", "Response ពី Mac server មិនត្រឹមត្រូវ។")
+                    continue
+                }
+
+                let envelope = try? JSONDecoder().decode(MacRemoteRunResponse.self, from: data)
+                if (200 ... 299).contains(httpResponse.statusCode) {
+                    if envelope?.ok == false {
+                        let message = envelope?.message?.trimmingCharacters(in: .whitespacesAndNewlines)
+                        lastErrorMessage = message?.isEmpty == false
+                            ? message
+                            : text("Mac server rejected this request.", "Mac server មិនទទួលយក request នេះទេ។")
+                        continue
+                    }
+                    persistMacControlServerURL(baseURL.absoluteString)
+                    let message = envelope?.message?.trimmingCharacters(in: .whitespacesAndNewlines)
+                    return (
+                        true,
+                        message?.isEmpty == false
+                            ? message
+                            : text("Sent pasted links to Mac.", "បានផ្ញើ links ដែលបាន paste ទៅ Mac ហើយ។")
+                    )
+                }
+
+                if let message = envelope?.message?.trimmingCharacters(in: .whitespacesAndNewlines), !message.isEmpty {
+                    lastErrorMessage = message
+                } else {
+                    lastErrorMessage = text(
+                        "Mac server returned HTTP \(httpResponse.statusCode).",
+                        "Mac server ត្រឡប់ HTTP \(httpResponse.statusCode)។"
+                    )
+                }
+            } catch {
+                lastErrorMessage = text(
+                    "Cannot connect to \(baseURL.absoluteString).",
+                    "មិនអាចភ្ជាប់ទៅ \(baseURL.absoluteString) បានទេ។"
+                )
+            }
+        }
+
+        return (false, lastErrorMessage)
+    }
+
     func loadMacControlBootstrap(
         preferredServerURL: String,
         chromeName: String = "",
-        pageName: String = ""
-    ) async -> (ok: Bool, message: String, profiles: [String], summary: String) {
+        pageName: String = "",
+        password: String = ""
+    ) async -> (ok: Bool, message: String, profiles: [String], summary: String, macDisplayName: String, macDeviceName: String, macUserName: String, relayClientURL: String, relayEnabled: Bool) {
         var lastErrorMessage = text(
             "Could not reach the Mac controller server.",
             "មិនអាចភ្ជាប់ទៅ Mac controller server បានទេ។"
@@ -4153,6 +4375,7 @@ final class SoraDownloadViewModel: ObservableObject {
             var request = URLRequest(url: endpoint)
             request.httpMethod = "GET"
             request.timeoutInterval = 20
+            applyMacControlPassword(resolvedMacControlPassword(password), to: &request)
 
             do {
                 let (data, response) = try await URLSession.shared.data(for: request)
@@ -4166,6 +4389,13 @@ final class SoraDownloadViewModel: ObservableObject {
                     persistMacControlServerURL(baseURL.absoluteString)
                     let profiles = envelope?.profiles ?? []
                     let summary = envelope?.memorySummary?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                    let macDisplayName = envelope?.macDisplayName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                    let macDeviceName = envelope?.macDeviceName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                    let macUserName = envelope?.macUserName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                    let relayClientURL = envelope?.relayClientURL?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                    if !relayClientURL.isEmpty {
+                        persistMacControlRemoteServerURL(relayClientURL)
+                    }
                     let message = envelope?.message?.trimmingCharacters(in: .whitespacesAndNewlines)
                     return (
                         true,
@@ -4173,7 +4403,12 @@ final class SoraDownloadViewModel: ObservableObject {
                             ? message!
                             : text("Mac control is ready.", "Mac control រួចរាល់ហើយ។"),
                         profiles,
-                        summary
+                        summary,
+                        macDisplayName,
+                        macDeviceName,
+                        macUserName,
+                        relayClientURL,
+                        envelope?.relayEnabled == true
                     )
                 }
 
@@ -4193,7 +4428,104 @@ final class SoraDownloadViewModel: ObservableObject {
             }
         }
 
-        return (false, lastErrorMessage, [], "")
+        return (false, lastErrorMessage, [], "", "", "", "", "", false)
+    }
+
+    private func normalizedMacSourceVideoFileName(displayName: String, fileURL: URL) -> String {
+        let fallbackStem = fileURL.deletingPathExtension().lastPathComponent.trimmingCharacters(in: .whitespacesAndNewlines)
+        let rawStem = displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? fallbackStem : displayName
+        let cleanedStem = rawStem
+            .applyingTransform(.toLatin, reverse: false)?
+            .applyingTransform(.stripCombiningMarks, reverse: false) ?? rawStem
+        let safeStem = cleanedStem
+            .replacingOccurrences(of: #"[^A-Za-z0-9._ -]+"#, with: "_", options: .regularExpression)
+            .trimmingCharacters(in: CharacterSet(charactersIn: " ._-"))
+        let pathExtension = fileURL.pathExtension.trimmingCharacters(in: .whitespacesAndNewlines)
+        let safeExtension = pathExtension.isEmpty ? "mp4" : pathExtension.lowercased()
+        return "\(safeStem.isEmpty ? "iphone_source_video" : safeStem).\(safeExtension)"
+    }
+
+    func uploadVideoToMacSourceVideos(
+        fileURL: URL,
+        displayName: String,
+        preferredServerURL: String,
+        password: String = "",
+        onProgress: (@Sendable (Double) -> Void)? = nil
+    ) async -> (ok: Bool, message: String, fileName: String, sourceCount: Int) {
+        guard fileURL.isFileURL else {
+            return (false, text("Selected clip is not a local file.", "Clip ដែលបានជ្រើសមិនមែនជា local file ទេ។"), "", 0)
+        }
+        guard FileManager.default.fileExists(atPath: fileURL.path) else {
+            return (false, text("Selected clip file could not be found.", "រកមិនឃើញ file clip ដែលបានជ្រើសទេ។"), "", 0)
+        }
+
+        let uploadFileName = normalizedMacSourceVideoFileName(displayName: displayName, fileURL: fileURL)
+        let mimeType = UTType(filenameExtension: fileURL.pathExtension)?.preferredMIMEType ?? "application/octet-stream"
+        var lastErrorMessage = text(
+            "Could not send this video to Drop Videos on Mac.",
+            "មិនអាចផ្ញើ video នេះទៅ Drop Videos លើ Mac បានទេ។"
+        )
+
+        for baseURL in macControlBaseURLCandidates(preferredServerURL: preferredServerURL) {
+            var components = URLComponents(url: baseURL.appending(path: "source-video-upload"), resolvingAgainstBaseURL: false)
+            components?.queryItems = [
+                URLQueryItem(name: "file_name", value: uploadFileName)
+            ]
+            guard let endpoint = components?.url else {
+                continue
+            }
+
+            var request = URLRequest(url: endpoint)
+            request.httpMethod = "POST"
+            request.timeoutInterval = 60 * 20
+            request.setValue(mimeType, forHTTPHeaderField: "Content-Type")
+            applyMacControlPassword(resolvedMacControlPassword(password), to: &request)
+
+            do {
+                let delegate = UploadProgressDelegate { progress in
+                    Task { @MainActor in
+                        onProgress?(progress)
+                    }
+                }
+                let (data, response) = try await delegate.upload(request: request, fromFile: fileURL)
+                guard let httpResponse = response as? HTTPURLResponse else {
+                    lastErrorMessage = text("Mac server response is invalid.", "Response ពី Mac server មិនត្រឹមត្រូវ។")
+                    continue
+                }
+
+                let envelope = try? JSONDecoder().decode(MacSourceVideoUploadResponse.self, from: data)
+                if (200 ... 299).contains(httpResponse.statusCode), envelope?.ok != false {
+                    persistMacControlServerURL(baseURL.absoluteString)
+                    let resolvedFileName = envelope?.fileName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? uploadFileName
+                    let sourceCount = envelope?.sourceCount ?? 0
+                    let message = envelope?.message?.trimmingCharacters(in: .whitespacesAndNewlines)
+                    return (
+                        true,
+                        message?.isEmpty == false
+                            ? message!
+                            : text("Sent selected clip to Drop Videos on Mac.", "បានផ្ញើ clip ដែលបានជ្រើសទៅ Drop Videos លើ Mac ហើយ។"),
+                        resolvedFileName,
+                        sourceCount
+                    )
+                }
+
+                if let message = envelope?.message?.trimmingCharacters(in: .whitespacesAndNewlines), !message.isEmpty {
+                    lastErrorMessage = message
+                } else {
+                    lastErrorMessage = text(
+                        "Mac server returned HTTP \(httpResponse.statusCode).",
+                        "Mac server ត្រឡប់ HTTP \(httpResponse.statusCode)។"
+                    )
+                }
+            } catch {
+                lastErrorMessage = text(
+                    "Cannot connect to \(baseURL.absoluteString).",
+                    "មិនអាចភ្ជាប់ទៅ \(baseURL.absoluteString) បានទេ។"
+                )
+            }
+        }
+
+        return (false, lastErrorMessage, "", 0)
     }
 
     func preflightMacFacebookPost(
@@ -4204,7 +4536,8 @@ final class SoraDownloadViewModel: ObservableObject {
         intervalMinutes: Int,
         closeAfterEach: Bool,
         closeAfterFinish: Bool,
-        postNowAdvanceSlot: Bool
+        postNowAdvanceSlot: Bool,
+        password: String = ""
     ) async -> (ok: Bool, message: String, summary: String) {
         let folders = foldersText
             .components(separatedBy: CharacterSet(charactersIn: ", \n\t"))
@@ -4246,6 +4579,7 @@ final class SoraDownloadViewModel: ObservableObject {
             request.httpMethod = "POST"
             request.timeoutInterval = 90
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            applyMacControlPassword(resolvedMacControlPassword(password), to: &request)
             request.httpBody = body
 
             do {
@@ -4296,7 +4630,8 @@ final class SoraDownloadViewModel: ObservableObject {
         intervalMinutes: Int,
         closeAfterEach: Bool,
         closeAfterFinish: Bool,
-        postNowAdvanceSlot: Bool
+        postNowAdvanceSlot: Bool,
+        password: String = ""
     ) async -> (ok: Bool, message: String) {
         let folders = foldersText
             .components(separatedBy: CharacterSet(charactersIn: ", \n\t"))
@@ -4338,6 +4673,7 @@ final class SoraDownloadViewModel: ObservableObject {
             request.httpMethod = "POST"
             request.timeoutInterval = 45
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            applyMacControlPassword(resolvedMacControlPassword(password), to: &request)
             request.httpBody = body
 
             do {
@@ -4378,7 +4714,7 @@ final class SoraDownloadViewModel: ObservableObject {
         return (false, lastErrorMessage)
     }
 
-    func quitMacChrome(preferredServerURL: String) async -> (ok: Bool, message: String) {
+    func quitMacChrome(preferredServerURL: String, password: String = "") async -> (ok: Bool, message: String) {
         var lastErrorMessage = text(
             "Could not reach the Mac controller server.",
             "មិនអាចភ្ជាប់ទៅ Mac controller server បានទេ។"
@@ -4389,6 +4725,7 @@ final class SoraDownloadViewModel: ObservableObject {
             var request = URLRequest(url: endpoint)
             request.httpMethod = "POST"
             request.timeoutInterval = 20
+            applyMacControlPassword(resolvedMacControlPassword(password), to: &request)
 
             do {
                 let (data, response) = try await URLSession.shared.data(for: request)
@@ -4426,6 +4763,123 @@ final class SoraDownloadViewModel: ObservableObject {
         }
 
         return (false, lastErrorMessage)
+    }
+
+    func loadMacFacebookPackages(preferredServerURL: String, password: String = "") async -> (ok: Bool, message: String, packages: [MacControlPackageCard]) {
+        var lastErrorMessage = text(
+            "Could not load package cards from the Mac controller.",
+            "មិនអាចទាញ package cards ពី Mac controller បានទេ។"
+        )
+
+        for baseURL in macControlBaseURLCandidates(preferredServerURL: preferredServerURL) {
+            let endpoint = baseURL.appending(path: "facebook-packages")
+            var request = URLRequest(url: endpoint)
+            request.httpMethod = "GET"
+            request.timeoutInterval = 30
+            applyMacControlPassword(resolvedMacControlPassword(password), to: &request)
+
+            do {
+                let (data, response) = try await URLSession.shared.data(for: request)
+                guard let httpResponse = response as? HTTPURLResponse else {
+                    lastErrorMessage = text("Mac server response is invalid.", "Response ពី Mac server មិនត្រឹមត្រូវ។")
+                    continue
+                }
+
+                let envelope = try? JSONDecoder().decode(MacControlPackagesResponse.self, from: data)
+                if (200 ... 299).contains(httpResponse.statusCode), envelope?.ok != false {
+                    persistMacControlServerURL(baseURL.absoluteString)
+                    return (
+                        true,
+                        envelope?.message?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+                            ? envelope!.message!.trimmingCharacters(in: .whitespacesAndNewlines)
+                            : text("Loaded package cards from Mac.", "បានទាញ package cards ពី Mac រួចហើយ។"),
+                        envelope?.packages ?? []
+                    )
+                }
+
+                if let message = envelope?.message?.trimmingCharacters(in: .whitespacesAndNewlines), !message.isEmpty {
+                    lastErrorMessage = message
+                } else {
+                    lastErrorMessage = text(
+                        "Mac server returned HTTP \(httpResponse.statusCode).",
+                        "Mac server ត្រឡប់ HTTP \(httpResponse.statusCode)។"
+                    )
+                }
+            } catch {
+                lastErrorMessage = text(
+                    "Cannot connect to \(baseURL.absoluteString).",
+                    "មិនអាចភ្ជាប់ទៅ \(baseURL.absoluteString) បានទេ។"
+                )
+            }
+        }
+
+        return (false, lastErrorMessage, [])
+    }
+
+    func deleteMacFacebookPackage(
+        packageName: String,
+        preferredServerURL: String,
+        password: String = ""
+    ) async -> (ok: Bool, message: String, packages: [MacControlPackageCard]) {
+        let trimmed = packageName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return (false, text("Choose a package first.", "សូមជ្រើស package ជាមុនសិន។"), [])
+        }
+
+        guard let body = try? JSONSerialization.data(withJSONObject: ["package_name": trimmed], options: []) else {
+            return (false, text("Could not create request payload.", "មិនអាចបង្កើត payload សម្រាប់ request បានទេ។"), [])
+        }
+
+        var lastErrorMessage = text(
+            "Could not delete this package on the Mac.",
+            "មិនអាចលុប package នេះលើ Mac បានទេ។"
+        )
+
+        for baseURL in macControlBaseURLCandidates(preferredServerURL: preferredServerURL) {
+            let endpoint = baseURL.appending(path: "facebook-package-delete")
+            var request = URLRequest(url: endpoint)
+            request.httpMethod = "POST"
+            request.timeoutInterval = 45
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            applyMacControlPassword(resolvedMacControlPassword(password), to: &request)
+            request.httpBody = body
+
+            do {
+                let (data, response) = try await URLSession.shared.data(for: request)
+                guard let httpResponse = response as? HTTPURLResponse else {
+                    lastErrorMessage = text("Mac server response is invalid.", "Response ពី Mac server មិនត្រឹមត្រូវ។")
+                    continue
+                }
+
+                let envelope = try? JSONDecoder().decode(MacControlPackageDeleteResponse.self, from: data)
+                if (200 ... 299).contains(httpResponse.statusCode), envelope?.ok != false {
+                    persistMacControlServerURL(baseURL.absoluteString)
+                    return (
+                        true,
+                        envelope?.message?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+                            ? envelope!.message!.trimmingCharacters(in: .whitespacesAndNewlines)
+                            : text("Package deleted on Mac.", "បានលុប package លើ Mac រួចហើយ។"),
+                        envelope?.packages ?? []
+                    )
+                }
+
+                if let message = envelope?.message?.trimmingCharacters(in: .whitespacesAndNewlines), !message.isEmpty {
+                    lastErrorMessage = message
+                } else {
+                    lastErrorMessage = text(
+                        "Mac server returned HTTP \(httpResponse.statusCode).",
+                        "Mac server ត្រឡប់ HTTP \(httpResponse.statusCode)។"
+                    )
+                }
+            } catch {
+                lastErrorMessage = text(
+                    "Cannot connect to \(baseURL.absoluteString).",
+                    "មិនអាចភ្ជាប់ទៅ \(baseURL.absoluteString) បានទេ។"
+                )
+            }
+        }
+
+        return (false, lastErrorMessage, [])
     }
 
     nonisolated private static func normalizedMacControlServerURLString(_ value: String?) -> String? {
@@ -4615,6 +5069,85 @@ final class SoraDownloadViewModel: ObservableObject {
         } catch {
             return false
         }
+    }
+
+    func loadMacControlRuntimeStatus(
+        preferredServerURL: String,
+        password: String = ""
+    ) async -> (
+        ok: Bool,
+        message: String,
+        statusText: String,
+        detail: String,
+        progressPercent: Int,
+        progressLabel: String,
+        passwordRequired: Bool,
+        latestAlertID: Int,
+        latestAlertTitle: String,
+        latestAlertMessage: String,
+        latestAlertLevel: String
+    ) {
+        var lastErrorMessage = text(
+            "Could not read live status from Mac.",
+            "មិនអាចអាន live status ពី Mac បានទេ។"
+        )
+
+        for baseURL in macControlBaseURLCandidates(preferredServerURL: preferredServerURL) {
+            let endpoint = baseURL.appending(path: "status")
+            var request = URLRequest(url: endpoint)
+            request.httpMethod = "GET"
+            request.timeoutInterval = 12
+            applyMacControlPassword(resolvedMacControlPassword(password), to: &request)
+
+            do {
+                let (data, response) = try await URLSession.shared.data(for: request)
+                guard let httpResponse = response as? HTTPURLResponse else {
+                    lastErrorMessage = text("Mac server response is invalid.", "Response ពី Mac server មិនត្រឹមត្រូវ។")
+                    continue
+                }
+                guard (200 ... 299).contains(httpResponse.statusCode),
+                      let payload = try? JSONDecoder().decode(MacControlStatusResponse.self, from: data) else {
+                    lastErrorMessage = text(
+                        "Mac server returned HTTP \(httpResponse.statusCode).",
+                        "Mac server ត្រឡប់ HTTP \(httpResponse.statusCode)។"
+                    )
+                    continue
+                }
+                persistMacControlServerURL(baseURL.absoluteString)
+                let statusText = payload.status?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                let detailText = payload.detail?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                let alertMessage = payload.latestAlert?.message?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                let liveMessage = [
+                    statusText.isEmpty ? nil : text("Mac status: \(statusText)", "ស្ថានភាព Mac: \(statusText)"),
+                    detailText.isEmpty ? nil : detailText,
+                    alertMessage.isEmpty ? nil : alertMessage,
+                ]
+                .compactMap { $0 }
+                .joined(separator: "\n")
+                return (
+                    true,
+                    liveMessage.isEmpty
+                        ? text("Mac is connected.", "Mac បានភ្ជាប់ហើយ។")
+                        : liveMessage,
+                    statusText,
+                    detailText,
+                    max(0, min(100, payload.progressPercent ?? 0)),
+                    payload.progressLabel?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
+                    payload.passwordRequired == true,
+                    payload.latestAlert?.id ?? 0,
+                    payload.latestAlert?.title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
+                    alertMessage,
+                    payload.latestAlert?.level?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                )
+            } catch {
+                lastErrorMessage = text(
+                    "Cannot connect to \(baseURL.absoluteString).",
+                    "មិនអាចភ្ជាប់ទៅ \(baseURL.absoluteString) បានទេ។"
+                )
+            }
+        }
+
+        return (false, lastErrorMessage, "", "", 0, "", false, 0, "", "", "")
     }
 
     nonisolated private static func firstReachableMacControlURL(in urls: [URL]) async -> URL? {
@@ -6989,6 +7522,106 @@ private final class DownloadProgressDelegate: NSObject, URLSessionDownloadDelega
     }
 
     private func resolve(with result: Result<(URL, URLResponse), Error>, session: URLSession) {
+        lock.lock()
+        guard !hasResolved else {
+            lock.unlock()
+            return
+        }
+
+        hasResolved = true
+        let continuation = self.continuation
+        self.continuation = nil
+        lock.unlock()
+
+        switch result {
+        case .success(let value):
+            continuation?.resume(returning: value)
+        case .failure(let error):
+            continuation?.resume(throwing: error)
+        }
+
+        session.finishTasksAndInvalidate()
+    }
+}
+
+private final class UploadProgressDelegate: NSObject, URLSessionTaskDelegate, URLSessionDataDelegate {
+    private let lock = NSLock()
+    private let progressHandler: @Sendable (Double) -> Void
+    private var continuation: CheckedContinuation<(Data, URLResponse), Error>?
+    private var hasResolved = false
+    private var responseData = Data()
+    private var receivedResponse: URLResponse?
+
+    init(progressHandler: @escaping @Sendable (Double) -> Void) {
+        self.progressHandler = progressHandler
+    }
+
+    func upload(request: URLRequest, fromFile fileURL: URL) async throws -> (Data, URLResponse) {
+        let session = URLSession(configuration: .default, delegate: self, delegateQueue: nil)
+
+        return try await withCheckedThrowingContinuation { continuation in
+            lock.lock()
+            self.continuation = continuation
+            self.responseData = Data()
+            self.receivedResponse = nil
+            lock.unlock()
+
+            session.uploadTask(with: request, fromFile: fileURL).resume()
+        }
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        didSendBodyData bytesSent: Int64,
+        totalBytesSent: Int64,
+        totalBytesExpectedToSend: Int64
+    ) {
+        guard totalBytesExpectedToSend > 0 else { return }
+
+        let progress = Double(totalBytesSent) / Double(totalBytesExpectedToSend)
+        progressHandler(min(max(progress, 0), 1))
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        dataTask: URLSessionDataTask,
+        didReceive response: URLResponse,
+        completionHandler: @escaping (URLSession.ResponseDisposition) -> Void
+    ) {
+        lock.lock()
+        receivedResponse = response
+        lock.unlock()
+        completionHandler(.allow)
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+        lock.lock()
+        responseData.append(data)
+        lock.unlock()
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        if let error {
+            resolve(with: .failure(error), session: session)
+            return
+        }
+
+        lock.lock()
+        let data = responseData
+        let response = task.response ?? receivedResponse
+        lock.unlock()
+
+        guard let response else {
+            resolve(with: .failure(SoraDownloadError.invalidResponse), session: session)
+            return
+        }
+
+        progressHandler(1)
+        resolve(with: .success((data, response)), session: session)
+    }
+
+    private func resolve(with result: Result<(Data, URLResponse), Error>, session: URLSession) {
         lock.lock()
         guard !hasResolved else {
             lock.unlock()
