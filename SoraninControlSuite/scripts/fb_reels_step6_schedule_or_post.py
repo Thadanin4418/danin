@@ -12,10 +12,12 @@ import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from soranin_paths import DEFAULT_FACEBOOK_PACKAGE, FACEBOOK_STATE_PATH, script_path
 
-STEP3_SCRIPT = Path("/Users/nin/Downloads/fb_reels_step3_upload_video_and_next.py")
-TIMING_SCRIPT = Path("/Users/nin/Downloads/fb_reels_publish_timing.py")
-DEFAULT_PACKAGE = Path("/Users/nin/Downloads/Soranin/64_Reels_Package")
+
+STEP3_SCRIPT = script_path("fb_reels_step3_upload_video_and_next.py")
+TIMING_SCRIPT = script_path("fb_reels_publish_timing.py")
+DEFAULT_PACKAGE = DEFAULT_FACEBOOK_PACKAGE
 
 
 def parse_args() -> argparse.Namespace:
@@ -31,7 +33,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--timeout", type=float, default=20.0, help="Timeout in seconds for UI transitions.")
     parser.add_argument(
         "--state-path",
-        default="/Users/nin/Downloads/Soranin/.fb_reels_publish_state.json",
+        default=str(FACEBOOK_STATE_PATH),
         help="JSON state file used to remember the last schedule/post anchor time.",
     )
     parser.add_argument(

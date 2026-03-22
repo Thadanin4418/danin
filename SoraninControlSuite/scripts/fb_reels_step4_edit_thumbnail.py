@@ -8,9 +8,11 @@ import sys
 import time
 from pathlib import Path
 
+from soranin_paths import DEFAULT_FACEBOOK_PACKAGE, script_path
 
-STEP3_SCRIPT = Path("/Users/nin/Downloads/fb_reels_step3_upload_video_and_next.py")
-DEFAULT_PACKAGE = Path("/Users/nin/Downloads/Soranin/64_Reels_Package")
+
+STEP3_SCRIPT = script_path("fb_reels_step3_upload_video_and_next.py")
+DEFAULT_PACKAGE = DEFAULT_FACEBOOK_PACKAGE
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 
 

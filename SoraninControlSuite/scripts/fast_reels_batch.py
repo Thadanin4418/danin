@@ -22,14 +22,15 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from soranin_paths import API_KEYS_FILE, ROOT_DIR
+
 try:
     from openai import OpenAI
 except ImportError:
     OpenAI = None
 
 
-ROOT_DEFAULT = Path("/Users/nin/Downloads/Soranin")
-API_KEYS_FILE = Path("/Users/nin/Downloads/.reels_api_keys.json")
+ROOT_DEFAULT = ROOT_DIR
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".m4v", ".avi", ".mkv"}
 TITLE_PLACEHOLDER = "Add action-based English title here 😮 #ViralClip #TrendingReel #MustWatch #ReelsDaily #ForYou"
 TARGET_SPEED = 0.90

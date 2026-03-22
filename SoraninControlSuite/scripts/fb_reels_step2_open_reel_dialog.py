@@ -7,8 +7,9 @@ import subprocess
 import time
 from pathlib import Path
 
+from soranin_paths import CLICK_POINT_SWIFT
 
-CLICK_POINT_SWIFT = Path("/Users/nin/Downloads/click_point.swift")
+
 CLICK_POINT_BINARY = Path("/tmp/click_point")
 TARGET_URL = "https://web.facebook.com/professional_dashboard/content/content_library"
 CONTENT_LIBRARY_MARKER = "content_library"

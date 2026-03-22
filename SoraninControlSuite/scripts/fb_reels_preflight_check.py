@@ -8,11 +8,13 @@ import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from soranin_paths import FACEBOOK_STATE_PATH, ROOT_DIR, script_path
 
-STEP3_SCRIPT = Path("/Users/nin/Downloads/fb_reels_step3_upload_video_and_next.py")
-TIMING_SCRIPT = Path("/Users/nin/Downloads/fb_reels_publish_timing.py")
-ROOT_DEFAULT = Path("/Users/nin/Downloads/Soranin")
-STATE_DEFAULT = ROOT_DEFAULT / ".fb_reels_publish_state.json"
+
+STEP3_SCRIPT = script_path("fb_reels_step3_upload_video_and_next.py")
+TIMING_SCRIPT = script_path("fb_reels_publish_timing.py")
+ROOT_DEFAULT = ROOT_DIR
+STATE_DEFAULT = FACEBOOK_STATE_PATH
 
 
 def parse_args() -> argparse.Namespace:
