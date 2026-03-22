@@ -17,6 +17,7 @@ Clean Git repo for the current `soranin` iOS app, the Mac `Soranin.app` source, 
 ## Current purpose
 
 - iPhone `Control Mac` popup can send Facebook post jobs to the Mac control server
+- `Scan Mac` works on the same Wi-Fi, and `Tailscale URL` can be used for remote control from another network
 - Mac `Soranin.app` can build and run the Facebook runner
 - Mac app now starts the local control server automatically
 
@@ -107,7 +108,9 @@ Then run the `soranin` scheme on your iPhone or simulator.
 Inside the iPhone app:
 
 - tap `Control Mac`
-- set `Server URL` to your Mac address
+- if Mac and iPhone are on the same Wi-Fi, tap `Scan Mac`
+- if you are on a different Wi-Fi or cellular, paste the `Tailscale URL` from `Soranin.app`
+- or set `Server URL` to your Mac address manually
 - example:
   - `http://192.168.1.8:8765`
 - choose:

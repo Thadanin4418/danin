@@ -225,6 +225,66 @@ private func reelsDashboardBaseURLString(forHost host: String) -> String {
     "http://\(host):8765"
 }
 
+private func tailscaleCLIOutput(arguments: [String]) -> String? {
+    let explicitExecutables = [
+        "/Applications/Tailscale.app/Contents/MacOS/Tailscale",
+        "/Applications/Tailscale.app/Contents/MacOS/tailscale",
+        "/opt/homebrew/bin/tailscale",
+        "/usr/local/bin/tailscale",
+    ]
+
+    func runProcess(executableURL: URL, arguments: [String]) -> String? {
+        let process = Process()
+        let outputPipe = Pipe()
+        process.executableURL = executableURL
+        process.arguments = arguments
+        process.standardOutput = outputPipe
+        process.standardError = Pipe()
+        do {
+            try process.run()
+            process.waitUntilExit()
+            guard process.terminationStatus == 0 else {
+                return nil
+            }
+            let data = outputPipe.fileHandleForReading.readDataToEndOfFile()
+            let text = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+            return text.isEmpty ? nil : text
+        } catch {
+            return nil
+        }
+    }
+
+    for path in explicitExecutables {
+        let url = URL(fileURLWithPath: path)
+        if FileManager.default.isExecutableFile(atPath: url.path),
+           let output = runProcess(executableURL: url, arguments: arguments) {
+            return output
+        }
+    }
+
+    return runProcess(
+        executableURL: URL(fileURLWithPath: "/usr/bin/env"),
+        arguments: ["tailscale"] + arguments
+    )
+}
+
+private func tailscaleIPv4Addresses() -> [String] {
+    guard let output = tailscaleCLIOutput(arguments: ["ip", "-4"]) else {
+        return []
+    }
+
+    var results: [String] = []
+    var seen = Set<String>()
+    for line in output.split(whereSeparator: \.isNewline).map(String.init) {
+        let ip = line.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !ip.isEmpty else { continue }
+        let key = ip.lowercased()
+        guard seen.insert(key).inserted else { continue }
+        results.append(ip)
+    }
+    return results
+}
+
 private func parseFacebookRunnerPackageNames(_ value: String) -> [String] {
     let separators = CharacterSet.whitespacesAndNewlines.union(CharacterSet(charactersIn: ",;"))
     let rawParts = value
@@ -3196,6 +3256,7 @@ final class ReelsModel: ObservableObject {
     @Published var hasReplayableLiveVoice = false
     @Published var aiChatAttachmentURLs: [URL] = []
     @Published var facebookControlServerLANURLs: [String] = []
+    @Published var facebookControlServerTailscaleURLs: [String] = []
     @Published var isFacebookControlServerOnline = false
 
     private var process: Process?
@@ -3259,6 +3320,10 @@ final class ReelsModel: ObservableObject {
 
     var preferredFacebookControlServerLANURL: String? {
         facebookControlServerLANURLs.first
+    }
+
+    var preferredFacebookControlServerTailscaleURL: String? {
+        facebookControlServerTailscaleURLs.first
     }
 
     var healthStatusReportText: String {
@@ -4951,6 +5016,8 @@ final class ReelsModel: ObservableObject {
     func refreshFacebookControlServerConnectionInfo() {
         facebookControlServerLANURLs = nonLoopbackIPv4Interfaces()
             .map { reelsDashboardBaseURLString(forHost: $0.address) }
+        facebookControlServerTailscaleURLs = tailscaleIPv4Addresses()
+            .map { reelsDashboardBaseURLString(forHost: $0) }
         pingFacebookControlServer { [weak self] isOnline in
             DispatchQueue.main.async {
                 self?.isFacebookControlServerOnline = isOnline
@@ -10888,8 +10955,30 @@ struct FacebookRunnerSheet: View {
                             .buttonStyle(SoraninSecondaryButtonStyle(compact: true))
                         }
 
+                        if let tailscaleURL = model.preferredFacebookControlServerTailscaleURL {
+                            serverURLRow(title: "Tailscale URL", value: tailscaleURL, isPrimary: true)
+                            Text("Use this URL when your iPhone is on another Wi-Fi or cellular. Tailscale must be installed on both Mac and iPhone.")
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundStyle(SoraninPalette.secondaryText)
+                                .padding(.top, -2)
+                        } else {
+                            Text("Remote control outside your home network needs Tailscale on both devices. Install Tailscale, sign in to the same account, then tap Refresh URLs.")
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundStyle(SoraninPalette.secondaryText)
+                                .padding(14)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                        .fill(SoraninPalette.cardStrong)
+                                )
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                        .stroke(SoraninPalette.border, lineWidth: 1)
+                                )
+                        }
+
                         if let lanURL = model.preferredFacebookControlServerLANURL {
-                            serverURLRow(title: "Mac URL for iPhone", value: lanURL, isPrimary: true)
+                            serverURLRow(title: "Mac URL for Same Wi-Fi", value: lanURL, isPrimary: model.preferredFacebookControlServerTailscaleURL == nil)
                         } else {
                             Text("No Wi-Fi IP found yet. Connect Mac to the same network as your iPhone, then tap Refresh URLs.")
                                 .font(.system(size: 12, weight: .medium))
@@ -10907,6 +10996,12 @@ struct FacebookRunnerSheet: View {
                         }
 
                         serverURLRow(title: "Local Mac URL", value: model.facebookControlServerLocalURL)
+
+                        if model.facebookControlServerTailscaleURLs.count > 1 {
+                            ForEach(Array(model.facebookControlServerTailscaleURLs.dropFirst()), id: \.self) { url in
+                                serverURLRow(title: "Other Tailscale URL", value: url)
+                            }
+                        }
 
                         if model.facebookControlServerLANURLs.count > 1 {
                             ForEach(Array(model.facebookControlServerLANURLs.dropFirst()), id: \.self) { url in
