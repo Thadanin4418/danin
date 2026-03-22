@@ -119,6 +119,7 @@ struct ContentView: View {
     @State private var showingGIFImporter = false
     @State private var showingPromptVideoImporter = false
     @State private var showingMacControlSheet = false
+    @State private var didAutoLoadMacControlSheet = false
     @State private var macControlProfiles: [String] = []
     @State private var macControlResultMessage = ""
     @State private var isLoadingMacControl = false
@@ -548,9 +549,13 @@ struct ContentView: View {
                 resultMessage: macControlResultMessage,
                 onClose: {
                     showingMacControlSheet = false
+                    didAutoLoadMacControlSheet = false
                 },
                 onLoad: {
                     refreshMacControlBootstrap()
+                },
+                onScan: {
+                    scanMacControlServer()
                 },
                 onSendCurrentInput: {
                     sendCurrentInputToMac()
@@ -567,6 +572,11 @@ struct ContentView: View {
             )
             .presentationDetents([.large])
             .presentationDragIndicator(.visible)
+            .onAppear {
+                guard !didAutoLoadMacControlSheet else { return }
+                didAutoLoadMacControlSheet = true
+                refreshMacControlBootstrap()
+            }
         }
         .sheet(isPresented: $showingVideoImporter) {
             PhotoVideoPicker(selectionLimit: 0) { urls in
@@ -871,19 +881,19 @@ struct ContentView: View {
 
     private func openMacControlSheet() {
         showingMacControlSheet = true
+        didAutoLoadMacControlSheet = false
         if macPostIntervalMinutes <= 0 {
             macPostIntervalMinutes = 30
         }
         if macControlResultMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             macControlResultMessage = tr(
-                "Add your Mac server URL, then load the Mac profiles.",
-                "សូមដាក់ Mac server URL របស់អ្នកសិន ហើយចុច Load ដើម្បីទាញ Chrome profiles។"
+                "Tap Scan Mac or Load Mac to connect automatically.",
+                "សូមចុច Scan Mac ឬ Load Mac ដើម្បីភ្ជាប់ដោយស្វ័យប្រវត្តិ។"
             )
         }
-        refreshMacControlBootstrap()
     }
 
-    private func refreshMacControlBootstrap() {
+    private func refreshMacControlBootstrap(allowDiscovery: Bool = true) {
         guard !isLoadingMacControl else { return }
         isLoadingMacControl = true
         macControlResultMessage = tr(
@@ -891,11 +901,48 @@ struct ContentView: View {
             "កំពុងទាញ Mac control..."
         )
         Task {
-            let result = await viewModel.loadMacControlBootstrap(
+            var result = await viewModel.loadMacControlBootstrap(
                 preferredServerURL: macControlServerURL,
                 chromeName: macPostChromeName,
                 pageName: macPostPageName
             )
+
+            if !result.ok, allowDiscovery {
+                macControlResultMessage = tr(
+                    "Scanning Wi-Fi for your Mac...",
+                    "កំពុងស្កេន Wi-Fi ដើម្បីរក Mac របស់អ្នក..."
+                )
+                let discovery = await viewModel.discoverMacControlServer(preferredServerURL: macControlServerURL)
+                if discovery.ok, let discoveredServerURL = discovery.serverURL {
+                    macControlServerURL = discoveredServerURL
+                    result = await viewModel.loadMacControlBootstrap(
+                        preferredServerURL: discoveredServerURL,
+                        chromeName: macPostChromeName,
+                        pageName: macPostPageName
+                    )
+                    if !result.ok {
+                        let summary = result.summary.trimmingCharacters(in: .whitespacesAndNewlines)
+                        let message = summary.isEmpty ? result.message : "\(result.message)\n\n\(summary)"
+                        macControlResultMessage = "\(discovery.message)\n\n\(message)"
+                        isLoadingMacControl = false
+                        return
+                    }
+                    macControlProfiles = result.profiles
+                    if macPostChromeName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                       let first = result.profiles.first {
+                        macPostChromeName = first
+                    }
+                    let summary = result.summary.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let message = summary.isEmpty ? result.message : "\(result.message)\n\n\(summary)"
+                    macControlResultMessage = "\(discovery.message)\n\n\(message)"
+                    isLoadingMacControl = false
+                    return
+                }
+                macControlResultMessage = "\(result.message)\n\n\(discovery.message)"
+                isLoadingMacControl = false
+                return
+            }
+
             if result.ok {
                 macControlProfiles = result.profiles
                 if macPostChromeName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
@@ -907,6 +954,23 @@ struct ContentView: View {
             } else {
                 macControlResultMessage = result.message
             }
+            isLoadingMacControl = false
+        }
+    }
+
+    private func scanMacControlServer() {
+        guard !isLoadingMacControl else { return }
+        isLoadingMacControl = true
+        macControlResultMessage = tr(
+            "Scanning Wi-Fi for your Mac...",
+            "កំពុងស្កេន Wi-Fi ដើម្បីរក Mac របស់អ្នក..."
+        )
+        Task {
+            let discovery = await viewModel.discoverMacControlServer(preferredServerURL: macControlServerURL)
+            if discovery.ok, let discoveredServerURL = discovery.serverURL {
+                macControlServerURL = discoveredServerURL
+            }
+            macControlResultMessage = discovery.message
             isLoadingMacControl = false
         }
     }
@@ -9747,6 +9811,7 @@ private struct MacControlSheet: View {
     let resultMessage: String
     let onClose: () -> Void
     let onLoad: () -> Void
+    let onScan: () -> Void
     let onSendCurrentInput: () -> Void
     let onPreflight: () -> Void
     let onRun: () -> Void
@@ -9767,6 +9832,12 @@ private struct MacControlSheet: View {
                                 .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
 
                             HStack(spacing: 10) {
+                                actionButton(
+                                    title: tr("Scan Mac", "ស្កេន Mac"),
+                                    systemImage: "dot.radiowaves.left.and.right",
+                                    isPrimary: false,
+                                    action: onScan
+                                )
                                 actionButton(
                                     title: tr("Load Mac", "ទាញពី Mac"),
                                     systemImage: "arrow.clockwise",
