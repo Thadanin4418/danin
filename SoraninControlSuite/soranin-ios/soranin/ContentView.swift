@@ -887,8 +887,8 @@ struct ContentView: View {
         }
         if macControlResultMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             macControlResultMessage = tr(
-                "Tap Scan Mac or Load Mac to connect automatically.",
-                "សូមចុច Scan Mac ឬ Load Mac ដើម្បីភ្ជាប់ដោយស្វ័យប្រវត្តិ។"
+                "Tap Scan Mac on the same Wi-Fi, or paste your Tailscale URL for remote control.",
+                "សូមចុច Scan Mac ពេលនៅ Wi‑Fi ដូចគ្នា ឬបិទភ្ជាប់ Tailscale URL សម្រាប់គ្រប់គ្រងពីចម្ងាយ។"
             )
         }
     }
@@ -9821,7 +9821,7 @@ private struct MacControlSheet: View {
         NavigationStack {
             ScrollView(showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 16) {
-                    sectionCard(title: tr("Mac Server", "Mac Server"), subtitle: tr("Use your Mac IP like http://192.168.1.8:8765", "ប្រើ Mac IP ដូចជា http://192.168.1.8:8765")) {
+                    sectionCard(title: tr("Mac Server", "Mac Server"), subtitle: tr("Use Scan Mac on the same Wi-Fi, or paste a Tailscale URL for remote control.", "ប្រើ Scan Mac ពេលនៅ Wi‑Fi ដូចគ្នា ឬបិទភ្ជាប់ Tailscale URL សម្រាប់គ្រប់គ្រងពីចម្ងាយ។")) {
                         VStack(alignment: .leading, spacing: 12) {
                             TextField(tr("Server URL", "Server URL"), text: $serverURL)
                                 .textInputAutocapitalization(.never)
@@ -9830,6 +9830,10 @@ private struct MacControlSheet: View {
                                 .padding(.horizontal, 14)
                                 .padding(.vertical, 12)
                                 .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+
+                            Text(tr("Same Wi-Fi: tap Scan Mac. Different Wi-Fi or cellular: paste the Tailscale URL from Soranin.app on your Mac.", "Wi‑Fi ដូចគ្នា៖ ចុច Scan Mac។ Wi‑Fi ផ្សេង ឬ cellular៖ បិទភ្ជាប់ Tailscale URL ពី Soranin.app លើ Mac របស់អ្នក។"))
+                                .font(.system(size: 12, weight: .medium, design: .rounded))
+                                .foregroundStyle(Color.white.opacity(0.62))
 
                             HStack(spacing: 10) {
                                 actionButton(
