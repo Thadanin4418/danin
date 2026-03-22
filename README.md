@@ -11,6 +11,8 @@ Clean Git repo for the current `soranin` iOS app, the Mac `Soranin.app` source, 
 - `CHANGELOG.md`
 - `RELEASE_NOTES.md`
 - `RELEASE_TEMPLATE.md`
+- `START_CONTROL_MAC.command`
+- `IOS_MAC_CONTROL.md`
 
 ## Current purpose
 
@@ -39,6 +41,7 @@ That means this repo is much easier to move than before, but you should still re
 - `soranin-ios/soranin/SoraDownloadViewModel.swift`
 - `scripts/reels_dashboard_server.py`
 - `scripts/fb_reels_batch_upload.py`
+- `scripts/publish_github_release.py`
 - `extension/manifest.json`
 
 ## Quick build
@@ -115,6 +118,18 @@ Inside the iPhone app:
   - `Preflight`
   - or `Run Facebook Post`
 
+### 5. Simplest launcher
+
+For the cleanest Mac + iPhone control flow, use:
+
+```bash
+./START_CONTROL_MAC.command
+```
+
+More details:
+
+- `IOS_MAC_CONTROL.md`
+
 ## Main workflow
 
 ### Mac side
@@ -188,3 +203,5 @@ This repo is good for:
   - iPhone `Control Mac` popup UI
 - `soranin-ios/soranin/SoraDownloadViewModel.swift`
   - iPhone networking for Mac control
+- `scripts/publish_github_release.py`
+  - builds a release zip, pushes a tag, and publishes a GitHub release
