@@ -1,0 +1,45 @@
+{
+  "manifest_version": 3,
+  "name": "Sora All In One",
+  "version": "1.15.58",
+  "description": "Chrome Sora helper with post queues, copyable Sora URLs, download tools, and three-dots project-page delete queues for Sora videos.",
+  "permissions": [
+    "activeTab",
+    "downloads",
+    "scripting",
+    "tabs",
+    "storage"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "action": {
+    "default_popup": "popup.html"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "integrity.js",
+        "license.js",
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "page-hook.js"
+      ],
+      "matches": [
+        "<all_urls>"
+      ]
+    }
+  ]
+}

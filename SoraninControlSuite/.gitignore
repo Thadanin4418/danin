@@ -1,0 +1,37 @@
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.tmp
+*.log
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Xcode / Swift
+DerivedData/
+.build/
+.swiftpm/
+*.xcuserstate
+xcuserdata/
+
+# Local app/runtime state
+.reels_api_keys.json
+.soranin_ai_chat_history.json
+.soranin_ai_chat_pending_request.json
+.soranin_chrome_profile_links.json
+.soranin_completed_sora_ids.json
+
+# Media / generated data
+Soranin/
+facebook/
+*.mp4
+*.mov
+*.m4v
+*.jpg
+*.jpeg
+*.png
+*.gif

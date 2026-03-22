@@ -1,0 +1,767 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Sora All In One</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      width: 440px;
+      margin: 0;
+      padding: 12px;
+      background: linear-gradient(180deg, #fff7ed 0%, #ffffff 40%, #fef2f2 100%);
+      color: #111827;
+    }
+    h2 {
+      margin: 0 0 10px 0;
+      font-size: 18px;
+    }
+    .featured-action {
+      margin: 10px 0 12px 0;
+    }
+    .logo-button {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      width: 100%;
+      padding: 12px 14px;
+      border-radius: 12px;
+      background: linear-gradient(135deg, #111827 0%, #2563eb 100%);
+      color: #fff;
+      font-size: 14px;
+      font-weight: 700;
+    }
+    .logo-button span {
+      display: inline-flex;
+      align-items: center;
+    }
+    .logo-badge {
+      width: 28px;
+      height: 28px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.18);
+      justify-content: center;
+      font-size: 13px;
+      font-weight: 700;
+      border: 1px solid rgba(255, 255, 255, 0.22);
+    }
+    .section {
+      margin-top: 12px;
+      padding-top: 12px;
+      border-top: 1px solid #e5e7eb;
+    }
+    .section:first-of-type {
+      margin-top: 0;
+      padding-top: 0;
+      border-top: 0;
+    }
+    .section-label {
+      margin: 0 0 8px 0;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: #92400e;
+    }
+    .section-label.delete {
+      color: #991b1b;
+    }
+    .row {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+    button {
+      flex: 1;
+      padding: 10px 8px;
+      border: 0;
+      border-radius: 8px;
+      cursor: pointer;
+      background: #111827;
+      color: white;
+      font-size: 13px;
+    }
+    button.secondary {
+      background: #374151;
+    }
+    button.post {
+      background: #111827;
+    }
+    button.delete {
+      background: #dc2626;
+    }
+    input[type="text"] {
+      width: 100%;
+      box-sizing: border-box;
+      padding: 10px;
+      border-radius: 8px;
+      border: 1px solid #d1d5db;
+      font-size: 12px;
+      color: #111827;
+      background: #fff;
+    }
+    textarea {
+      width: 100%;
+      height: 110px;
+      box-sizing: border-box;
+      margin-top: 8px;
+      padding: 10px;
+      resize: vertical;
+      border-radius: 8px;
+      border: 1px solid #d1d5db;
+      font-size: 12px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+    .meta {
+      font-size: 12px;
+      color: #374151;
+      margin: 6px 0 0 0;
+      min-height: 16px;
+    }
+    .list {
+      margin-top: 10px;
+      max-height: 220px;
+      overflow: auto;
+      border: 1px solid #d1d5db;
+      border-radius: 8px;
+      padding: 8px;
+      background: #fafafa;
+    }
+    .item {
+      display: grid;
+      grid-template-columns: 22px 1fr auto;
+      gap: 8px;
+      align-items: start;
+      padding: 6px 0;
+      border-bottom: 1px solid #e5e7eb;
+    }
+    .item:last-child {
+      border-bottom: none;
+    }
+    .link {
+      word-break: break-all;
+      font-size: 12px;
+      color: #111827;
+      text-decoration: none;
+    }
+    .title {
+      font-size: 12px;
+      font-weight: 700;
+      color: #111827;
+      margin-bottom: 4px;
+      word-break: break-word;
+    }
+    .mini {
+      padding: 6px 8px;
+      font-size: 11px;
+      border-radius: 6px;
+      color: white;
+      border: 0;
+      cursor: pointer;
+    }
+    .mini.post {
+      background: #2563eb;
+    }
+    .mini.delete {
+      background: #dc2626;
+    }
+    .toggle {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin: 10px 0 8px 0;
+      padding: 10px 12px;
+      border: 1px solid #e5e7eb;
+      border-radius: 10px;
+      background: rgba(255,255,255,0.92);
+      font-size: 12px;
+    }
+    .toggle input {
+      width: 18px;
+      height: 18px;
+      accent-color: #dc2626;
+    }
+    .small {
+      font-size: 11px;
+      color: #6b7280;
+      margin-top: 10px;
+      line-height: 1.4;
+    }
+    .hero {
+      display: flex;
+      gap: 8px;
+      margin-top: 10px;
+    }
+    .hero button {
+      flex: 1;
+    }
+    .view-switch button.active {
+      box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.7);
+      filter: brightness(1.03);
+    }
+    .failed-box {
+      margin-top: 10px;
+      border: 1px solid #fecaca;
+      background: #fff7f7;
+      border-radius: 10px;
+      padding: 10px;
+    }
+    .failed-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+    .failed-title {
+      font-size: 12px;
+      font-weight: 700;
+      color: #991b1b;
+    }
+    .failed-actions {
+      display: flex;
+      gap: 6px;
+    }
+    .failed-actions button {
+      flex: 0 0 auto;
+      padding: 6px 8px;
+      font-size: 11px;
+      border-radius: 6px;
+    }
+    .failed-list {
+      max-height: 140px;
+      overflow: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .failed-item {
+      padding: 8px;
+      border-radius: 8px;
+      background: #fff;
+      border: 1px solid #fee2e2;
+    }
+    .failed-id {
+      font-size: 11px;
+      font-weight: 700;
+      color: #991b1b;
+      margin-bottom: 4px;
+      word-break: break-all;
+    }
+    .failed-link {
+      font-size: 11px;
+      color: #374151;
+      word-break: break-all;
+      text-decoration: none;
+    }
+    .failed-empty {
+      font-size: 11px;
+      color: #6b7280;
+    }
+    .license-box {
+      margin-top: 12px;
+      border: 1px solid #cbd5e1;
+      background: rgba(255,255,255,0.95);
+      border-radius: 12px;
+      padding: 12px;
+    }
+    .buy-box {
+      margin-top: 12px;
+      border: 1px solid #cbd5e1;
+      background: rgba(255,255,255,0.95);
+      border-radius: 12px;
+      padding: 12px;
+    }
+    .buy-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 9999;
+      background: rgba(15, 23, 42, 0.6);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 10px;
+      overflow: auto;
+    }
+    .buy-modal {
+      width: 100%;
+      max-width: min(320px, calc(100vw - 20px));
+      max-height: calc(100vh - 20px);
+      overflow-y: auto;
+      border-radius: 12px;
+      border: 1px solid #cbd5e1;
+      background: linear-gradient(180deg, #fff7ed 0%, #ffffff 50%, #eff6ff 100%);
+      box-shadow: 0 20px 40px rgba(15, 23, 42, 0.22);
+      padding: 8px;
+    }
+    .buy-modal-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 10px;
+    }
+    .buy-modal-title {
+      font-size: 13px;
+      font-weight: 800;
+      color: #111827;
+    }
+    .buy-close {
+      flex: 0 0 auto;
+      width: 32px;
+      padding: 6px 0;
+      border-radius: 999px;
+      background: #374151;
+      color: white;
+      font-size: 13px;
+      line-height: 1;
+    }
+    .buy-plan-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 6px;
+      margin-top: 6px;
+    }
+    .buy-plan-card {
+      border: 1px solid #d1d5db;
+      border-radius: 10px;
+      background: #fff;
+      color: #111827;
+      text-align: center;
+      width: 100%;
+      min-height: 72px;
+      padding: 8px 5px;
+      cursor: pointer;
+      transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
+    }
+    .buy-plan-card.active {
+      border-color: #2563eb;
+      box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.14);
+      transform: translateY(-1px);
+    }
+    .buy-plan-title {
+      font-size: 11px;
+      font-weight: 700;
+      margin-bottom: 3px;
+    }
+    .buy-plan-price {
+      font-size: 13px;
+      font-weight: 800;
+      color: #0f766e;
+      margin-bottom: 3px;
+    }
+    .buy-plan-help {
+      font-size: 8px;
+      color: #6b7280;
+      line-height: 1.35;
+    }
+    .buy-summary {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+      margin-top: 10px;
+    }
+    .buy-summary-card {
+      border: 1px solid #e5e7eb;
+      border-radius: 10px;
+      background: #fff;
+      padding: 10px;
+    }
+    .buy-summary-value {
+      font-size: 18px;
+      font-weight: 800;
+      color: #111827;
+      margin-top: 4px;
+      word-break: break-word;
+    }
+    .buy-summary-help {
+      font-size: 11px;
+      color: #6b7280;
+      line-height: 1.4;
+      margin-top: 6px;
+    }
+    .buy-order-meta {
+      margin-top: 10px;
+      padding: 10px;
+      border-radius: 10px;
+      border: 1px solid #e5e7eb;
+      background: #f8fafc;
+      font-size: 12px;
+      color: #374151;
+      line-height: 1.45;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .buy-qr-box {
+      width: 100%;
+      margin: 10px auto 0 auto;
+    }
+    .khqr-card {
+      width: 100%;
+      max-width: min(248px, 100%);
+      margin: 0 auto;
+      border-radius: 16px;
+      overflow: hidden;
+      background: #fff;
+      box-shadow: 0 18px 40px rgba(15, 23, 42, 0.16);
+      border: 1px solid rgba(226, 232, 240, 0.9);
+    }
+    .khqr-card-head {
+      position: relative;
+      background: #e11d21;
+      color: #fff;
+      text-align: center;
+      font-size: clamp(18px, 6vw, 24px);
+      font-weight: 800;
+      letter-spacing: 0.04em;
+      padding: 10px 12px 12px 12px;
+    }
+    .khqr-card-head::after {
+      content: '';
+      position: absolute;
+      right: 0;
+      bottom: -1px;
+      width: clamp(24px, 9vw, 34px);
+      height: clamp(24px, 9vw, 34px);
+      background: linear-gradient(135deg, transparent 50%, #fff 50%);
+    }
+    .khqr-card-body {
+      padding: 12px 12px 14px 12px;
+      background: #fff;
+    }
+    .khqr-merchant-name {
+      font-size: 11px;
+      font-weight: 500;
+      color: #111827;
+      margin-bottom: 6px;
+      word-break: break-word;
+    }
+    .khqr-amount-row {
+      display: flex;
+      align-items: flex-end;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-bottom: 10px;
+    }
+    .khqr-amount-main {
+      font-size: 20px;
+      line-height: 1;
+      font-weight: 800;
+      color: #000;
+    }
+    .khqr-amount-currency {
+      font-size: 11px;
+      font-weight: 700;
+      color: #374151;
+      margin-bottom: 2px;
+      text-transform: uppercase;
+    }
+    .khqr-expiry {
+      font-size: 10px;
+      font-weight: 700;
+      color: #b45309;
+      margin-bottom: 10px;
+      text-align: left;
+    }
+    .khqr-divider {
+      border-top: 2px dashed #d1d5db;
+      margin: 0 -12px 12px -12px;
+    }
+    .khqr-qr-wrap {
+      position: relative;
+      width: min(156px, 100%);
+      aspect-ratio: 1 / 1;
+      margin: 0 auto;
+      border-radius: 10px;
+      overflow: hidden;
+      background: #fff;
+    }
+    .khqr-qr-wrap img {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      display: block;
+      background: #fff;
+    }
+    .khqr-qr-badge {
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      transform: translate(-50%, -50%);
+      width: 36px;
+      height: 36px;
+      border-radius: 999px;
+      background: #111827;
+      color: #fff;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 18px;
+      font-weight: 800;
+      border: 3px solid #fff;
+      box-shadow: 0 6px 14px rgba(15, 23, 42, 0.22);
+    }
+    .khqr-empty {
+      text-align: center;
+      color: #6b7280;
+      font-size: 12px;
+      line-height: 1.5;
+      padding: 32px 14px;
+    }
+    .buy-qr-preview {
+      margin-top: 8px;
+      padding: 10px;
+      border-radius: 10px;
+      border: 1px dashed #d1d5db;
+      background: #fff;
+      font-size: 11px;
+      color: #374151;
+      white-space: pre-wrap;
+      word-break: break-word;
+      line-height: 1.4;
+    }
+    .buy-note {
+      font-size: 11px;
+      color: #6b7280;
+      line-height: 1.45;
+      margin-top: 8px;
+    }
+    .license-device {
+      font-size: 11px;
+      color: #374151;
+      word-break: break-all;
+      margin: 6px 0 10px 0;
+      padding: 8px;
+      border-radius: 8px;
+      background: #f8fafc;
+      border: 1px solid #e5e7eb;
+    }
+    .license-status {
+      font-size: 12px;
+      font-weight: 700;
+      margin-bottom: 8px;
+    }
+    .license-status.ok {
+      color: #166534;
+    }
+    .license-status.bad {
+      color: #991b1b;
+    }
+    [hidden] {
+      display: none !important;
+    }
+  </style>
+</head>
+<body>
+  <h2>Sora All In One</h2>
+
+  <div class="meta" id="status">Ready.</div>
+
+  <div class="small" id="websiteOnlyNotice">
+    Use the buttons on the Sora website only.
+    Open <strong>/drafts</strong> for <strong>Post All Found</strong> and
+    open <strong>/profile</strong> for <strong>Copy</strong> and
+    <strong>Delete</strong> actions.
+  </div>
+
+  <div class="license-box" id="licenseBox">
+    <div class="section-label">License</div>
+    <div class="license-status bad" id="licenseStatus">Checking license...</div>
+    <div class="meta">Device ID</div>
+    <div class="license-device" id="licenseDeviceId">Loading...</div>
+    <div class="row">
+      <button id="copyDeviceId" class="secondary">Copy Device ID</button>
+    </div>
+    <div class="row" style="margin-top:8px;">
+      <button id="buyLicenseBtn" class="secondary">Buy License / KHQR</button>
+    </div>
+    <input id="licenseServerUrl" type="hidden" value="https://sora-license-server-op4k.onrender.com" />
+    <div class="small" id="licenseServerMeta" hidden></div>
+    <div class="small" id="licenseMeta">
+      One license works on one computer only, but you can use the same key on every Chrome profile on that computer.
+    </div>
+    <div class="small" id="integrityMeta">Build status: checking...</div>
+  </div>
+
+  <div class="buy-overlay" id="buyPanel" hidden>
+    <div class="buy-modal">
+      <div class="buy-modal-head">
+        <div class="buy-modal-title">Buy License With KHQR</div>
+        <button id="buyCloseBtn" class="buy-close" type="button">X</button>
+      </div>
+
+      <div class="small" id="buyConfigMeta" hidden>
+        Choose one plan below. When you click a plan, the popup will prepare a fresh KHQR automatically.
+      </div>
+
+      <div class="buy-plan-grid" id="buyPlanGrid">
+        <button class="buy-plan-card active" type="button">
+          <div class="buy-plan-title">Loading</div>
+          <div class="buy-plan-price">...</div>
+          <div class="buy-plan-help">Buy plans are loading.</div>
+        </button>
+      </div>
+
+      <div class="buy-summary" hidden>
+        <div class="buy-summary-card">
+          <div class="meta">Price</div>
+          <div class="buy-summary-value" id="buyPriceValue">Loading...</div>
+          <div class="buy-summary-help" id="buyPriceHelp">This license will be bound to one computer.</div>
+        </div>
+        <div class="buy-summary-card">
+          <div class="meta">Bakong ID</div>
+          <div class="buy-summary-value" id="buyBakongValue">Loading...</div>
+          <div class="buy-summary-help">Pay to this Bakong account.</div>
+        </div>
+      </div>
+
+      <div class="buy-order-meta" id="buyOrderMeta" hidden>No active buy order yet.</div>
+
+      <div class="buy-qr-box" id="buyQrBox" hidden>
+        <div class="buy-qr-empty">Choose a plan to prepare a fresh KHQR and show the payment QR here.</div>
+      </div>
+      <div class="buy-qr-preview" id="buyQrPreview" hidden>KHQR details will appear here after the order is prepared.</div>
+
+      <div hidden>
+        <div class="meta">Order ID</div>
+        <input id="buyOrderId" type="text" readonly placeholder="An order ID will appear here" />
+      </div>
+
+      <div hidden>
+        <div class="meta">Payment Note</div>
+        <textarea id="buyPaymentNote" placeholder="Payment note will appear here after preparing an order." readonly></textarea>
+      </div>
+
+      <div class="buy-note" hidden>
+        After payment, keep this popup open or reopen it later. The extension will keep checking the order and can auto-restore the license for this computer when the payment is approved.
+      </div>
+    </div>
+  </div>
+
+  <div class="featured-action" hidden>
+    <button id="logoPostAllFound" class="logo-button post">
+      <span class="logo-badge">P</span>
+      <span>Post All Found</span>
+    </button>
+  </div>
+
+  <div class="hero view-switch" hidden>
+    <button id="viewPost" class="post">Post</button>
+    <button id="viewDelete" class="delete">Delete</button>
+    <button id="viewAll" class="secondary">All</button>
+  </div>
+  <div class="meta" id="viewMeta" hidden>Manual view.</div>
+
+  <div class="section" id="quickActionsSection" hidden>
+    <div class="section-label">Quick Actions</div>
+
+    <div class="row">
+      <button id="quickCopyVideoUrls" class="secondary" data-quick="delete">Copy All Video URLs</button>
+      <button id="quickDownloadAll" class="secondary">Download All URLs</button>
+    </div>
+
+    <div class="row">
+      <button id="quickDeleteNow" class="delete">Delete All Found</button>
+      <button id="quickOpenHidden" class="secondary" hidden>Open All Hidden</button>
+    </div>
+
+    <div class="meta" id="downloadRunMeta">Download queue idle.</div>
+
+    <div class="failed-box" id="failedDownloadsBox" hidden>
+      <div class="failed-head">
+        <div class="failed-title">Failed Downloads</div>
+        <div class="failed-actions">
+          <button id="retryFailedDownloads" class="secondary">Retry Failed</button>
+          <button id="clearFailedDownloads" class="delete">Clear Failed</button>
+        </div>
+      </div>
+      <div class="failed-list" id="failedDownloadsList"></div>
+    </div>
+
+    <div class="row" hidden>
+      <button id="stopOpenQueue" class="secondary">Stop Hidden</button>
+    </div>
+
+    <div class="meta" id="openRunMeta" hidden>Hidden open queue idle.</div>
+  </div>
+
+  <div class="tool-panels" id="toolPanels" hidden>
+  <div class="section" id="postToolsSection" data-panel="post">
+    <div class="section-label">Post Tools</div>
+
+    <div class="row">
+      <button id="scanPosts" class="post">Scan Post URLs</button>
+      <button id="copyPostUrls" class="secondary">Copy All</button>
+      <button id="clearPosts" class="secondary">Clear</button>
+    </div>
+
+    <div class="row">
+      <button id="postDraft" class="post">Post Draft</button>
+      <button id="postAllFoundInline" class="post">Post All Found</button>
+    </div>
+
+    <div class="row">
+      <button id="startPostFive" class="post">Post 5</button>
+      <button id="startPostTen" class="post">Post 10</button>
+      <button id="startPostAll" class="post">Post All</button>
+    </div>
+
+    <div class="row">
+      <button id="stopPostQueue" class="secondary">Stop Post</button>
+    </div>
+
+    <div class="toggle">
+      <label for="skipPostFailed">Skip failed drafts</label>
+      <input id="skipPostFailed" type="checkbox" checked />
+    </div>
+
+    <div class="meta" id="postRunMeta">Post queue idle.</div>
+    <textarea id="postResult" placeholder="Detected Sora project and draft URLs will appear here..."></textarea>
+    <div class="list" id="postList"></div>
+  </div>
+
+  <div class="section" id="deleteToolsSection" data-panel="delete">
+    <div class="section-label delete">Delete Tools</div>
+
+    <div class="row">
+      <button id="scanDeletes" class="delete">Scan Visible Cards</button>
+      <button id="copyDeleteUrls" class="secondary">Copy URLs</button>
+      <button id="clearDeletes" class="secondary">Clear</button>
+    </div>
+
+    <div class="row">
+      <button id="deleteFive" class="delete">Delete 5</button>
+      <button id="deleteTen" class="delete">Delete 10</button>
+      <button id="deleteAll" class="delete">Delete All</button>
+    </div>
+
+    <div class="row">
+      <button id="stopDeleteQueue" class="secondary">Stop Delete</button>
+    </div>
+
+    <div class="toggle">
+      <label for="skipDeleteFailed">Skip failed videos</label>
+      <input id="skipDeleteFailed" type="checkbox" checked />
+    </div>
+
+    <div class="toggle">
+      <label for="fastDeleteEnabled">Fast delete mode</label>
+      <input id="fastDeleteEnabled" type="checkbox" checked />
+    </div>
+
+    <div class="meta" id="deleteRunMeta">Delete queue idle.</div>
+    <textarea id="deleteResult" placeholder="Visible Sora video URLs will appear here..."></textarea>
+    <div class="list" id="deleteList"></div>
+  </div>
+
+  <div class="small">
+    This combined helper keeps both flows in one extension: post tools for draft URLs and delete tools for visible profile/list videos, each with its own batch queue and stop control.
+  </div>
+  </div>
+
+  <script src="license.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>
