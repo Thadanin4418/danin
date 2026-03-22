@@ -8,6 +8,8 @@ Clean Git repo for the current `soranin` iOS app, the Mac `Soranin.app` source, 
 - `ReelsNativeApp/`
 - `scripts/`
 - `extension/`
+- `CHANGELOG.md`
+- `RELEASE_NOTES.md`
 
 ## Current purpose
 
