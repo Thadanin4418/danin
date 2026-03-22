@@ -7,6 +7,7 @@ Clean Git repo for the current `soranin` iOS app, the Mac `Soranin.app` source, 
 - `soranin-ios/`
 - `ReelsNativeApp/`
 - `scripts/`
+- `extension/`
 
 ## Current purpose
 
@@ -33,6 +34,7 @@ That means this repo is ready for Git/history/backup now, but if you move it to 
 - `soranin-ios/soranin/SoraDownloadViewModel.swift`
 - `scripts/reels_dashboard_server.py`
 - `scripts/fb_reels_batch_upload.py`
+- `extension/manifest.json`
 
 ## Quick build
 
