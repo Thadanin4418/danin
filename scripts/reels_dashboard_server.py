@@ -21,16 +21,15 @@ from facebook_video_downloader import (
     VALID_QUALITIES as FACEBOOK_VALID_QUALITIES,
     resolve_facebook_download_payload,
 )
+from soranin_paths import API_KEYS_FILE, ROOT_DIR, script_path
 
 
 HOST = "0.0.0.0"
 PORT = 8765
-ROOT_DIR = Path("/Users/nin/Downloads/Soranin")
-BATCH_SCRIPT = Path("/Users/nin/Downloads/fast_reels_batch.py")
-DOWNLOADER_SCRIPT = Path("/Users/nin/Downloads/sora_downloader.py")
-FACEBOOK_BATCH_SCRIPT = Path("/Users/nin/Downloads/fb_reels_batch_upload.py")
-FACEBOOK_PREFLIGHT_SCRIPT = Path("/Users/nin/Downloads/fb_reels_preflight_check.py")
-API_KEYS_FILE = Path("/Users/nin/Downloads/.reels_api_keys.json")
+BATCH_SCRIPT = script_path("fast_reels_batch.py")
+DOWNLOADER_SCRIPT = script_path("sora_downloader.py")
+FACEBOOK_BATCH_SCRIPT = script_path("fb_reels_batch_upload.py")
+FACEBOOK_PREFLIGHT_SCRIPT = script_path("fb_reels_preflight_check.py")
 CHROME_LOCAL_STATE = Path.home() / "Library/Application Support/Google/Chrome/Local State"
 CHROME_APP = "Google Chrome"
 FACEBOOK_CONTENT_LIBRARY_URL = "https://web.facebook.com/professional_dashboard/content/content_library/"
@@ -119,6 +118,7 @@ def save_api_keys(
         payload["GOOGLE_API_KEY"] = gemini_key
     if ai_provider is not None:
         payload["AI_PROVIDER"] = normalize_provider(ai_provider)
+    API_KEYS_FILE.parent.mkdir(parents=True, exist_ok=True)
     API_KEYS_FILE.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     try:
         API_KEYS_FILE.chmod(0o600)
@@ -965,7 +965,7 @@ HTML_PAGE = """<!doctype html>
     <section class="topbar">
       <div>
         <h1>Reels Manager</h1>
-        <div class="sub">/Users/nin/Downloads/Soranin</div>
+        <div class="sub">__ROOT_DIR__</div>
       </div>
       <div class="topbar-actions">
         <button class="mini-btn" id="keysToggleBtn">API Keys</button>
@@ -1157,6 +1157,7 @@ HTML_PAGE = """<!doctype html>
 </body>
 </html>
 """
+HTML_PAGE = HTML_PAGE.replace("__ROOT_DIR__", str(ROOT_DIR))
 
 
 class ReelsDashboardHandler(BaseHTTPRequestHandler):

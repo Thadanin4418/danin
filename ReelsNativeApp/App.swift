@@ -6,20 +6,115 @@ import Darwin
 import Foundation
 import UniformTypeIdentifiers
 
-private let rootDir = URL(fileURLWithPath: "/Users/nin/Downloads/Soranin", isDirectory: true)
+private struct SoraninBundledRuntimePaths: Decodable {
+    let repoRoot: String
+    let scriptsDir: String
+    let runtimeDir: String
+    let packagesRoot: String
+}
+
+private func expandedPath(_ raw: String) -> String {
+    NSString(string: raw).expandingTildeInPath
+}
+
+private func fileURL(from raw: String, isDirectory: Bool = false) -> URL {
+    URL(fileURLWithPath: expandedPath(raw), isDirectory: isDirectory)
+}
+
+private func firstEnvironmentValue(_ names: [String]) -> String? {
+    for name in names {
+        let value = ProcessInfo.processInfo.environment[name]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !value.isEmpty {
+            return value
+        }
+    }
+    return nil
+}
+
+private func ensureDirectoryURL(_ url: URL) -> URL {
+    try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+    return url
+}
+
+private func loadBundledRuntimePaths() -> SoraninBundledRuntimePaths? {
+    guard let resourceURL = Bundle.main.url(forResource: "runtime_paths", withExtension: "json"),
+          let data = try? Data(contentsOf: resourceURL) else {
+        return nil
+    }
+    return try? JSONDecoder().decode(SoraninBundledRuntimePaths.self, from: data)
+}
+
+private let soraninBundledRuntimePaths = loadBundledRuntimePaths()
+private let soraninRepoRootURL: URL = {
+    if let explicit = firstEnvironmentValue(["SORANIN_CONTROL_SUITE_DIR"]) {
+        return fileURL(from: explicit, isDirectory: true)
+    }
+    if let bundled = soraninBundledRuntimePaths {
+        return fileURL(from: bundled.repoRoot, isDirectory: true)
+    }
+    return URL(fileURLWithPath: (#filePath as NSString).deletingLastPathComponent, isDirectory: true)
+        .deletingLastPathComponent()
+}()
+private let soraninScriptsDirURL: URL = {
+    if let explicit = firstEnvironmentValue(["SORANIN_SCRIPTS_DIR"]) {
+        return fileURL(from: explicit, isDirectory: true)
+    }
+    if let bundled = soraninBundledRuntimePaths {
+        return fileURL(from: bundled.scriptsDir, isDirectory: true)
+    }
+    return soraninRepoRootURL.appendingPathComponent("scripts", isDirectory: true)
+}()
+private let soraninRuntimeDirURL: URL = {
+    if let explicit = firstEnvironmentValue(["SORANIN_RUNTIME_DIR"]) {
+        return ensureDirectoryURL(fileURL(from: explicit, isDirectory: true))
+    }
+    if let bundled = soraninBundledRuntimePaths {
+        return ensureDirectoryURL(fileURL(from: bundled.runtimeDir, isDirectory: true))
+    }
+    return ensureDirectoryURL(URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true).appendingPathComponent(".soranin", isDirectory: true))
+}()
+private let rootDir: URL = {
+    if let explicit = firstEnvironmentValue(["SORANIN_PACKAGES_ROOT", "SORANIN_ROOT_DIR"]) {
+        return ensureDirectoryURL(fileURL(from: explicit, isDirectory: true))
+    }
+    if let bundled = soraninBundledRuntimePaths {
+        return ensureDirectoryURL(fileURL(from: bundled.packagesRoot, isDirectory: true))
+    }
+    let legacyRoot = soraninRepoRootURL.deletingLastPathComponent().appendingPathComponent("Soranin", isDirectory: true)
+    if FileManager.default.fileExists(atPath: legacyRoot.path) {
+        return legacyRoot
+    }
+    return ensureDirectoryURL(soraninRuntimeDirURL.appendingPathComponent("Soranin", isDirectory: true))
+}()
+
+private func preferredRuntimeFile(named filename: String, envNames: [String] = []) -> URL {
+    if let explicit = firstEnvironmentValue(envNames) {
+        let url = fileURL(from: explicit)
+        try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        return url
+    }
+    let legacy = soraninRepoRootURL.deletingLastPathComponent().appendingPathComponent(filename)
+    if FileManager.default.fileExists(atPath: legacy.path) {
+        return legacy
+    }
+    let fallback = soraninRuntimeDirURL.appendingPathComponent(filename)
+    try? FileManager.default.createDirectory(at: fallback.deletingLastPathComponent(), withIntermediateDirectories: true)
+    return fallback
+}
+
 private let facebookRootDir = rootDir.deletingLastPathComponent().appendingPathComponent("facebook", isDirectory: true)
-private let batchScript = URL(fileURLWithPath: "/Users/nin/Downloads/fast_reels_batch.py")
-private let facebookBatchUploadScript = URL(fileURLWithPath: "/Users/nin/Downloads/fb_reels_batch_upload.py")
-private let facebookPreflightScript = URL(fileURLWithPath: "/Users/nin/Downloads/fb_reels_preflight_check.py")
-private let reelsDashboardServerScript = URL(fileURLWithPath: "/Users/nin/Downloads/reels_dashboard_server.py")
-private let facebookTimingStateFile = URL(fileURLWithPath: "/Users/nin/Downloads/Soranin/.fb_reels_publish_state.json")
-private let soraDownloaderScript = URL(fileURLWithPath: "/Users/nin/Downloads/sora_downloader.py")
-private let postLinksDownloaderScript = URL(fileURLWithPath: "/Users/nin/Downloads/post_links_downloader.py")
-private let aiChatBridgeScript = URL(fileURLWithPath: "/Users/nin/Downloads/ai_chat_bridge.py")
-private let aiChatHistoryFile = URL(fileURLWithPath: "/Users/nin/Downloads/.soranin_ai_chat_history.json")
-private let aiChatPendingRequestFile = URL(fileURLWithPath: "/Users/nin/Downloads/.soranin_ai_chat_pending_request.json")
-private let chromeProfileAssignmentsFile = URL(fileURLWithPath: "/Users/nin/Downloads/.soranin_chrome_profile_links.json")
-private let soraCompletedDownloadIDsFile = URL(fileURLWithPath: "/Users/nin/Downloads/.soranin_completed_sora_ids.json")
+private let batchScript = soraninScriptsDirURL.appendingPathComponent("fast_reels_batch.py")
+private let facebookBatchUploadScript = soraninScriptsDirURL.appendingPathComponent("fb_reels_batch_upload.py")
+private let facebookPreflightScript = soraninScriptsDirURL.appendingPathComponent("fb_reels_preflight_check.py")
+private let reelsDashboardServerScript = soraninScriptsDirURL.appendingPathComponent("reels_dashboard_server.py")
+private let facebookTimingStateFile = rootDir.appendingPathComponent(".fb_reels_publish_state.json")
+private let soraDownloaderScript = soraninScriptsDirURL.appendingPathComponent("sora_downloader.py")
+private let postLinksDownloaderScript = soraninScriptsDirURL.appendingPathComponent("post_links_downloader.py")
+private let aiChatBridgeScript = soraninScriptsDirURL.appendingPathComponent("ai_chat_bridge.py")
+private let aiChatHistoryFile = preferredRuntimeFile(named: ".soranin_ai_chat_history.json")
+private let aiChatPendingRequestFile = preferredRuntimeFile(named: ".soranin_ai_chat_pending_request.json")
+private let chromeProfileAssignmentsFile = preferredRuntimeFile(named: ".soranin_chrome_profile_links.json")
+private let soraCompletedDownloadIDsFile = preferredRuntimeFile(named: ".soranin_completed_sora_ids.json")
 private let geminiLiveEndpoint = URL(string: "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent")!
 private let geminiLiveModel = "gemini-2.5-flash-native-audio-preview-12-2025"
 private let geminiFilesBaseURL = URL(string: "https://generativelanguage.googleapis.com")!
@@ -35,7 +130,7 @@ private let openAISpeechEndpoint = URL(string: "https://api.openai.com/v1/audio/
 private let openAIReplySpeechModel = "gpt-4o-mini-tts"
 private let openAIAudioTranscriptionEndpoint = URL(string: "https://api.openai.com/v1/audio/transcriptions")!
 private let openAIChatTranscriptionModel = "gpt-4o-transcribe"
-private let apiKeysFile = URL(fileURLWithPath: "/Users/nin/Downloads/.reels_api_keys.json")
+private let apiKeysFile = preferredRuntimeFile(named: ".reels_api_keys.json", envNames: ["SORANIN_API_KEYS_FILE"])
 private let chromeBundleIdentifier = "com.google.Chrome"
 private let chromeLocalStateFile = URL(
     fileURLWithPath: NSHomeDirectory() + "/Library/Application Support/Google/Chrome/Local State"

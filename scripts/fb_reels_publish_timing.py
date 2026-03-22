@@ -7,10 +7,12 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Literal
 
+from soranin_paths import FACEBOOK_STATE_PATH
+
 
 POST_INTERVAL_MINUTES = 30
 MIN_SCHEDULE_LEAD_MINUTES = 30
-DEFAULT_STATE_PATH = Path("/Users/nin/Downloads/Soranin/.fb_reels_publish_state.json")
+DEFAULT_STATE_PATH = FACEBOOK_STATE_PATH
 STATE_SCHEMA_VERSION = 4
 SUMMARY_FIELDS = (
     "interval_minutes",

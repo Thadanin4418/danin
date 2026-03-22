@@ -7,8 +7,10 @@ import json
 import sys
 from pathlib import Path
 
+from soranin_paths import script_path
 
-STEP3_SCRIPT = Path("/Users/nin/Downloads/fb_reels_step3_upload_video_and_next.py")
+
+STEP3_SCRIPT = script_path("fb_reels_step3_upload_video_and_next.py")
 
 
 def parse_args() -> argparse.Namespace:

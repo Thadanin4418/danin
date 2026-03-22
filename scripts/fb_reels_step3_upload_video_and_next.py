@@ -9,13 +9,14 @@ import subprocess
 import time
 from pathlib import Path
 
+from soranin_paths import CLICK_POINT_SWIFT, DEFAULT_FACEBOOK_PACKAGE, FACEBOOK_STATE_PATH, ROOT_DIR, script_path
 
-CLICK_POINT_SWIFT = Path("/Users/nin/Downloads/click_point.swift")
+
 CLICK_POINT_BINARY = Path("/tmp/click_point")
-STEP2_SCRIPT = Path("/Users/nin/Downloads/fb_reels_step2_open_reel_dialog.py")
-DEFAULT_PACKAGE = Path("/Users/nin/Downloads/Soranin/64_Reels_Package")
-FAVORITE_ROOT = Path("/Users/nin/Downloads/Soranin")
-STATE_PATH = FAVORITE_ROOT / ".fb_reels_publish_state.json"
+STEP2_SCRIPT = script_path("fb_reels_step2_open_reel_dialog.py")
+DEFAULT_PACKAGE = DEFAULT_FACEBOOK_PACKAGE
+FAVORITE_ROOT = ROOT_DIR
+STATE_PATH = FACEBOOK_STATE_PATH
 TARGET_URL = "https://web.facebook.com/professional_dashboard/content/content_library"
 CONTENT_LIBRARY_MARKER = "content_library"
 CHROME_LOCAL_STATE = Path.home() / "Library/Application Support/Google/Chrome/Local State"

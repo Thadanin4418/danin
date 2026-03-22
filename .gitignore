@@ -26,7 +26,7 @@ xcuserdata/
 .soranin_completed_sora_ids.json
 
 # Media / generated data
-Soranin/
+/Soranin/
 facebook/
 *.mp4
 *.mov

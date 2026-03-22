@@ -6,14 +6,15 @@ import json
 import subprocess
 from pathlib import Path
 
+from soranin_paths import FACEBOOK_STATE_PATH, ROOT_DIR, script_path
 
-ROOT_DEFAULT = Path("/Users/nin/Downloads/Soranin")
-STATE_DEFAULT = ROOT_DEFAULT / ".fb_reels_publish_state.json"
-PREFLIGHT_SCRIPT = Path("/Users/nin/Downloads/fb_reels_preflight_check.py")
-STEP3_SCRIPT = Path("/Users/nin/Downloads/fb_reels_step3_upload_video_and_next.py")
-STEP4_SCRIPT = Path("/Users/nin/Downloads/fb_reels_step4_edit_thumbnail.py")
-STEP5_SCRIPT = Path("/Users/nin/Downloads/fb_reels_step5_add_title_from_html.py")
-STEP6_SCRIPT = Path("/Users/nin/Downloads/fb_reels_step6_schedule_or_post.py")
+ROOT_DEFAULT = ROOT_DIR
+STATE_DEFAULT = FACEBOOK_STATE_PATH
+PREFLIGHT_SCRIPT = script_path("fb_reels_preflight_check.py")
+STEP3_SCRIPT = script_path("fb_reels_step3_upload_video_and_next.py")
+STEP4_SCRIPT = script_path("fb_reels_step4_edit_thumbnail.py")
+STEP5_SCRIPT = script_path("fb_reels_step5_add_title_from_html.py")
+STEP6_SCRIPT = script_path("fb_reels_step6_schedule_or_post.py")
 
 
 def parse_args() -> argparse.Namespace:

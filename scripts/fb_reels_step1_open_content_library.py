@@ -7,8 +7,10 @@ import subprocess
 import sys
 from pathlib import Path
 
+from soranin_paths import DEFAULT_FACEBOOK_PACKAGE
 
-DEFAULT_PACKAGE = Path("/Users/nin/Downloads/Soranin/64_Reels_Package")
+
+DEFAULT_PACKAGE = DEFAULT_FACEBOOK_PACKAGE
 TARGET_URL = "https://web.facebook.com/professional_dashboard/content/content_library"
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".m4v", ".avi", ".mkv"}
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
