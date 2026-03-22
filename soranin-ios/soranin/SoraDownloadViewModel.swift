@@ -1,4 +1,5 @@
 import AVFoundation
+import Darwin
 import Foundation
 import Photos
 import SwiftUI
@@ -1463,6 +1464,10 @@ private struct MacFacebookPostResponse: Decodable {
     let ok: Bool?
     let message: String?
     let summary: String?
+}
+
+private struct MacControlStatusResponse: Decodable {
+    let status: String?
 }
 
 @MainActor
@@ -3969,22 +3974,20 @@ final class SoraDownloadViewModel: ObservableObject {
     }
 
     private func persistMacControlServerURL(_ value: String?) {
-        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        if trimmed.isEmpty {
+        guard let normalized = Self.normalizedMacControlServerURLString(value) else {
             return
         }
-        UserDefaults.standard.set(trimmed, forKey: Self.macControlServerURLDefaultsKey)
+        UserDefaults.standard.set(normalized, forKey: Self.macControlServerURLDefaultsKey)
     }
 
     private func macControlBaseURLCandidates(preferredServerURL: String? = nil) -> [URL] {
         var rawValues: [String] = []
-        if let preferred = preferredServerURL?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !preferred.isEmpty {
+        if let preferred = Self.normalizedMacControlServerURLString(preferredServerURL) {
             rawValues.append(preferred)
         }
-        if let saved = UserDefaults.standard.string(forKey: Self.macControlServerURLDefaultsKey)?
-            .trimmingCharacters(in: .whitespacesAndNewlines),
-           !saved.isEmpty {
+        if let saved = Self.normalizedMacControlServerURLString(
+            UserDefaults.standard.string(forKey: Self.macControlServerURLDefaultsKey)
+        ) {
             rawValues.append(saved)
         }
         rawValues.append("http://127.0.0.1:8765")
@@ -3999,6 +4002,64 @@ final class SoraDownloadViewModel: ObservableObject {
             urls.append(url)
         }
         return urls
+    }
+
+    func discoverMacControlServer(
+        preferredServerURL: String = ""
+    ) async -> (ok: Bool, message: String, serverURL: String?, candidates: [String]) {
+        let directCandidates = macControlBaseURLCandidates(preferredServerURL: preferredServerURL)
+        if let found = await Self.firstReachableMacControlURL(in: directCandidates) {
+            let normalized = found.absoluteString
+            persistMacControlServerURL(normalized)
+            return (
+                true,
+                text(
+                    "Found your Mac controller at \(normalized).",
+                    "រកឃើញ Mac controller របស់អ្នកនៅ \(normalized)។"
+                ),
+                normalized,
+                [normalized]
+            )
+        }
+
+        let prefixes = Self.activeLocalIPv4SubnetPrefixes()
+        guard !prefixes.isEmpty else {
+            return (
+                false,
+                text(
+                    "Could not read your Wi-Fi IP. Connect iPhone and Mac to the same Wi-Fi, then try Scan Mac again.",
+                    "មិនអាចអាន Wi-Fi IP របស់អ្នកបានទេ។ សូមភ្ជាប់ iPhone និង Mac ទៅ Wi-Fi ដូចគ្នា រួចសាក Scan Mac ម្តងទៀត។"
+                ),
+                nil,
+                []
+            )
+        }
+
+        let subnetCandidates = Self.macControlSubnetCandidateURLs(prefixes: prefixes)
+        if let found = await Self.firstReachableMacControlURL(in: subnetCandidates) {
+            let normalized = found.absoluteString
+            persistMacControlServerURL(normalized)
+            return (
+                true,
+                text(
+                    "Auto-scanned Wi-Fi and found your Mac at \(normalized).",
+                    "បានស្កេន Wi-Fi ស្វ័យប្រវត្តិ ហើយរកឃើញ Mac របស់អ្នកនៅ \(normalized)។"
+                ),
+                normalized,
+                [normalized]
+            )
+        }
+
+        let prefixText = prefixes.map(\.prefix).joined(separator: ", ")
+        return (
+            false,
+            text(
+                "Scan could not find a Mac controller on Wi-Fi subnets \(prefixText). Open Soranin on Mac first, then try Scan Mac again.",
+                "ស្កេនមិនទាន់រកឃើញ Mac controller លើ Wi-Fi subnet \(prefixText) ទេ។ សូមបើក Soranin លើ Mac ជាមុនសិន រួចសាក Scan Mac ម្តងទៀត។"
+            ),
+            nil,
+            []
+        )
     }
 
     private func sendVideoIDsToMacController(
@@ -4365,6 +4426,231 @@ final class SoraDownloadViewModel: ObservableObject {
         }
 
         return (false, lastErrorMessage)
+    }
+
+    nonisolated private static func normalizedMacControlServerURLString(_ value: String?) -> String? {
+        var trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !trimmed.isEmpty else {
+            return nil
+        }
+
+        if !trimmed.contains("://") {
+            trimmed = "http://\(trimmed)"
+        }
+
+        guard var components = URLComponents(string: trimmed) else {
+            return nil
+        }
+
+        if components.port == nil {
+            components.port = 8765
+        }
+        components.query = nil
+        components.fragment = nil
+
+        guard let url = components.url else {
+            return nil
+        }
+
+        var normalized = url.absoluteString
+        while normalized.hasSuffix("/") {
+            normalized.removeLast()
+        }
+        return normalized
+    }
+
+    nonisolated private static func activeLocalIPv4SubnetPrefixes() -> [(prefix: String, host: Int)] {
+        var results: [(name: String, address: String)] = []
+        var addressesPointer: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&addressesPointer) == 0, let firstAddress = addressesPointer else {
+            return []
+        }
+        defer {
+            freeifaddrs(addressesPointer)
+        }
+
+        var pointer: UnsafeMutablePointer<ifaddrs>? = firstAddress
+        while let current = pointer {
+            let interface = current.pointee
+            let flags = Int32(interface.ifa_flags)
+            let isUp = (flags & IFF_UP) != 0
+            let isLoopback = (flags & IFF_LOOPBACK) != 0
+            let family = interface.ifa_addr.pointee.sa_family
+            let name = String(cString: interface.ifa_name)
+
+            if isUp, !isLoopback, family == UInt8(AF_INET), name.hasPrefix("en") {
+                var hostBuffer = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+                let result = getnameinfo(
+                    interface.ifa_addr,
+                    socklen_t(interface.ifa_addr.pointee.sa_len),
+                    &hostBuffer,
+                    socklen_t(hostBuffer.count),
+                    nil,
+                    0,
+                    NI_NUMERICHOST
+                )
+                if result == 0 {
+                    let address = String(cString: hostBuffer)
+                    results.append((name, address))
+                }
+            }
+
+            pointer = interface.ifa_next
+        }
+
+        func score(for interfaceName: String) -> Int {
+            if interfaceName == "en0" { return 0 }
+            if interfaceName == "en1" { return 1 }
+            return 10
+        }
+
+        let sorted = results.sorted { lhs, rhs in
+            let lhsScore = score(for: lhs.name)
+            let rhsScore = score(for: rhs.name)
+            if lhsScore != rhsScore {
+                return lhsScore < rhsScore
+            }
+            return lhs.name < rhs.name
+        }
+
+        var seen = Set<String>()
+        var prefixes: [(prefix: String, host: Int)] = []
+        for item in sorted {
+            let parts = item.address.split(separator: ".")
+            guard parts.count == 4,
+                  let host = Int(parts[3]),
+                  host >= 0,
+                  host <= 255 else {
+                continue
+            }
+            let prefix = "\(parts[0]).\(parts[1]).\(parts[2])"
+            guard seen.insert(prefix).inserted else {
+                continue
+            }
+            prefixes.append((prefix, host))
+        }
+        return prefixes
+    }
+
+    nonisolated private static func orderedHostNumbers(near host: Int?) -> [Int] {
+        var ordered: [Int] = []
+        var seen = Set<Int>()
+
+        func append(_ value: Int) {
+            guard (1 ... 254).contains(value), seen.insert(value).inserted else {
+                return
+            }
+            ordered.append(value)
+        }
+
+        [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 20, 21, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 150, 200, 254]
+            .forEach(append)
+
+        if let host {
+            append(host)
+            for distance in 1 ... 253 {
+                append(host - distance)
+                append(host + distance)
+            }
+        }
+
+        for value in 1 ... 254 {
+            append(value)
+        }
+
+        return ordered
+    }
+
+    nonisolated private static func macControlSubnetCandidateURLs(
+        prefixes: [(prefix: String, host: Int)]
+    ) -> [URL] {
+        var urls: [URL] = []
+        var seen = Set<String>()
+
+        for subnet in prefixes {
+            for host in orderedHostNumbers(near: subnet.host) {
+                let raw = "http://\(subnet.prefix).\(host):8765"
+                guard let url = URL(string: raw) else {
+                    continue
+                }
+                let key = url.absoluteString.lowercased()
+                guard seen.insert(key).inserted else {
+                    continue
+                }
+                urls.append(url)
+            }
+        }
+
+        return urls
+    }
+
+    nonisolated private static func probeMacControlServer(at baseURL: URL) async -> Bool {
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = 0.8
+        config.timeoutIntervalForResource = 1.2
+        config.waitsForConnectivity = false
+        let session = URLSession(configuration: config)
+        defer {
+            session.invalidateAndCancel()
+        }
+
+        let endpoint = baseURL.appending(path: "status")
+        var request = URLRequest(url: endpoint)
+        request.httpMethod = "GET"
+        request.timeoutInterval = 0.8
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+
+        do {
+            let (data, response) = try await session.data(for: request)
+            guard let httpResponse = response as? HTTPURLResponse,
+                  (200 ... 299).contains(httpResponse.statusCode) else {
+                return false
+            }
+
+            if let status = try? JSONDecoder().decode(MacControlStatusResponse.self, from: data) {
+                return status.status != nil
+            }
+
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    nonisolated private static func firstReachableMacControlURL(in urls: [URL]) async -> URL? {
+        guard !urls.isEmpty else {
+            return nil
+        }
+
+        let batchSize = 24
+        var startIndex = 0
+        while startIndex < urls.count {
+            let endIndex = min(startIndex + batchSize, urls.count)
+            let batch = Array(urls[startIndex ..< endIndex])
+            let found = await withTaskGroup(of: URL?.self, returning: URL?.self) { group in
+                for url in batch {
+                    group.addTask {
+                        await Self.probeMacControlServer(at: url) ? url : nil
+                    }
+                }
+
+                for await result in group {
+                    if let result {
+                        group.cancelAll()
+                        return result
+                    }
+                }
+                return nil
+            }
+
+            if let found {
+                return found
+            }
+
+            startIndex += batchSize
+        }
+
+        return nil
     }
 
     private func resolveFacebookDownloadCandidates(for rawValue: String) async throws -> (urls: [URL], preferredFilename: String?) {
