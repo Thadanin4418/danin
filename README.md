@@ -19,12 +19,14 @@ Clean Git repo for the current `soranin` iOS app, the Mac `Soranin.app` source, 
 
 This repo is a clean source snapshot of the live setup.
 
-Some runtime paths in the code still point to the current live machine layout under:
+The runtime is now more flexible than before:
 
-- `/Users/nin/Downloads/...`
-- `/Users/nin/Desktop/Soranin.app`
+- scripts resolve paths from the repo location
+- the Mac app bundles runtime path hints during build
+- Facebook/data folders can be overridden with environment variables
+- legacy fallback still works for the old Downloads-based layout
 
-That means this repo is ready for Git/history/backup now, but if you move it to another machine or another folder, the hardcoded paths should be normalized next.
+That means this repo is much easier to move than before, but you should still rebuild the Mac app after moving the repo to a different machine or folder.
 
 ## Main files
 
@@ -126,19 +128,46 @@ Inside the iPhone app:
 
 ## Important runtime paths
 
-Right now some parts still use live-machine paths such as:
+Default behavior:
 
-- `/Users/nin/Downloads/reels_dashboard_server.py`
-- `/Users/nin/Desktop/Soranin.app`
-- `/Users/nin/Downloads/ReelsNativeApp/App.swift`
+- the Mac app build goes to `~/Desktop/Soranin.app`
+- runtime state defaults to `~/.soranin/`
+- package folders prefer a sibling `Soranin/` folder if it exists
+- otherwise package folders fall back to `~/.soranin/Soranin`
 
-So the current repo is good for:
+## Environment overrides
+
+You can change the default locations without editing the code:
+
+- `SORANIN_CONTROL_SUITE_DIR`
+  - override the repo root used by the scripts/app
+- `SORANIN_SCRIPTS_DIR`
+  - override the scripts folder path
+- `SORANIN_PACKAGES_ROOT`
+  - override the Facebook/Sora package folder root
+- `SORANIN_ROOT_DIR`
+  - same purpose as `SORANIN_PACKAGES_ROOT`
+- `SORANIN_RUNTIME_DIR`
+  - override runtime state storage such as history and controller state
+- `SORANIN_API_KEYS_FILE`
+  - override where API keys are stored
+- `SORANIN_APP_DIR`
+  - override where `Soranin.app` is built
+
+Example:
+
+```bash
+export SORANIN_CONTROL_SUITE_DIR="$HOME/Work/SoraninControlSuite"
+export SORANIN_PACKAGES_ROOT="$HOME/Work/SoraninData"
+export SORANIN_RUNTIME_DIR="$HOME/.soranin"
+```
+
+This repo is good for:
 
 - Git backup
 - GitHub sync
 - source editing
-
-But if you move this repo to another Mac or another folder, those paths should be updated next.
+- moving between machines with lighter reconfiguration
 
 ## Useful files
 
