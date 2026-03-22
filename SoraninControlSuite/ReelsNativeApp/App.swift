@@ -135,6 +135,7 @@ private let chromeBundleIdentifier = "com.google.Chrome"
 private let chromeLocalStateFile = URL(
     fileURLWithPath: NSHomeDirectory() + "/Library/Application Support/Google/Chrome/Local State"
 )
+private let reelsDashboardServerBaseURL = URL(string: "http://127.0.0.1:8765")!
 private let reelsDashboardServerStatusURL = URL(string: "http://127.0.0.1:8765/status")!
 private let chromeUserDataDirectory = chromeLocalStateFile.deletingLastPathComponent()
 private let chromeDefaultApplicationURL = URL(fileURLWithPath: "/Applications/Google Chrome.app", isDirectory: true)
@@ -162,6 +163,66 @@ private func normalizedFacebookRunnerPackageName(_ value: String) -> String {
         return "\(trimmed)_Reels_Package"
     }
     return trimmed
+}
+
+private func nonLoopbackIPv4Interfaces() -> [(name: String, address: String)] {
+    var addressPointer: UnsafeMutablePointer<ifaddrs>?
+    guard getifaddrs(&addressPointer) == 0, let firstAddress = addressPointer else {
+        return []
+    }
+    defer { freeifaddrs(addressPointer) }
+
+    var results: [(name: String, address: String)] = []
+    var seen: Set<String> = []
+    var pointer = firstAddress
+
+    while true {
+        let interface = pointer.pointee
+        let flags = Int32(interface.ifa_flags)
+        if let addr = interface.ifa_addr,
+           addr.pointee.sa_family == UInt8(AF_INET),
+           (flags & IFF_UP) != 0,
+           (flags & IFF_LOOPBACK) == 0 {
+            var hostBuffer = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+            let nameInfoResult = getnameinfo(
+                addr,
+                socklen_t(addr.pointee.sa_len),
+                &hostBuffer,
+                socklen_t(hostBuffer.count),
+                nil,
+                0,
+                NI_NUMERICHOST
+            )
+            if nameInfoResult == 0 {
+                let interfaceName = String(cString: interface.ifa_name)
+                let address = String(cString: hostBuffer)
+                let uniqueKey = "\(interfaceName)|\(address)"
+                if seen.insert(uniqueKey).inserted {
+                    results.append((interfaceName, address))
+                }
+            }
+        }
+
+        guard let next = interface.ifa_next else { break }
+        pointer = next
+    }
+
+    let preferredOrder = ["en0", "en1", "en2", "en3", "bridge100"]
+    return results.sorted { lhs, rhs in
+        let leftIndex = preferredOrder.firstIndex(of: lhs.name) ?? Int.max
+        let rightIndex = preferredOrder.firstIndex(of: rhs.name) ?? Int.max
+        if leftIndex != rightIndex {
+            return leftIndex < rightIndex
+        }
+        if lhs.name != rhs.name {
+            return lhs.name < rhs.name
+        }
+        return lhs.address < rhs.address
+    }
+}
+
+private func reelsDashboardBaseURLString(forHost host: String) -> String {
+    "http://\(host):8765"
 }
 
 private func parseFacebookRunnerPackageNames(_ value: String) -> [String] {
@@ -3134,6 +3195,8 @@ final class ReelsModel: ObservableObject {
     @Published var isLiveVoicePaused = false
     @Published var hasReplayableLiveVoice = false
     @Published var aiChatAttachmentURLs: [URL] = []
+    @Published var facebookControlServerLANURLs: [String] = []
+    @Published var isFacebookControlServerOnline = false
 
     private var process: Process?
     private var outputPipe: Pipe?
@@ -3180,6 +3243,7 @@ final class ReelsModel: ObservableObject {
         refreshMetadata()
         DispatchQueue.main.async { [weak self] in
             self?.ensureFacebookControlServerRunning()
+            self?.refreshFacebookControlServerConnectionInfo()
         }
         bootstrapAIChatSessions()
         resumePendingAIChatRequestIfNeeded()
@@ -3187,6 +3251,14 @@ final class ReelsModel: ObservableObject {
 
     var isBusy: Bool {
         isRunning
+    }
+
+    var facebookControlServerLocalURL: String {
+        reelsDashboardServerBaseURL.absoluteString
+    }
+
+    var preferredFacebookControlServerLANURL: String? {
+        facebookControlServerLANURLs.first
     }
 
     var healthStatusReportText: String {
@@ -4876,15 +4948,41 @@ final class ReelsModel: ObservableObject {
         }
     }
 
+    func refreshFacebookControlServerConnectionInfo() {
+        facebookControlServerLANURLs = nonLoopbackIPv4Interfaces()
+            .map { reelsDashboardBaseURLString(forHost: $0.address) }
+        pingFacebookControlServer { [weak self] isOnline in
+            DispatchQueue.main.async {
+                self?.isFacebookControlServerOnline = isOnline
+            }
+        }
+    }
+
+    func copyFacebookControlServerURL(_ value: String) {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            showToast("No server URL available.")
+            return
+        }
+        copyToPasteboard(trimmed)
+        showToast("Server URL copied.")
+    }
+
     func ensureFacebookControlServerRunning(showToastIfStarted: Bool = false) {
         if let dashboardServerProcess, dashboardServerProcess.isRunning {
+            refreshFacebookControlServerConnectionInfo()
             return
         }
         guard FileManager.default.fileExists(atPath: reelsDashboardServerScript.path) else { return }
 
         pingFacebookControlServer { [weak self] isOnline in
             guard let self else { return }
-            guard !isOnline else { return }
+            if isOnline {
+                DispatchQueue.main.async {
+                    self.refreshFacebookControlServerConnectionInfo()
+                }
+                return
+            }
             self.startFacebookControlServer(showToastIfStarted: showToastIfStarted)
         }
     }
@@ -4932,6 +5030,7 @@ final class ReelsModel: ObservableObject {
                 self?.dashboardServerOutputPipe?.fileHandleForReading.readabilityHandler = nil
                 self?.dashboardServerOutputPipe = nil
                 self?.dashboardServerProcess = nil
+                self?.isFacebookControlServerOnline = false
                 if self?.didLaunchDashboardServer == true, task.terminationStatus != 0 {
                     self?.appendLog("[mac-control] Server stopped (exit \(task.terminationStatus)).")
                 }
@@ -4943,6 +5042,7 @@ final class ReelsModel: ObservableObject {
             dashboardServerProcess = process
             dashboardServerOutputPipe = pipe
             didLaunchDashboardServer = true
+            refreshFacebookControlServerConnectionInfo()
             if showToastIfStarted {
                 showToast("Mac control server started.")
             }
@@ -4967,6 +5067,7 @@ final class ReelsModel: ObservableObject {
             }
         }
         self.dashboardServerProcess = nil
+        isFacebookControlServerOnline = false
     }
 
     private func runAutoHealthCheckWhenReady(retryCount: Int) {
@@ -10655,6 +10756,42 @@ struct FacebookRunnerSheet: View {
         !normalizedPageName.isEmpty && !model.isBusy
     }
 
+    private var serverStatusTint: Color {
+        model.isFacebookControlServerOnline ? SoraninPalette.success : Color(red: 1.0, green: 0.42, blue: 0.42)
+    }
+
+    @ViewBuilder
+    private func serverURLRow(title: String, value: String, isPrimary: Bool = false) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .center, spacing: 10) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(title)
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(SoraninPalette.secondaryText)
+                    Text(value)
+                        .font(.system(size: 12, weight: isPrimary ? .bold : .medium, design: .monospaced))
+                        .foregroundStyle(SoraninPalette.primaryText)
+                        .textSelection(.enabled)
+                        .lineLimit(2)
+                }
+                Spacer()
+                Button("Copy") {
+                    model.copyFacebookControlServerURL(value)
+                }
+                .buttonStyle(SoraninSecondaryButtonStyle(compact: true))
+            }
+            .padding(14)
+            .background(
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .fill(isPrimary ? SoraninPalette.cardSoft : SoraninPalette.cardStrong)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .stroke(isPrimary ? SoraninPalette.accentEnd : SoraninPalette.border, lineWidth: 1)
+            )
+        }
+    }
+
     private func syncSelectedPackageIDsFromText() {
         let available = Set(model.editedPackages.map(\.id))
         selectedPackageIDs = Set(parsedPackageNames).intersection(available)
@@ -10715,6 +10852,78 @@ struct FacebookRunnerSheet: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
+                    VStack(alignment: .leading, spacing: 12) {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("iPhone Control")
+                                    .font(.system(size: 13, weight: .bold))
+                                    .foregroundStyle(SoraninPalette.secondaryText)
+                                Text("Paste the Wi-Fi URL into iPhone > Control Mac > Server URL.")
+                                    .font(.system(size: 12, weight: .medium))
+                                    .foregroundStyle(SoraninPalette.secondaryText)
+                            }
+                            Spacer()
+                            HStack(spacing: 8) {
+                                Circle()
+                                    .fill(serverStatusTint)
+                                    .frame(width: 9, height: 9)
+                                Text(model.isFacebookControlServerOnline ? "Online" : "Offline")
+                                    .font(.system(size: 12, weight: .bold))
+                                    .foregroundStyle(SoraninPalette.primaryText)
+                            }
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 8)
+                            .background(
+                                Capsule(style: .continuous)
+                                    .fill(SoraninPalette.cardSoft)
+                            )
+                            .overlay(
+                                Capsule(style: .continuous)
+                                    .stroke(SoraninPalette.border, lineWidth: 1)
+                            )
+
+                            Button("Refresh URLs") {
+                                model.refreshFacebookControlServerConnectionInfo()
+                            }
+                            .buttonStyle(SoraninSecondaryButtonStyle(compact: true))
+                        }
+
+                        if let lanURL = model.preferredFacebookControlServerLANURL {
+                            serverURLRow(title: "Mac URL for iPhone", value: lanURL, isPrimary: true)
+                        } else {
+                            Text("No Wi-Fi IP found yet. Connect Mac to the same network as your iPhone, then tap Refresh URLs.")
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundStyle(SoraninPalette.secondaryText)
+                                .padding(14)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                        .fill(SoraninPalette.cardStrong)
+                                )
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                        .stroke(SoraninPalette.border, lineWidth: 1)
+                                )
+                        }
+
+                        serverURLRow(title: "Local Mac URL", value: model.facebookControlServerLocalURL)
+
+                        if model.facebookControlServerLANURLs.count > 1 {
+                            ForEach(Array(model.facebookControlServerLANURLs.dropFirst()), id: \.self) { url in
+                                serverURLRow(title: "Other Network URL", value: url)
+                            }
+                        }
+                    }
+                    .padding(16)
+                    .background(
+                        RoundedRectangle(cornerRadius: 18, style: .continuous)
+                            .fill(SoraninPalette.cardStrong)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 18, style: .continuous)
+                            .stroke(SoraninPalette.border, lineWidth: 1)
+                    )
+
                     VStack(alignment: .leading, spacing: 8) {
                         Text("Chrome Profile")
                             .font(.system(size: 13, weight: .bold))
@@ -10969,6 +11178,8 @@ struct FacebookRunnerSheet: View {
         .frame(minWidth: 760, idealWidth: 900, maxWidth: 1040, minHeight: 620)
         .onAppear {
             model.refreshChromeProfiles()
+            model.ensureFacebookControlServerRunning()
+            model.refreshFacebookControlServerConnectionInfo()
             if selectedProfileDirectoryName.isEmpty,
                let firstOnline = model.chromeProfiles.first(where: { $0.isOnline }) {
                 selectedProfileDirectoryName = firstOnline.directoryName
@@ -11296,6 +11507,7 @@ struct ContentView: View {
                     }
                     .onReceive(timer) { _ in
                         model.refreshMetadata()
+                        model.refreshFacebookControlServerConnectionInfo()
                     }
                     .onChange(of: model.soraInput) { _ in
                         model.normalizeSoraInputAfterEdit()
@@ -11349,6 +11561,7 @@ struct ContentView: View {
         .onAppear {
             model.setAIChatVisibility(false)
             model.ensureFacebookControlServerRunning()
+            model.refreshFacebookControlServerConnectionInfo()
             model.scheduleAutoHealthCheckIfNeeded()
         }
     }
