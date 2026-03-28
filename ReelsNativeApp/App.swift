@@ -23,6 +23,10 @@ private func fileURL(from raw: String, isDirectory: Bool = false) -> URL {
     URL(fileURLWithPath: expandedPath(raw), isDirectory: isDirectory)
 }
 
+private func shellQuoted(_ raw: String) -> String {
+    "'\(raw.replacingOccurrences(of: "'", with: "'\"'\"'"))'"
+}
+
 private func currentMacUserName() -> String {
     let value = NSUserName().trimmingCharacters(in: .whitespacesAndNewlines)
     if !value.isEmpty {
@@ -38,6 +42,33 @@ private func currentMacDeviceName() -> String {
     }
     let hostName = ProcessInfo.processInfo.hostName.trimmingCharacters(in: .whitespacesAndNewlines)
     return hostName.isEmpty ? "Mac" : hostName
+}
+
+private func preferredDisplayMacUserName() -> String {
+    let saved = String(describing: loadControlRelayConfigObject()["relay_user_name"] ?? "")
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+    if !saved.isEmpty {
+        return saved
+    }
+    return currentMacUserName()
+}
+
+private func preferredDisplayMacDeviceName() -> String {
+    let saved = String(describing: loadControlRelayConfigObject()["relay_mac_name"] ?? "")
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+    if !saved.isEmpty {
+        return saved
+    }
+    return currentMacDeviceName()
+}
+
+private func preferredDisplayMacName() -> String {
+    let deviceName = preferredDisplayMacDeviceName()
+    let userName = preferredDisplayMacUserName()
+    if userName.isEmpty || deviceName.caseInsensitiveCompare(userName) == .orderedSame {
+        return deviceName
+    }
+    return "\(deviceName) • user \(userName)"
 }
 
 struct MacControlAppAlert: Identifiable, Equatable {
@@ -66,21 +97,131 @@ struct MacControlServerAlertPayload: Decodable {
     }
 }
 
+struct FacebookQueueRecentResultPayload: Decodable, Identifiable {
+    let packageName: String?
+    let result: String?
+    let note: String?
+    let action: String?
+    let effectiveLabelAmpm: String?
+    let recordedAt: String?
+
+    var id: String {
+        "\(recordedAt ?? UUID().uuidString)|\(packageName ?? "-")"
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case packageName = "package_name"
+        case result
+        case note
+        case action
+        case effectiveLabelAmpm = "effective_label_ampm"
+        case recordedAt = "recorded_at"
+    }
+}
+
+struct FacebookQueueStatusPayload: Decodable {
+    let morningOnly: Bool?
+    let todayRemainingSlots: Int?
+    let nextQueueLabelAmpm: String?
+    let reservedUntilLabelAmpm: String?
+    let currentEditedEndLabelAmpm: String?
+    let videos40EndLabelAmpm: String?
+    let videos80EndLabelAmpm: String?
+    let reservedCount: Int?
+    let recentResults: [FacebookQueueRecentResultPayload]?
+
+    private enum CodingKeys: String, CodingKey {
+        case morningOnly = "morning_only"
+        case todayRemainingSlots = "today_remaining_slots"
+        case nextQueueLabelAmpm = "next_queue_label_ampm"
+        case reservedUntilLabelAmpm = "reserved_until_label_ampm"
+        case currentEditedEndLabelAmpm = "current_edited_end_label_ampm"
+        case videos40EndLabelAmpm = "videos_40_end_label_ampm"
+        case videos80EndLabelAmpm = "videos_80_end_label_ampm"
+        case reservedCount = "reserved_count"
+        case recentResults = "recent_results"
+    }
+}
+
 struct MacControlServerStatusPayload: Decodable {
     let status: String?
     let detail: String?
+    let progressPercent: Int?
+    let progressLabel: String?
     let running: Bool?
     let remoteRunning: Bool?
+    let taskKind: String?
+    let sourceCount: Int?
+    let packageCount: Int?
+    let latestPackage: String?
+    let openAIKeyStatus: String?
+    let geminiKeyStatus: String?
+    let aiProviderLabel: String?
+    let macUserName: String?
+    let macDeviceName: String?
+    let macDisplayName: String?
+    let relayEnabled: Bool?
+    let relayBaseURL: String?
+    let relayClientToken: String?
+    let relayClientURL: String?
+    let relayUserName: String?
+    let relayMacName: String?
+    let passwordRequired: Bool?
+    let facebookQueue: FacebookQueueStatusPayload?
     let alerts: [MacControlServerAlertPayload]?
     let latestAlert: MacControlServerAlertPayload?
 
     private enum CodingKeys: String, CodingKey {
         case status
         case detail
+        case progressPercent = "progress_percent"
+        case progressLabel = "progress_label"
         case running
         case remoteRunning = "remote_running"
+        case taskKind = "task_kind"
+        case sourceCount = "source_count"
+        case packageCount = "package_count"
+        case latestPackage = "latest_package"
+        case openAIKeyStatus = "openai_key_status"
+        case geminiKeyStatus = "gemini_key_status"
+        case aiProviderLabel = "ai_provider_label"
+        case macUserName = "mac_user_name"
+        case macDeviceName = "mac_device_name"
+        case macDisplayName = "mac_display_name"
+        case relayEnabled = "relay_enabled"
+        case relayBaseURL = "relay_base_url"
+        case relayClientToken = "relay_client_token"
+        case relayClientURL = "relay_client_url"
+        case relayUserName = "relay_user_name"
+        case relayMacName = "relay_mac_name"
+        case passwordRequired = "password_required"
+        case facebookQueue = "facebook_queue"
         case alerts
         case latestAlert = "latest_alert"
+    }
+}
+
+struct MacControlServerCommandResponse: Decodable {
+    let ok: Bool?
+    let message: String?
+    let passwordRequired: Bool?
+    let facebookQueue: FacebookQueueStatusPayload?
+
+    private enum CodingKeys: String, CodingKey {
+        case ok
+        case message
+        case passwordRequired = "password_required"
+        case facebookQueue = "facebook_queue"
+    }
+}
+
+struct FacebookPostBootstrapPayload: Decodable {
+    let ok: Bool?
+    let facebookQueue: FacebookQueueStatusPayload?
+
+    private enum CodingKeys: String, CodingKey {
+        case ok
+        case facebookQueue = "facebook_queue"
     }
 }
 
@@ -99,6 +240,21 @@ private func ensureDirectoryURL(_ url: URL) -> URL {
     return url
 }
 
+private let currentUserHomeURL = URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
+    .standardizedFileURL
+    .resolvingSymlinksInPath()
+
+private func bundledUserScopedURL(_ raw: String, isDirectory: Bool = true) -> URL? {
+    let candidate = fileURL(from: raw, isDirectory: isDirectory)
+        .standardizedFileURL
+        .resolvingSymlinksInPath()
+    let homePath = currentUserHomeURL.path
+    guard candidate.path == homePath || candidate.path.hasPrefix(homePath + "/") else {
+        return nil
+    }
+    return candidate
+}
+
 private func loadBundledRuntimePaths() -> SoraninBundledRuntimePaths? {
     guard let resourceURL = Bundle.main.url(forResource: "runtime_paths", withExtension: "json"),
           let data = try? Data(contentsOf: resourceURL) else {
@@ -108,12 +264,19 @@ private func loadBundledRuntimePaths() -> SoraninBundledRuntimePaths? {
 }
 
 private let soraninBundledRuntimePaths = loadBundledRuntimePaths()
+private let soraninUsesBundledScripts: Bool = {
+    guard let bundledScriptsURL = Bundle.main.resourceURL?.appendingPathComponent("scripts", isDirectory: true) else {
+        return false
+    }
+    return FileManager.default.fileExists(atPath: bundledScriptsURL.path)
+}()
 private let soraninRepoRootURL: URL = {
     if let explicit = firstEnvironmentValue(["SORANIN_CONTROL_SUITE_DIR"]) {
         return fileURL(from: explicit, isDirectory: true)
     }
-    if let bundled = soraninBundledRuntimePaths {
-        return fileURL(from: bundled.repoRoot, isDirectory: true)
+    if let bundled = soraninBundledRuntimePaths,
+       let bundledURL = bundledUserScopedURL(bundled.repoRoot, isDirectory: true) {
+        return bundledURL
     }
     return URL(fileURLWithPath: (#filePath as NSString).deletingLastPathComponent, isDirectory: true)
         .deletingLastPathComponent()
@@ -121,6 +284,10 @@ private let soraninRepoRootURL: URL = {
 private let soraninScriptsDirURL: URL = {
     if let explicit = firstEnvironmentValue(["SORANIN_SCRIPTS_DIR"]) {
         return fileURL(from: explicit, isDirectory: true)
+    }
+    if let bundledScriptsURL = Bundle.main.resourceURL?.appendingPathComponent("scripts", isDirectory: true),
+       FileManager.default.fileExists(atPath: bundledScriptsURL.path) {
+        return bundledScriptsURL
     }
     if let bundled = soraninBundledRuntimePaths {
         return fileURL(from: bundled.scriptsDir, isDirectory: true)
@@ -131,24 +298,34 @@ private let soraninRuntimeDirURL: URL = {
     if let explicit = firstEnvironmentValue(["SORANIN_RUNTIME_DIR"]) {
         return ensureDirectoryURL(fileURL(from: explicit, isDirectory: true))
     }
-    if let bundled = soraninBundledRuntimePaths {
-        return ensureDirectoryURL(fileURL(from: bundled.runtimeDir, isDirectory: true))
+    if let bundled = soraninBundledRuntimePaths,
+       let bundledURL = bundledUserScopedURL(bundled.runtimeDir, isDirectory: true) {
+        return ensureDirectoryURL(bundledURL)
     }
-    return ensureDirectoryURL(URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true).appendingPathComponent(".soranin", isDirectory: true))
+    return ensureDirectoryURL(
+        URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
+            .appendingPathComponent("Library/Application Support/Soranin", isDirectory: true)
+    )
 }()
 private let rootDir: URL = {
     if let explicit = firstEnvironmentValue(["SORANIN_PACKAGES_ROOT", "SORANIN_ROOT_DIR"]) {
         return ensureDirectoryURL(fileURL(from: explicit, isDirectory: true))
     }
-    if let bundled = soraninBundledRuntimePaths {
-        return ensureDirectoryURL(fileURL(from: bundled.packagesRoot, isDirectory: true))
+    if let bundled = soraninBundledRuntimePaths,
+       let bundledURL = bundledUserScopedURL(bundled.packagesRoot, isDirectory: true) {
+        return ensureDirectoryURL(bundledURL)
     }
-    let legacyRoot = soraninRepoRootURL.deletingLastPathComponent().appendingPathComponent("Soranin", isDirectory: true)
-    if FileManager.default.fileExists(atPath: legacyRoot.path) {
-        return legacyRoot
-    }
-    return ensureDirectoryURL(soraninRuntimeDirURL.appendingPathComponent("Soranin", isDirectory: true))
+    return ensureDirectoryURL(
+        URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
+            .appendingPathComponent("Movies/Soranin", isDirectory: true)
+    )
 }()
+private let legacyPackagesRootDir: URL = URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
+    .appendingPathComponent("Downloads/Soranin", isDirectory: true)
+private let hiddenLegacyPackagesRootDir: URL = URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
+    .appendingPathComponent(".soranin/Soranin", isDirectory: true)
+private let hiddenLegacyRuntimeDir: URL = URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
+    .appendingPathComponent(".soranin", isDirectory: true)
 
 private func preferredRuntimeFile(named filename: String, envNames: [String] = []) -> URL {
     if let explicit = firstEnvironmentValue(envNames) {
@@ -156,21 +333,117 @@ private func preferredRuntimeFile(named filename: String, envNames: [String] = [
         try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         return url
     }
-    let legacy = soraninRepoRootURL.deletingLastPathComponent().appendingPathComponent(filename)
-    if FileManager.default.fileExists(atPath: legacy.path) {
-        return legacy
+    if !soraninUsesBundledScripts {
+        let legacy = soraninRepoRootURL.deletingLastPathComponent().appendingPathComponent(filename)
+        if FileManager.default.fileExists(atPath: legacy.path) {
+            return legacy
+        }
     }
     let fallback = soraninRuntimeDirURL.appendingPathComponent(filename)
     try? FileManager.default.createDirectory(at: fallback.deletingLastPathComponent(), withIntermediateDirectories: true)
     return fallback
 }
 
+private func runtimeFallbackFiles(named filename: String, primary: URL) -> [URL] {
+    var results: [URL] = []
+    let candidates = [
+        primary,
+        soraninRuntimeDirURL.appendingPathComponent(filename),
+        legacyPackagesRootDir.appendingPathComponent(filename),
+        hiddenLegacyRuntimeDir.appendingPathComponent(filename),
+    ]
+    for candidate in candidates {
+        let normalized = candidate.standardizedFileURL.resolvingSymlinksInPath()
+        if !results.contains(where: { $0.path == normalized.path }) {
+            results.append(normalized)
+        }
+    }
+    return results
+}
+
+private func loadSavedSettingsFromCandidates(primaryURL: URL) -> [String: String] {
+    let fileManager = FileManager.default
+    for candidate in runtimeFallbackFiles(named: primaryURL.lastPathComponent, primary: primaryURL) {
+        guard let data = try? Data(contentsOf: candidate),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            continue
+        }
+        var result: [String: String] = [:]
+        for (key, value) in object {
+            if let value = value as? String {
+                result[key] = value
+            }
+        }
+        guard !result.isEmpty else { continue }
+        if candidate.path != primaryURL.path {
+            guard let migrated = try? JSONSerialization.data(withJSONObject: result, options: [.prettyPrinted]) else {
+                return result
+            }
+            try? fileManager.createDirectory(at: primaryURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try? migrated.write(to: primaryURL, options: [.atomic])
+            try? fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: primaryURL.path)
+        }
+        return result
+    }
+    return [:]
+}
+
+private func mirroredPackageURLs(packageName: String, primaryURL: URL? = nil) -> [URL] {
+    var urls: [URL] = []
+
+    func appendUnique(_ url: URL) {
+        let normalized = url.standardizedFileURL.resolvingSymlinksInPath()
+        if !urls.contains(where: { $0.path == normalized.path }) {
+            urls.append(normalized)
+        }
+    }
+
+    if let primaryURL {
+        appendUnique(primaryURL)
+    }
+    appendUnique(rootDir.appendingPathComponent(packageName, isDirectory: true))
+    appendUnique(legacyPackagesRootDir.appendingPathComponent(packageName, isDirectory: true))
+    appendUnique(hiddenLegacyPackagesRootDir.appendingPathComponent(packageName, isDirectory: true))
+    return urls
+}
+
+@discardableResult
+private func deleteMirroredPackage(packageName: String, primaryURL: URL? = nil) throws -> Int {
+    let fileManager = FileManager.default
+    var deletedCount = 0
+    var firstError: Error?
+
+    for url in mirroredPackageURLs(packageName: packageName, primaryURL: primaryURL) {
+        guard fileManager.fileExists(atPath: url.path) else { continue }
+        do {
+            try fileManager.removeItem(at: url)
+            deletedCount += 1
+        } catch {
+            if firstError == nil {
+                firstError = error
+            }
+        }
+    }
+
+    if deletedCount == 0, let firstError {
+        throw firstError
+    }
+    return deletedCount
+}
+
+private let legacyFacebookRootDir: URL = {
+    if soraninUsesBundledScripts {
+        return soraninRuntimeDirURL.appendingPathComponent("__unused_legacy_facebook__", isDirectory: true)
+    }
+    return soraninRepoRootURL.deletingLastPathComponent().appendingPathComponent("facebook", isDirectory: true)
+}()
 private let facebookRootDir = rootDir.deletingLastPathComponent().appendingPathComponent("facebook", isDirectory: true)
 private let batchScript = soraninScriptsDirURL.appendingPathComponent("fast_reels_batch.py")
 private let facebookBatchUploadScript = soraninScriptsDirURL.appendingPathComponent("fb_reels_batch_upload.py")
+private let facebookAPIUploadScript = soraninScriptsDirURL.appendingPathComponent("fb_reels_api_upload.py")
 private let facebookPreflightScript = soraninScriptsDirURL.appendingPathComponent("fb_reels_preflight_check.py")
 private let reelsDashboardServerScript = soraninScriptsDirURL.appendingPathComponent("reels_dashboard_server.py")
-private let facebookTimingStateFile = rootDir.appendingPathComponent(".fb_reels_publish_state.json")
+private let facebookTimingStateFile = soraninRuntimeDirURL.appendingPathComponent(".fb_reels_publish_state.json")
 private let soraDownloaderScript = soraninScriptsDirURL.appendingPathComponent("sora_downloader.py")
 private let postLinksDownloaderScript = soraninScriptsDirURL.appendingPathComponent("post_links_downloader.py")
 private let aiChatBridgeScript = soraninScriptsDirURL.appendingPathComponent("ai_chat_bridge.py")
@@ -178,7 +451,12 @@ private let aiChatHistoryFile = preferredRuntimeFile(named: ".soranin_ai_chat_hi
 private let aiChatPendingRequestFile = preferredRuntimeFile(named: ".soranin_ai_chat_pending_request.json")
 private let controlRelayConfigFile = preferredRuntimeFile(named: "control_relay.json", envNames: ["SORANIN_CONTROL_RELAY_CONFIG_FILE"])
 private let chromeProfileAssignmentsFile = preferredRuntimeFile(named: ".soranin_chrome_profile_links.json")
+private let facebookPageAssignmentsFile = preferredRuntimeFile(named: ".soranin_facebook_page_links.json")
+private let facebookPageQueueOrderFile = preferredRuntimeFile(named: ".soranin_facebook_page_queue_order.json")
 private let soraCompletedDownloadIDsFile = preferredRuntimeFile(named: ".soranin_completed_sora_ids.json")
+private let facebookSavedPagesFile = preferredRuntimeFile(named: ".soranin_facebook_saved_pages.json")
+private let dashboardServerPIDFile = soraninRuntimeDirURL.appendingPathComponent("reels_dashboard_server.pid")
+private let dashboardServerLogFile = soraninRuntimeDirURL.appendingPathComponent("reels_dashboard_server.log")
 private let geminiLiveEndpoint = URL(string: "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent")!
 private let geminiLiveModel = "gemini-2.5-flash-native-audio-preview-12-2025"
 private let geminiFilesBaseURL = URL(string: "https://generativelanguage.googleapis.com")!
@@ -196,6 +474,9 @@ private let openAIAudioTranscriptionEndpoint = URL(string: "https://api.openai.c
 private let openAIChatTranscriptionModel = "gpt-4o-transcribe"
 private let apiKeysFile = preferredRuntimeFile(named: ".reels_api_keys.json", envNames: ["SORANIN_API_KEYS_FILE"])
 private let chromeBundleIdentifier = "com.google.Chrome"
+private let facebookUploadPagesFile = preferredRuntimeFile(named: ".facebook_upload_pages.json")
+private let macControlInfoAlertAutoDismissSeconds: TimeInterval = 0.9
+private let macControlErrorAlertAutoDismissSeconds: TimeInterval = 1.3
 private let chromeLocalStateFile = URL(
     fileURLWithPath: NSHomeDirectory() + "/Library/Application Support/Google/Chrome/Local State"
 )
@@ -204,6 +485,10 @@ private let reelsDashboardServerStatusURL = URL(string: "http://127.0.0.1:8765/s
 private let chromeUserDataDirectory = chromeLocalStateFile.deletingLastPathComponent()
 private let chromeDefaultApplicationURL = URL(fileURLWithPath: "/Applications/Google Chrome.app", isDirectory: true)
 private let chromeUserApplicationURL = URL(fileURLWithPath: NSHomeDirectory() + "/Applications/Google Chrome.app", isDirectory: true)
+private let facebookChromeLoginURL = "https://web.facebook.com/login/"
+private let facebookChromeHomeURL = "https://web.facebook.com/"
+private let facebookChromePagesURL = "https://web.facebook.com/bookmarks/pages/"
+private let facebookChromeContentLibraryURL = "https://web.facebook.com/professional_dashboard/content/content_library/"
 private weak var activeReelsModelForAppLifecycle: ReelsModel?
 private var soraninForceTerminateWorkItem: DispatchWorkItem?
 private var soraninKillWorkItem: DispatchWorkItem?
@@ -214,7 +499,464 @@ private extension Notification.Name {
 }
 
 private func normalizedFacebookRunnerPageName(_ value: String) -> String {
-    value.trimmingCharacters(in: .whitespacesAndNewlines)
+    let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    let lowered = trimmed
+        .replacingOccurrences(of: " ", with: "")
+        .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+        .lowercased()
+    if ["<null>", "null", "(null)", "<nil>", "nil"].contains(lowered) {
+        return ""
+    }
+    return trimmed
+}
+
+private struct SavedFacebookPageRecord: Codable, Hashable, Identifiable {
+    let profileDirectoryName: String
+    let profileDisplayName: String
+    let pageName: String
+    let pageURL: String
+    let pageKind: String
+
+    var id: String {
+        let left = profileDirectoryName.isEmpty ? profileDisplayName : profileDirectoryName
+        return "\(left)|\(pageKind)|\(pageName)|\(pageURL)"
+    }
+}
+
+struct SavedFacebookUploadPageRecord: Codable, Hashable, Identifiable {
+    let label: String
+    let pageID: String
+    let accessToken: String
+    let tokenSavedAt: String?
+    let tokenEstimatedExpiryAt: String?
+
+    enum CodingKeys: String, CodingKey {
+        case label
+        case pageID = "page_id"
+        case accessToken = "access_token"
+        case tokenSavedAt = "token_saved_at"
+        case tokenEstimatedExpiryAt = "token_estimated_expiry_at"
+    }
+
+    var id: String {
+        "\(pageID)|\(label)"
+    }
+}
+
+private let facebookEstimatedTokenLifetimeDays = 60
+private let fixedFacebookKhmerSlotTimes: [(hour: Int, minute: Int)] = [
+    (19, 0),
+    (20, 0),
+    (21, 0),
+    (22, 0),
+    (23, 0),
+    (0, 0),
+    (1, 0),
+    (2, 0),
+    (3, 0),
+    (4, 0),
+    (5, 0),
+    (5, 30),
+    (6, 0),
+    (6, 30),
+    (7, 0),
+    (7, 30),
+    (8, 0),
+    (8, 30),
+    (9, 0),
+    (9, 30),
+].sorted { lhs, rhs in
+    (lhs.hour * 60 + lhs.minute) < (rhs.hour * 60 + rhs.minute)
+}
+private let facebookQueueRescheduleLeadMinutes = 30
+private let khmerScheduleTimeZone = TimeZone(identifier: "Asia/Phnom_Penh") ?? TimeZone(secondsFromGMT: 7 * 3600) ?? .current
+
+private func khmerScheduleCalendar() -> Calendar {
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.timeZone = khmerScheduleTimeZone
+    return calendar
+}
+
+private func currentKhmerMinute(_ date: Date) -> Date {
+    let calendar = khmerScheduleCalendar()
+    let components = calendar.dateComponents([.year, .month, .day, .hour, .minute], from: date)
+    return calendar.date(from: components) ?? date
+}
+
+private func khmerSlotKey(_ date: Date) -> Int {
+    Int(currentKhmerMinute(date).timeIntervalSince1970)
+}
+
+private func isAllowedFacebookKhmerSlot(_ date: Date) -> Bool {
+    let calendar = khmerScheduleCalendar()
+    let components = calendar.dateComponents([.hour, .minute], from: date)
+    let hour = components.hour ?? -1
+    let minute = components.minute ?? -1
+    return fixedFacebookKhmerSlotTimes.contains(where: { $0.hour == hour && $0.minute == minute })
+}
+
+private func parseFacebookScheduleCardText(_ rawValue: String) -> Date? {
+    let cleaned = rawValue
+        .components(separatedBy: .whitespacesAndNewlines)
+        .filter { !$0.isEmpty }
+        .joined(separator: " ")
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !cleaned.isEmpty else { return nil }
+
+    let trimmedOffset = cleaned.replacingOccurrences(of: " (+07:00)", with: "")
+    let formats = [
+        "yyyy-MM-dd HH:mm",
+        "yyyy-MM-dd hh:mm a",
+    ]
+    let formatter = DateFormatter()
+    formatter.locale = Locale(identifier: "en_US_POSIX")
+    formatter.timeZone = khmerScheduleTimeZone
+    for format in formats {
+        formatter.dateFormat = format
+        if let parsed = formatter.date(from: trimmedOffset) {
+            return parsed
+        }
+    }
+    return nil
+}
+
+private func formatFacebookScheduleCardText(_ date: Date) -> String {
+    let formatter = DateFormatter()
+    formatter.locale = Locale(identifier: "en_US_POSIX")
+    formatter.timeZone = khmerScheduleTimeZone
+    formatter.dateFormat = "yyyy-MM-dd hh:mm a"
+    return formatter.string(from: date) + " (+07:00)"
+}
+
+private func khmerDayPeriodLabel(_ date: Date) -> String {
+    let calendar = khmerScheduleCalendar()
+    let hour = calendar.component(.hour, from: date)
+    if hour < 5 { return "យប់" }
+    if hour < 12 { return "ព្រឹក" }
+    if hour < 17 { return "រសៀល" }
+    return "ល្ងាច"
+}
+
+private func formatKhmerQueueLabelAmpm(_ date: Date) -> String {
+    let calendar = khmerScheduleCalendar()
+    let components = calendar.dateComponents([.year, .month, .day, .hour, .minute], from: date)
+    let year = components.year ?? 0
+    let month = components.month ?? 0
+    let day = components.day ?? 0
+    let hour = components.hour ?? 0
+    let minute = components.minute ?? 0
+    let hour12 = ((hour + 11) % 12) + 1
+    return String(format: "%04d-%02d-%02d ម៉ោង %d:%02d %@ (+07:00)", year, month, day, hour12, minute, khmerDayPeriodLabel(date))
+}
+
+private func nextAvailableFacebookKhmerSlot(
+    start: Date,
+    reservedSlotKeys: Set<Int>,
+    leadMinutes: Int
+) -> Date? {
+    let calendar = khmerScheduleCalendar()
+    let earliest = currentKhmerMinute(start.addingTimeInterval(TimeInterval(max(0, leadMinutes) * 60)))
+    for dayOffset in 0..<10 {
+        guard let baseDay = calendar.date(byAdding: .day, value: dayOffset, to: earliest) else { continue }
+        let day = calendar.dateComponents([.year, .month, .day], from: baseDay)
+        for slot in fixedFacebookKhmerSlotTimes {
+            let candidateComponents = DateComponents(
+                timeZone: khmerScheduleTimeZone,
+                year: day.year,
+                month: day.month,
+                day: day.day,
+                hour: slot.hour,
+                minute: slot.minute
+            )
+            guard let candidate = calendar.date(from: candidateComponents) else { continue }
+            if candidate < earliest { continue }
+            if reservedSlotKeys.contains(khmerSlotKey(candidate)) { continue }
+            return candidate
+        }
+    }
+    return nil
+}
+
+private func projectFacebookKhmerQueueSlots(
+    start: Date,
+    reservedSlotKeys: Set<Int>,
+    count: Int
+) -> [Date] {
+    guard count > 0 else { return [] }
+    var projected: [Date] = []
+    var workingReserved = reservedSlotKeys
+    var pointer = currentKhmerMinute(start)
+    var leadMinutes = facebookQueueRescheduleLeadMinutes
+    for _ in 0..<count {
+        guard let slot = nextAvailableFacebookKhmerSlot(
+            start: pointer,
+            reservedSlotKeys: workingReserved,
+            leadMinutes: leadMinutes
+        ) else {
+            break
+        }
+        projected.append(slot)
+        workingReserved.insert(khmerSlotKey(slot))
+        pointer = slot.addingTimeInterval(60)
+        leadMinutes = 0
+    }
+    return projected
+}
+
+private func maskedFacebookTokenStatus(_ value: String?) -> String {
+    guard let value, !value.isEmpty else { return "Not set" }
+    if value.count <= 8 { return "Saved" }
+    return "Saved (...\(value.suffix(4)))"
+}
+
+private func parseFacebookTokenTimestamp(_ rawValue: String?) -> Date? {
+    let cleaned = (rawValue ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !cleaned.isEmpty else { return nil }
+
+    let precise = ISO8601DateFormatter()
+    precise.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    if let parsed = precise.date(from: cleaned) {
+        return parsed
+    }
+
+    let fallback = ISO8601DateFormatter()
+    fallback.formatOptions = [.withInternetDateTime]
+    return fallback.date(from: cleaned)
+}
+
+private func facebookTokenTimestampString(_ date: Date) -> String {
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime]
+    return formatter.string(from: date)
+}
+
+private func facebookTokenSavedLabel(_ rawValue: String?) -> String {
+    guard let date = parseFacebookTokenTimestamp(rawValue) else { return "Not set" }
+    let formatter = DateFormatter()
+    formatter.locale = Locale(identifier: "en_US_POSIX")
+    formatter.dateFormat = "yyyy-MM-dd"
+    formatter.timeZone = TimeZone.current
+    return formatter.string(from: date)
+}
+
+private func facebookTokenExpiryLabel(_ rawValue: String?) -> String {
+    guard let date = parseFacebookTokenTimestamp(rawValue) else { return "Not set" }
+    let formatter = DateFormatter()
+    formatter.locale = Locale(identifier: "en_US_POSIX")
+    formatter.dateFormat = "yyyy-MM-dd"
+    formatter.timeZone = TimeZone.current
+    return formatter.string(from: date)
+}
+
+private func facebookTokenCountdownLabel(savedAt rawSavedAt: String?, expiresAt rawExpiresAt: String?) -> String {
+    let savedAt = parseFacebookTokenTimestamp(rawSavedAt)
+    let expiry = parseFacebookTokenTimestamp(rawExpiresAt)
+        ?? savedAt.flatMap { Calendar.current.date(byAdding: .day, value: facebookEstimatedTokenLifetimeDays, to: $0) }
+    guard let expiry else { return "60d est. not set" }
+
+    let remaining = expiry.timeIntervalSinceNow
+    if remaining <= 0 {
+        let daysAgo = max(1, Int(abs(remaining) / 86400.0))
+        return "Expired ~\(daysAgo)d ago"
+    }
+    let days = Int(ceil(remaining / 86400.0))
+    if days >= 1 {
+        return "\(days)d left"
+    }
+    let hours = max(1, Int(ceil(remaining / 3600.0)))
+    return "\(hours)h left"
+}
+
+private func normalizedSavedFacebookPageKind(_ value: String) -> String {
+    let lowered = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    return lowered == "account" ? "account" : "page"
+}
+
+private func loadSavedFacebookPageRecords() -> [SavedFacebookPageRecord] {
+    for candidate in runtimeFallbackFiles(named: facebookSavedPagesFile.lastPathComponent, primary: facebookSavedPagesFile) {
+        guard let data = try? Data(contentsOf: candidate),
+              let records = try? JSONDecoder().decode([SavedFacebookPageRecord].self, from: data) else {
+            continue
+        }
+        let filtered = records.filter { !normalizedFacebookRunnerPageName($0.pageName).isEmpty }
+        guard !filtered.isEmpty else { continue }
+        if candidate.path != facebookSavedPagesFile.path {
+            persistSavedFacebookPageRecords(filtered)
+        }
+        return filtered
+    }
+    return []
+}
+
+private func persistSavedFacebookPageRecords(_ records: [SavedFacebookPageRecord]) {
+    guard let data = try? JSONEncoder().encode(records) else { return }
+    try? data.write(to: facebookSavedPagesFile, options: [.atomic])
+}
+
+private func syncLegacyFacebookSourcesIntoRuntimeIfNeeded() {
+    let runtimeRoot = facebookRootDir.standardizedFileURL
+    let legacyRoot = legacyFacebookRootDir.standardizedFileURL
+    guard runtimeRoot.path != legacyRoot.path else { return }
+
+    let fileManager = FileManager.default
+    guard fileManager.fileExists(atPath: legacyRoot.path) else { return }
+
+    try? fileManager.createDirectory(at: runtimeRoot, withIntermediateDirectories: true)
+    let legacyFiles = (try? fileManager.contentsOfDirectory(
+        at: legacyRoot,
+        includingPropertiesForKeys: [.isDirectoryKey],
+        options: [.skipsHiddenFiles]
+    )) ?? []
+
+    for legacyFile in legacyFiles {
+        guard !legacyFile.hasDirectoryPath else { continue }
+        let runtimeFile = runtimeRoot.appendingPathComponent(legacyFile.lastPathComponent)
+        guard !fileManager.fileExists(atPath: runtimeFile.path) else { continue }
+        try? fileManager.copyItem(at: legacyFile, to: runtimeFile)
+    }
+}
+
+private func savedFacebookPages(for profile: ChromeProfileItem?) -> [SavedFacebookPageRecord] {
+    guard let profile else { return [] }
+    let candidates = [profile.displayName, profile.directoryName]
+        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        .filter { !$0.isEmpty }
+    guard !candidates.isEmpty else { return [] }
+    return loadSavedFacebookPageRecords().filter { record in
+        candidates.contains { candidate in
+            facebookRunnerProfileNamesMatch(candidate, record.profileDisplayName) ||
+            facebookRunnerProfileNamesMatch(candidate, record.profileDirectoryName)
+        }
+    }
+}
+
+@discardableResult
+private func saveFacebookPageRecord(
+    profile: ChromeProfileItem,
+    pageName: String,
+    pageURL: String,
+    pageKind: String
+) -> SavedFacebookPageRecord? {
+    let normalizedName = normalizedFacebookRunnerPageName(pageName)
+    guard !normalizedName.isEmpty else { return nil }
+    let trimmedURL = pageURL.trimmingCharacters(in: .whitespacesAndNewlines)
+    let normalizedKind = normalizedSavedFacebookPageKind(pageKind)
+    let record = SavedFacebookPageRecord(
+        profileDirectoryName: profile.directoryName,
+        profileDisplayName: profile.displayName,
+        pageName: normalizedName,
+        pageURL: trimmedURL,
+        pageKind: normalizedKind
+    )
+
+    var records = loadSavedFacebookPageRecords().filter {
+        !(
+            facebookRunnerProfileNamesMatch($0.profileDirectoryName, profile.directoryName) &&
+            normalizedFacebookRunnerPageName($0.pageName).lowercased() == normalizedName.lowercased()
+        )
+    }
+    records.insert(record, at: 0)
+    persistSavedFacebookPageRecords(records)
+    return record
+}
+
+private func forgetSavedFacebookPageRecord(_ record: SavedFacebookPageRecord) {
+    let targetID = record.id
+    let remaining = loadSavedFacebookPageRecords().filter { $0.id != targetID }
+    persistSavedFacebookPageRecords(remaining)
+}
+
+private func loadSavedFacebookUploadPageRecords() -> [SavedFacebookUploadPageRecord] {
+    let candidates = runtimeFallbackFiles(named: facebookUploadPagesFile.lastPathComponent, primary: facebookUploadPagesFile)
+    for candidate in candidates {
+        guard let data = try? Data(contentsOf: candidate),
+              let records = try? JSONDecoder().decode([SavedFacebookUploadPageRecord].self, from: data) else {
+            continue
+        }
+        let now = Date()
+        var didMutate = false
+        let filtered = records.compactMap { record -> SavedFacebookUploadPageRecord? in
+            let trimmedLabel = record.label.trimmingCharacters(in: .whitespacesAndNewlines)
+            let trimmedPageID = record.pageID.trimmingCharacters(in: .whitespacesAndNewlines)
+            let trimmedToken = record.accessToken.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmedLabel.isEmpty, !trimmedPageID.isEmpty, !trimmedToken.isEmpty else {
+                didMutate = true
+                return nil
+            }
+
+            let savedAtDate = parseFacebookTokenTimestamp(record.tokenSavedAt) ?? now
+            let expiryDate = parseFacebookTokenTimestamp(record.tokenEstimatedExpiryAt)
+                ?? Calendar.current.date(byAdding: .day, value: facebookEstimatedTokenLifetimeDays, to: savedAtDate)
+                ?? savedAtDate
+            let savedAtString = facebookTokenTimestampString(savedAtDate)
+            let expiryString = facebookTokenTimestampString(expiryDate)
+            if record.tokenSavedAt != savedAtString || record.tokenEstimatedExpiryAt != expiryString {
+                didMutate = true
+            }
+            return SavedFacebookUploadPageRecord(
+                label: trimmedLabel,
+                pageID: trimmedPageID,
+                accessToken: trimmedToken,
+                tokenSavedAt: savedAtString,
+                tokenEstimatedExpiryAt: expiryString
+            )
+        }
+        guard !filtered.isEmpty else { continue }
+        if candidate.path != facebookUploadPagesFile.path || didMutate {
+            persistSavedFacebookUploadPageRecords(filtered)
+        }
+        return filtered
+    }
+    return []
+}
+
+private func persistSavedFacebookUploadPageRecords(_ records: [SavedFacebookUploadPageRecord]) {
+    guard let data = try? JSONEncoder().encode(records) else { return }
+    try? data.write(to: facebookUploadPagesFile, options: [.atomic])
+}
+
+@discardableResult
+private func saveFacebookUploadPageRecord(
+    label: String,
+    pageID: String,
+    accessToken: String
+) -> SavedFacebookUploadPageRecord? {
+    let trimmedLabel = label.trimmingCharacters(in: .whitespacesAndNewlines)
+    let trimmedPageID = pageID.trimmingCharacters(in: .whitespacesAndNewlines)
+    let trimmedToken = accessToken.trimmingCharacters(in: .whitespacesAndNewlines)
+    let existing = loadSavedFacebookUploadPageRecords().first { $0.pageID == trimmedPageID }
+    let effectiveToken = !trimmedToken.isEmpty ? trimmedToken : (existing?.accessToken ?? "")
+    guard !trimmedLabel.isEmpty, !trimmedPageID.isEmpty, !effectiveToken.isEmpty else {
+        return nil
+    }
+    let now = Date()
+    let tokenChanged = existing?.accessToken != effectiveToken
+    let savedAtDate = tokenChanged
+        ? now
+        : (parseFacebookTokenTimestamp(existing?.tokenSavedAt) ?? now)
+    let expiryDate = tokenChanged
+        ? (Calendar.current.date(byAdding: .day, value: facebookEstimatedTokenLifetimeDays, to: now) ?? now)
+        : (parseFacebookTokenTimestamp(existing?.tokenEstimatedExpiryAt)
+            ?? Calendar.current.date(byAdding: .day, value: facebookEstimatedTokenLifetimeDays, to: savedAtDate)
+            ?? savedAtDate)
+    let record = SavedFacebookUploadPageRecord(
+        label: trimmedLabel,
+        pageID: trimmedPageID,
+        accessToken: effectiveToken,
+        tokenSavedAt: facebookTokenTimestampString(savedAtDate),
+        tokenEstimatedExpiryAt: facebookTokenTimestampString(expiryDate)
+    )
+    var records = loadSavedFacebookUploadPageRecords().filter {
+        $0.pageID != trimmedPageID
+    }
+    records.insert(record, at: 0)
+    persistSavedFacebookUploadPageRecords(records)
+    return record
+}
+
+private func forgetSavedFacebookUploadPageRecord(_ record: SavedFacebookUploadPageRecord) {
+    let remaining = loadSavedFacebookUploadPageRecords().filter { $0.id != record.id }
+    persistSavedFacebookUploadPageRecords(remaining)
 }
 
 private func normalizedFacebookRunnerPackageName(_ value: String) -> String {
@@ -456,6 +1198,100 @@ private func parseFacebookRunnerPackageNames(_ value: String) -> [String] {
         results.append(part)
     }
     return results
+}
+
+private func normalizedFacebookRunnerProfileMemoryName(_ value: String) -> String {
+    value
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+        .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+        .lowercased()
+}
+
+private func facebookRunnerProfileAliases(_ value: String) -> Set<String> {
+    let raw = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !raw.isEmpty else { return [] }
+    var aliases = Set<String>()
+    let normalized = normalizedFacebookRunnerProfileMemoryName(raw)
+    if !normalized.isEmpty {
+        aliases.insert(normalized)
+    }
+    let plain = normalizedFacebookRunnerProfileMemoryName(
+        raw.replacingOccurrences(of: "\\([^)]*\\)", with: " ", options: .regularExpression)
+    )
+    if !plain.isEmpty {
+        aliases.insert(plain)
+    }
+    let pattern = "\\(([^)]*)\\)"
+    if let regex = try? NSRegularExpression(pattern: pattern) {
+        let nsRange = NSRange(raw.startIndex..<raw.endIndex, in: raw)
+        for match in regex.matches(in: raw, range: nsRange) {
+            guard match.numberOfRanges > 1,
+                  let range = Range(match.range(at: 1), in: raw) else { continue }
+            let alias = normalizedFacebookRunnerProfileMemoryName(String(raw[range]))
+            if !alias.isEmpty {
+                aliases.insert(alias)
+            }
+        }
+    }
+    return aliases
+}
+
+private func facebookRunnerProfileNamesMatch(_ lhs: String, _ rhs: String) -> Bool {
+    let left = facebookRunnerProfileAliases(lhs)
+    let right = facebookRunnerProfileAliases(rhs)
+    guard !left.isEmpty, !right.isEmpty else { return false }
+    if !left.intersection(right).isEmpty {
+        return true
+    }
+    for leftAlias in left {
+        for rightAlias in right where leftAlias.contains(rightAlias) || rightAlias.contains(leftAlias) {
+            return true
+        }
+    }
+    return false
+}
+
+private func rememberedFacebookPagesForProfileNames(_ candidates: [String]) -> [String] {
+    guard let data = try? Data(contentsOf: facebookTimingStateFile),
+          let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+          let profiles = root["profiles"] as? [String: Any] else {
+        return []
+    }
+
+    let trimmedCandidates = candidates
+        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        .filter { !$0.isEmpty }
+    guard !trimmedCandidates.isEmpty else { return [] }
+
+    var results: [String] = []
+    var seen: Set<String> = []
+
+    for value in profiles.values {
+        guard let profileState = value as? [String: Any] else { continue }
+        let pageName = normalizedFacebookRunnerPageName(String(describing: profileState["page_name"] ?? ""))
+        guard !pageName.isEmpty else { continue }
+        let rememberedProfileName = String(describing: profileState["profile_name"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmedCandidates.contains(where: { facebookRunnerProfileNamesMatch($0, rememberedProfileName) }) else { continue }
+        let dedupeKey = normalizedFacebookRunnerPageName(pageName).lowercased()
+        guard !dedupeKey.isEmpty, seen.insert(dedupeKey).inserted else { continue }
+        results.append(pageName)
+    }
+
+    return results
+}
+
+private func rememberedFacebookPages(for profile: ChromeProfileItem?) -> [String] {
+    guard let profile else { return [] }
+    let remembered = rememberedFacebookPagesForProfileNames([profile.displayName, profile.directoryName])
+    let saved = savedFacebookPages(for: profile).map(\.pageName)
+    var merged: [String] = []
+    var seen: Set<String> = []
+    for name in saved + remembered {
+        let normalized = normalizedFacebookRunnerPageName(name).lowercased()
+        guard !normalized.isEmpty, seen.insert(normalized).inserted else { continue }
+        merged.append(normalizedFacebookRunnerPageName(name))
+    }
+    return merged
 }
 
 private enum PostDownloadKind: String {
@@ -1078,8 +1914,14 @@ struct EditedPackageItem: Identifiable {
     let sourceName: String
     let videoName: String
     let title: String
+    let scheduleText: String
+    let facebookStatusText: String
+    let facebookStatusState: String
     let thumbnailURL: URL?
     let packageURL: URL
+    let assignedFacebookPageID: String?
+    let assignedFacebookPageLabel: String?
+    let assignedFacebookPageTokenStatus: String?
     let assignedProfileDirectoryName: String?
     let assignedProfileDisplayName: String?
     let assignedProfileOnline: Bool
@@ -3364,6 +4206,7 @@ final class ReelsModel: ObservableObject {
         case soraDownload
         case postLinksDownload
         case facebookRunner
+        case facebookAPIUpload
     }
 
     @Published var status = "Idle"
@@ -3383,6 +4226,10 @@ final class ReelsModel: ObservableObject {
     @Published var geminiLiveVoiceChoice: AILiveVoiceChoice = .female
     @Published var openAIKeyStatus = "Not set"
     @Published var geminiKeyStatus = "Not set"
+    @Published var facebookPageIDStatus = "Not set"
+    @Published var facebookPageTokenStatus = "Not set"
+    @Published var facebookPageLabelStatus = "Not set"
+    @Published var savedFacebookUploadPages: [SavedFacebookUploadPageRecord] = []
     @Published var logText = "Waiting for status..."
     @Published var isHealthCheckRunning = false
     @Published var isRunning = false
@@ -3391,6 +4238,7 @@ final class ReelsModel: ObservableObject {
     @Published var downloadProgressPercent = 0
     @Published var downloadProgressLabel = ""
     @Published var isDownloadProgressVisible = false
+    @Published var batchProgressTitle = "Edit Progress"
     @Published var batchProgressPercent = 0
     @Published var batchProgressLabel = ""
     @Published var isBatchProgressVisible = false
@@ -3420,16 +4268,37 @@ final class ReelsModel: ObservableObject {
     @Published var facebookControlServerRelayMacName = ""
     @Published var facebookControlServerRelayPollSeconds = 3.0
     @Published var isFacebookControlServerOnline = false
+    @Published var facebookControlServerTaskKind = ""
+    @Published var facebookControlServerRemoteRunning = false
     @Published var isInternetOnline = false
     @Published var isAccessibilityTrusted = false
     @Published var macControlAppAlert: MacControlAppAlert?
+    @Published var facebookRunnerActiveProfileName = ""
+    @Published var facebookRunnerActiveTargetName = ""
+    @Published var facebookRunnerActiveTargetKind = ""
+    @Published var facebookRunnerActivePackagesSummary = ""
+    @Published var facebookQueueNextQueueTime = "-"
+    @Published var facebookQueueReservedUntil = "-"
+    @Published var facebookQueueTodayRemainingSlots = 0
+    @Published var facebookQueueCurrentEditedEnd = "-"
+    @Published var facebookQueue40VideosEnd = "-"
+    @Published var facebookQueue80VideosEnd = "-"
+    @Published var facebookQueueReservedCount = 0
+    @Published var facebookQueueMorningOnly = false
+    @Published var facebookQueueRecentResults: [FacebookQueueRecentResultPayload] = []
+    @Published var facebookDeleteAfterSuccessEnabled = true
 
+    private var lastStableSourceCount = 0
+    private var lastStableFacebookSourceCount = 0
+    private var lastStablePackageCount = 0
+    private var lastStableLatestPackage = "-"
     private var process: Process?
     private var outputPipe: Pipe?
     private var logs: [String] = []
     private var toastTask: DispatchWorkItem?
     private var aiChatCueSounds: [String: NSSound] = [:]
     private var autoStartBatchAfterDownload = false
+    private var autoStartBatchAfterFacebookUpload = false
     private var pendingBatchStartAfterCurrentTask = false
     private var currentTaskKind: TaskKind?
     private var currentDownloadEntries: [PostDownloadEntry] = []
@@ -3455,35 +4324,54 @@ final class ReelsModel: ObservableObject {
     private var pendingAIChatReplyVoiceChunks: [String] = []
     private var pendingAIChatReplyVoiceProvider: AIProvider?
     private var chromeProfileAssignments: [String: String] = [:]
+    private var facebookPageAssignments: [String: String] = [:]
+    private var facebookPageQueueOrders: [String: [String]] = [:]
     private var pendingFacebookRunnerDeletePackageNames: [String] = []
     private var lastHealthCheckReport = ""
     private var didScheduleAutoHealthCheck = false
     private var dashboardServerProcess: Process?
     private var dashboardServerOutputPipe: Pipe?
     private var didLaunchDashboardServer = false
+    private var isStartingDashboardServer = false
+    private var lastDashboardServerStartAttempt = Date.distantPast
     private var pendingMacControlAppAlerts: [MacControlAppAlert] = []
+    private var macControlAppAlertDismissTask: DispatchWorkItem?
     private var lastSeenMacControlAlertID = 0
     private var isRefreshingFacebookControlServerStatus = false
+    private var lastServerDrivenMetadataRefresh = Date.distantPast
     private var hasRequestedAccessibilityPromptThisLaunch = false
+    private var accessibilityPermissionPollTask: Task<Void, Never>?
+    private var accessibilityNotificationObservers: [NSObjectProtocol] = []
     private var internetPathMonitor: NWPathMonitor?
     private let internetPathMonitorQueue = DispatchQueue(label: "soranin.internet.monitor")
+    private var facebookRunnerSelectedProfileDirectoryName = ""
+    private var facebookRunnerCloseAfterFinishRequested = false
+    private var stopRequestedByUser = false
 
     init() {
         activeReelsModelForAppLifecycle = self
         chromeProfileAssignments = loadChromeProfileAssignments()
+        facebookPageAssignments = loadFacebookPageAssignments()
+        facebookPageQueueOrders = loadFacebookPageQueueOrders()
         completedSoraDownloadIDs = loadCompletedSoraDownloadIDs()
         refreshMetadata()
+        installAccessibilityPermissionObservers()
         refreshAccessibilityPermissionStatus()
         startInternetPathMonitor()
         DispatchQueue.main.async { [weak self] in
             self?.ensureFacebookControlServerRunning()
             self?.refreshFacebookControlServerConnectionInfo()
+            self?.refreshFacebookControlServerRuntimeStatus()
         }
         bootstrapAIChatSessions()
         resumePendingAIChatRequestIfNeeded()
     }
 
     deinit {
+        accessibilityPermissionPollTask?.cancel()
+        for observer in accessibilityNotificationObservers {
+            NotificationCenter.default.removeObserver(observer)
+        }
         internetPathMonitor?.cancel()
     }
 
@@ -3509,15 +4397,15 @@ final class ReelsModel: ObservableObject {
     }
 
     var facebookControlServerUserName: String {
-        currentMacUserName()
+        preferredDisplayMacUserName()
     }
 
     var facebookControlServerDeviceName: String {
-        currentMacDeviceName()
+        preferredDisplayMacDeviceName()
     }
 
     var facebookControlServerDisplayName: String {
-        "\(facebookControlServerDeviceName) • user \(facebookControlServerUserName)"
+        preferredDisplayMacName()
     }
 
     var internetStatusLabel: String {
@@ -3546,15 +4434,62 @@ final class ReelsModel: ObservableObject {
         extractPostDownloadEntries(from: soraInput)
     }
 
+    private func applyDashboardCounts(
+        sourceCount newSourceCount: Int? = nil,
+        facebookSourceCount newFacebookSourceCount: Int? = nil,
+        packageCount newPackageCount: Int? = nil,
+        latestPackage newLatestPackage: String? = nil,
+        allowPackageRegression: Bool = false
+    ) {
+        if let newSourceCount {
+            sourceCount = max(0, newSourceCount)
+            lastStableSourceCount = sourceCount
+        }
+
+        if let newFacebookSourceCount {
+            facebookSourceCount = max(0, newFacebookSourceCount)
+            lastStableFacebookSourceCount = facebookSourceCount
+        }
+
+        if let newPackageCount {
+            let sanitizedCount = max(0, newPackageCount)
+            if allowPackageRegression || sanitizedCount > 0 || lastStablePackageCount == 0 {
+                packageCount = sanitizedCount
+                lastStablePackageCount = sanitizedCount
+            } else {
+                packageCount = lastStablePackageCount
+            }
+        }
+
+        if let newLatestPackage {
+            let trimmed = newLatestPackage.trimmingCharacters(in: .whitespacesAndNewlines)
+            if allowPackageRegression || (!trimmed.isEmpty && trimmed != "-") || lastStableLatestPackage == "-" {
+                latestPackage = trimmed.isEmpty ? "-" : trimmed
+                if latestPackage != "-" {
+                    lastStableLatestPackage = latestPackage
+                }
+            } else {
+                latestPackage = lastStableLatestPackage
+            }
+        }
+    }
+
     func refreshMetadata() {
         try? FileManager.default.createDirectory(at: rootDir, withIntermediateDirectories: true)
         try? FileManager.default.createDirectory(at: facebookRootDir, withIntermediateDirectories: true)
-        sourceCount = sourceVideos().count
-        facebookSourceCount = sourceVideos(in: facebookRootDir).count
+        syncLegacyFacebookSourcesIntoRuntimeIfNeeded()
+        let localSourceCount = sourceVideos().count
+        let localFacebookSourceCount = sourceVideos(in: facebookRootDir).count
         let packages = packageDirs()
-        packageCount = packages.count
-        latestPackage = packages.last?.lastPathComponent ?? "-"
+        applyDashboardCounts(
+            sourceCount: localSourceCount,
+            facebookSourceCount: localFacebookSourceCount,
+            packageCount: packages.count,
+            latestPackage: packages.last?.lastPathComponent ?? "-",
+            allowPackageRegression: true
+        )
         chromeProfileAssignments = loadChromeProfileAssignments()
+        facebookPageAssignments = loadFacebookPageAssignments()
         editedPackages = packages.reversed().compactMap(loadEditedPackage)
         selectedEditedPackageIDs.formIntersection(Set(editedPackages.map(\.id)))
         applyChromeProfileAssignments(using: chromeProfiles)
@@ -3569,6 +4504,33 @@ final class ReelsModel: ObservableObject {
         geminiLiveVoiceChoice = AILiveVoiceChoice.fromSaved(saved["GEMINI_LIVE_VOICE"])
         openAIKeyStatus = maskKey(saved["OPENAI_API_KEY"])
         geminiKeyStatus = maskKey(saved["GEMINI_API_KEY"] ?? saved["GOOGLE_API_KEY"])
+        facebookPageIDStatus = saved["FACEBOOK_PAGE_ID"]?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+            ? (saved["FACEBOOK_PAGE_ID"] ?? "Not set")
+            : "Not set"
+        facebookPageTokenStatus = maskKey(saved["FACEBOOK_PAGE_ACCESS_TOKEN"] ?? saved["FACEBOOK_ACCESS_TOKEN"])
+        savedFacebookUploadPages = loadSavedFacebookUploadPageRecords()
+        applyFacebookPageAssignments(using: savedFacebookUploadPages)
+        if let activeFacebookPage = savedFacebookUploadPages.first(where: { $0.pageID == facebookPageIDStatus }) {
+            facebookPageLabelStatus = activeFacebookPage.label
+        } else {
+            facebookPageLabelStatus = facebookPageIDStatus == "Not set" ? "Not set" : facebookPageIDStatus
+        }
+        facebookDeleteAfterSuccessEnabled = boolFromSavedSetting(saved["FACEBOOK_DELETE_AFTER_SUCCESS"], defaultValue: true)
+        if !isRunning,
+           currentTaskKind == nil,
+           localSourceCount == 0,
+           localFacebookSourceCount == 0,
+           packages.isEmpty {
+            status = "Idle"
+            detail = "Ready."
+            isDownloadProgressVisible = false
+            downloadProgressPercent = 0
+            downloadProgressLabel = ""
+            isBatchProgressVisible = false
+            batchProgressTitle = "Edit Progress"
+            batchProgressPercent = 0
+            batchProgressLabel = ""
+        }
         refreshChromeProfilesAsync()
     }
 
@@ -3576,6 +4538,8 @@ final class ReelsModel: ObservableObject {
         isAccessibilityTrusted = AXIsProcessTrusted()
         if isAccessibilityTrusted {
             hasRequestedAccessibilityPromptThisLaunch = false
+            accessibilityPermissionPollTask?.cancel()
+            accessibilityPermissionPollTask = nil
         }
     }
 
@@ -3586,12 +4550,69 @@ final class ReelsModel: ObservableObject {
         isAccessibilityTrusted = AXIsProcessTrustedWithOptions(options)
         if isAccessibilityTrusted {
             hasRequestedAccessibilityPromptThisLaunch = false
+            accessibilityPermissionPollTask?.cancel()
+            accessibilityPermissionPollTask = nil
+        } else {
+            scheduleAccessibilityPermissionRefreshBurst()
         }
     }
 
     func openAccessibilitySettings() {
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
             NSWorkspace.shared.open(url)
+            scheduleAccessibilityPermissionRefreshBurst()
+        }
+    }
+
+    private func installAccessibilityPermissionObservers() {
+        let center = NotificationCenter.default
+        accessibilityNotificationObservers.append(
+            center.addObserver(
+                forName: NSApplication.didBecomeActiveNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    self.refreshAccessibilityPermissionStatus()
+                    self.scheduleAccessibilityPermissionRefreshBurst()
+                }
+            }
+        )
+        accessibilityNotificationObservers.append(
+            center.addObserver(
+                forName: NSWindow.didBecomeMainNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    self.refreshAccessibilityPermissionStatus()
+                }
+            }
+        )
+    }
+
+    private func scheduleAccessibilityPermissionRefreshBurst() {
+        guard !isAccessibilityTrusted else { return }
+        accessibilityPermissionPollTask?.cancel()
+        accessibilityPermissionPollTask = Task { [weak self] in
+            for _ in 0..<12 {
+                try? await Task.sleep(nanoseconds: 500_000_000)
+                guard !Task.isCancelled else { return }
+                await MainActor.run {
+                    self?.refreshAccessibilityPermissionStatus()
+                }
+                let hasTrust = await MainActor.run {
+                    self?.isAccessibilityTrusted ?? false
+                }
+                if hasTrust {
+                    return
+                }
+            }
+            await MainActor.run {
+                self?.accessibilityPermissionPollTask = nil
+            }
         }
     }
 
@@ -3805,8 +4826,9 @@ final class ReelsModel: ObservableObject {
             downloadProgressPercent = 0
             downloadProgressLabel = ""
         }
-        if taskKind != .batch {
+        if taskKind != .batch && taskKind != .facebookAPIUpload {
             isBatchProgressVisible = false
+            batchProgressTitle = "Edit Progress"
             batchProgressPercent = 0
             batchProgressLabel = ""
         }
@@ -3841,6 +4863,7 @@ final class ReelsModel: ObservableObject {
                 self.process = nil
                 self.isRunning = false
                 self.currentTaskKind = nil
+                let runnerWasStoppedByUser = taskKind == .facebookRunner && self.stopRequestedByUser
                 if taskKind == .soraDownload || taskKind == .postLinksDownload {
                     self.applyPostDownloadInputAfterDownload()
                 }
@@ -3855,7 +4878,7 @@ final class ReelsModel: ObservableObject {
                     }
                     if taskKind == .soraDownload || taskKind == .postLinksDownload {
                         self.playSoraDownloadCompleteCue()
-                    } else if taskKind == .batch {
+                    } else if taskKind == .batch || taskKind == .facebookAPIUpload {
                         self.playBatchCompleteCue()
                     }
                     if taskKind == .facebookRunner {
@@ -3864,10 +4887,26 @@ final class ReelsModel: ObservableObject {
                         if !deletePackageNames.isEmpty {
                             self.deleteFacebookRunnerPackagesAfterSuccess(deletePackageNames)
                         }
+                        self.finishFacebookRunnerExecution(closeSelectedProfile: self.facebookRunnerCloseAfterFinishRequested)
                     }
                 } else {
+                    if taskKind == .facebookAPIUpload {
+                        self.autoStartBatchAfterFacebookUpload = false
+                    }
                     if taskKind == .facebookRunner {
                         self.pendingFacebookRunnerDeletePackageNames = []
+                        if runnerWasStoppedByUser {
+                            self.appendLog("STOPPED")
+                            self.status = "Stopped"
+                            self.detail = "Facebook Runner stopped."
+                            self.finishFacebookRunnerExecution(closeSelectedProfile: false)
+                            return
+                        }
+                        self.appendLog("FAILED")
+                        self.status = "Failed"
+                        self.detail = "Exit code \(task.terminationStatus)"
+                        self.finishFacebookRunnerExecution(closeSelectedProfile: false)
+                        return
                     }
                     if taskKind == .soraDownload || taskKind == .postLinksDownload {
                         self.autoStartBatchAfterDownload = false
@@ -3913,6 +4952,14 @@ final class ReelsModel: ObservableObject {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
                         self.startBatch()
                     }
+                } else if task.terminationStatus == 0 && taskKind == .facebookAPIUpload && self.autoStartBatchAfterFacebookUpload && !self.sourceVideos().isEmpty {
+                    self.autoStartBatchAfterFacebookUpload = false
+                    self.appendLog("WAIT... Facebook upload done. Auto starting AI edit for remaining source videos.")
+                    self.status = "Running"
+                    self.detail = "Facebook upload complete. Starting next AI edit..."
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                        self.startBatch()
+                    }
                 } else if task.terminationStatus == 0 && taskKind == .batch && self.pendingBatchStartAfterCurrentTask {
                     self.pendingBatchStartAfterCurrentTask = false
                     self.appendLog("WAIT... Auto starting dropped videos.")
@@ -3921,6 +4968,8 @@ final class ReelsModel: ObservableObject {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
                         self.startBatch()
                     }
+                } else if taskKind == .facebookAPIUpload {
+                    self.autoStartBatchAfterFacebookUpload = false
                 }
             }
         }
@@ -3944,6 +4993,7 @@ final class ReelsModel: ObservableObject {
 
     func openFacebookRoot() {
         try? FileManager.default.createDirectory(at: facebookRootDir, withIntermediateDirectories: true)
+        syncLegacyFacebookSourcesIntoRuntimeIfNeeded()
         NSWorkspace.shared.open(facebookRootDir)
     }
 
@@ -3957,9 +5007,119 @@ final class ReelsModel: ObservableObject {
         NSWorkspace.shared.open(item.packageURL)
     }
 
+    func publishFacebookPackage(_ item: EditedPackageItem, scheduled: Bool) {
+        guard let selectedPage = resolvedFacebookUploadTarget(for: item) else {
+            return
+        }
+        startFacebookAPIUpload(
+            packageNames: [item.packageName],
+            scheduled: scheduled,
+            skipExistingSuccess: false,
+            selectedPageRecord: selectedPage.record
+        )
+    }
+
+    func publishAllEditedPackagesToFacebook(scheduled: Bool) {
+        let packageNames = editedPackages.map(\.packageName)
+        startFacebookAPIUpload(
+            packageNames: packageNames,
+            scheduled: scheduled,
+            skipExistingSuccess: true
+        )
+    }
+
+    func publishSelectedEditedPackagesToFacebook(scheduled: Bool) {
+        let selectedItems = editedPackages.filter { selectedEditedPackageIDs.contains($0.id) }
+        guard !selectedItems.isEmpty else {
+            showToast("Select card first.")
+            return
+        }
+
+        let resolvedTargets = selectedItems.compactMap { item in
+            resolvedFacebookUploadTarget(for: item, showToastOnFailure: false).map { (item, $0) }
+        }
+        guard resolvedTargets.count == selectedItems.count else {
+            showToast("Save target page for selected card first.")
+            return
+        }
+
+        let uniquePageIDs = Set(resolvedTargets.map { $0.1.pageID })
+        guard uniquePageIDs.count == 1, let selectedPage = resolvedTargets.first?.1 else {
+            showToast("Selected cards use different target pages.")
+            return
+        }
+
+        let packageNames = selectedItems.map(\.packageName)
+        startFacebookAPIUpload(
+            packageNames: packageNames,
+            scheduled: scheduled,
+            skipExistingSuccess: false,
+            selectedPageRecord: selectedPage.record
+        )
+    }
+
+    private func startFacebookAPIUpload(
+        packageNames: [String],
+        scheduled: Bool,
+        skipExistingSuccess: Bool,
+        selectedPageRecord: SavedFacebookUploadPageRecord? = nil
+    ) {
+        guard !isBusy else {
+            showToast("Wait for current task to finish.")
+            return
+        }
+
+        let normalizedPackageNames = Array(NSOrderedSet(array: existingFacebookPackageNames(from: packageNames))) as? [String] ?? []
+        guard !normalizedPackageNames.isEmpty else {
+            showToast("No existing package folder found.")
+            return
+        }
+
+        if let selectedPageRecord {
+            applyFacebookUploadPageRecordToSettings(selectedPageRecord, deleteAfterSuccess: facebookDeleteAfterSuccessEnabled)
+        }
+
+        let saved = loadSavedSettings()
+        let pageID = (saved["FACEBOOK_PAGE_ID"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let token = (saved["FACEBOOK_PAGE_ACCESS_TOKEN"] ?? saved["FACEBOOK_ACCESS_TOKEN"] ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !pageID.isEmpty, !token.isEmpty else {
+            showToast("Save Facebook Page ID and token first.")
+            return
+        }
+
+        var arguments = [facebookAPIUploadScript.path, "--mode", scheduled ? "schedule" : "publish"]
+        if facebookDeleteAfterSuccessEnabled {
+            arguments.append("--delete-after-success")
+        }
+        if skipExistingSuccess {
+            arguments.append("--skip-existing-success")
+        }
+        arguments.append(contentsOf: normalizedPackageNames)
+
+        batchProgressTitle = "Upload Progress"
+        batchProgressPercent = 0
+        batchProgressLabel = scheduled
+            ? "Preparing Facebook schedule..."
+            : "Preparing Facebook publish..."
+        isBatchProgressVisible = true
+        autoStartBatchAfterFacebookUpload = true
+
+        let modeLabel = scheduled ? "schedule" : "publish"
+        runStreamingProcess(
+            executable: URL(fileURLWithPath: "/usr/bin/python3"),
+            arguments: arguments,
+            initialLog: "WAIT... Facebook \(modeLabel) started for \(normalizedPackageNames.count) package(s).",
+            startDetail: "Starting Facebook \(modeLabel) for \(normalizedPackageNames.count) package(s)...",
+            taskKind: .facebookAPIUpload
+        )
+    }
+
     func runFacebookRunnerPreflight(
         profileDirectoryName: String,
         pageName: String,
+        pageURL: String,
+        pageTargetKind: String,
         packageNamesText: String,
         intervalMinutes: Int
     ) {
@@ -3990,6 +5150,11 @@ final class ReelsModel: ObservableObject {
             "--page-name", normalizedPageName,
             "--interval-minutes", "\(max(1, intervalMinutes))",
         ])
+        let trimmedPageURL = pageURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedPageURL.isEmpty {
+            arguments.append(contentsOf: ["--page-url", trimmedPageURL])
+        }
+        arguments.append(contentsOf: ["--page-kind", normalizedSavedFacebookPageKind(pageTargetKind)])
         if let selectedProfile {
             arguments.append(contentsOf: [
                 "--profile-name", selectedProfile.displayName,
@@ -4009,6 +5174,8 @@ final class ReelsModel: ObservableObject {
     func runFacebookRunnerBatch(
         profileDirectoryName: String,
         pageName: String,
+        pageURL: String,
+        pageTargetKind: String,
         packageNamesText: String,
         intervalMinutes: Int,
         closeAfterEach: Bool,
@@ -4023,14 +5190,14 @@ final class ReelsModel: ObservableObject {
         }
 
         refreshAccessibilityPermissionStatus()
-        guard isAccessibilityTrusted else {
+        if !isAccessibilityTrusted {
             if hasRequestedAccessibilityPromptThisLaunch {
-                showToast("Accessibility is still pending. Turn on Soranin, then quit and reopen the app once.")
+                scheduleAccessibilityPermissionRefreshBurst()
+                showToast("Accessibility is still pending. Starting run now; if macOS blocks clicks, turn on Soranin in Settings.")
             } else {
                 requestAccessibilityPermissionPrompt()
-                showToast("Allow Keyboard Control, then quit and reopen Soranin once before running again.")
+                showToast("Allow Accessibility for Soranin if macOS asks. Starting run now.")
             }
-            return
         }
 
         let normalizedPageName = normalizedFacebookRunnerPageName(pageName)
@@ -4045,58 +5212,107 @@ final class ReelsModel: ObservableObject {
             return
         }
 
-        pendingFacebookRunnerDeletePackageNames = deleteFoldersAfterSuccess ? packageNames : []
+        pendingFacebookRunnerDeletePackageNames = []
+        stopRequestedByUser = false
 
         let selectedProfile = chromeProfileItem(forDirectoryName: profileDirectoryName)
-        let launchRun = { [weak self] in
+        let trimmedProfileName = selectedProfile?.displayName ?? profileDirectoryName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedProfileName.isEmpty else {
+            showToast("Select a Chrome profile first.")
+            return
+        }
+        facebookRunnerActiveProfileName = trimmedProfileName
+        facebookRunnerActiveTargetName = normalizedPageName
+        facebookRunnerActiveTargetKind = normalizedSavedFacebookPageKind(pageTargetKind)
+        facebookRunnerActivePackagesSummary = packageNames.joined(separator: ", ")
+        facebookRunnerSelectedProfileDirectoryName = selectedProfile?.directoryName ?? profileDirectoryName.trimmingCharacters(in: .whitespacesAndNewlines)
+        facebookRunnerCloseAfterFinishRequested = closeAfterFinish || closeAfterEach
+        let trimmedPageURL = pageURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        let startDetail = "Preparing Facebook post run (\(packageNames.count) folder(s))..."
+        status = "Running"
+        detail = startDetail
+        batchProgressPercent = 0
+        batchProgressLabel = startDetail
+        isBatchProgressVisible = true
+        isRunning = true
+        facebookControlServerTaskKind = "facebook_post"
+
+        var payload: [String: Any] = [
+            "root": rootDir.path,
+            "chrome_name": trimmedProfileName,
+            "page_name": normalizedPageName,
+            "page_url": trimmedPageURL,
+            "page_kind": normalizedSavedFacebookPageKind(pageTargetKind),
+            "packages": packageNames,
+            "interval_minutes": max(1, intervalMinutes),
+            "close_after_finish": closeAfterFinish,
+            "close_after_each": closeAfterEach,
+            "post_now_advance_slot": postNowAdvanceSlot,
+            "delete_after_each_success": deleteFoldersAfterSuccess,
+        ]
+        payload["open_chrome_first"] = openChromeFirst
+
+        postFacebookControlServerCommand(path: "facebook-post-run", payload: payload) { [weak self] result in
             guard let self else { return }
-            var arguments = [
-                facebookBatchUploadScript.path,
-                rootDir.path,
-                "--state-path", facebookTimingStateFile.path,
-                "--page-name", normalizedPageName,
-                "--interval-minutes", "\(max(1, intervalMinutes))",
-                "--packages",
-            ]
-            arguments.append(contentsOf: packageNames)
-            if closeAfterEach {
-                arguments.append("--close-after-each")
+            switch result {
+            case let .success(response):
+                if response.ok == false {
+                    let message = response.message?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "Failed to start Facebook Runner."
+                    self.isRunning = false
+                    self.isBatchProgressVisible = false
+                    self.facebookControlServerTaskKind = ""
+                    self.status = "Failed"
+                    self.detail = message
+                    self.showToast(message)
+                    return
+                }
+                if let message = response.message?.trimmingCharacters(in: .whitespacesAndNewlines), !message.isEmpty {
+                    self.detail = message
+                }
+                self.refreshFacebookControlServerRuntimeStatus()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
+                    self?.refreshFacebookControlServerRuntimeStatus()
+                }
+            case let .failure(error):
+                let message = error.localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+                self.isRunning = false
+                self.isBatchProgressVisible = false
+                self.facebookControlServerTaskKind = ""
+                self.status = "Failed"
+                self.detail = message.isEmpty ? "Failed to start Facebook Runner." : message
+                self.showToast(self.detail)
             }
-            if closeAfterFinish {
-                arguments.append("--close-after-finish")
-            }
-            if postNowAdvanceSlot {
-                arguments.append("--post-now-advance-slot")
-            }
-            self.runStreamingProcess(
-                executable: URL(fileURLWithPath: "/usr/bin/python3"),
-                arguments: arguments,
-                initialLog: "WAIT... Running Facebook upload batch.",
-                startDetail: "Starting \(packageNames.count) package(s) for \(normalizedPageName)...",
-                taskKind: .facebookRunner
-            )
+        }
+    }
+
+    private func clearFacebookRunnerExecutionState() {
+        facebookRunnerActiveProfileName = ""
+        facebookRunnerActiveTargetName = ""
+        facebookRunnerActiveTargetKind = ""
+        facebookRunnerActivePackagesSummary = ""
+        facebookRunnerSelectedProfileDirectoryName = ""
+        facebookRunnerCloseAfterFinishRequested = false
+        stopRequestedByUser = false
+    }
+
+    private func finishFacebookRunnerExecution(closeSelectedProfile: Bool) {
+        let selectedDirectory = facebookRunnerSelectedProfileDirectoryName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resetState = { [weak self] in
+            guard let self else { return }
+            self.clearFacebookRunnerExecutionState()
+            self.refreshMetadata()
         }
 
-        let relaunchSelectedProfileAndRun = { [weak self] in
-            guard let self else { return }
-            guard let selectedProfile else {
-                launchRun()
-                return
-            }
-            self.openChromeProfile(selectedProfile)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) { [weak self] in
-                self?.refreshChromeProfiles()
-                launchRun()
-            }
+        guard closeSelectedProfile,
+              !selectedDirectory.isEmpty,
+              let selectedProfile = chromeProfileItem(forDirectoryName: selectedDirectory)
+        else {
+            resetState()
+            return
         }
 
-        // Facebook Runner is most stable when it always starts from a clean Chrome state.
-        quitGoogleChromeCompletely(shouldShowToast: false) {
-            if openChromeFirst || selectedProfile != nil {
-                relaunchSelectedProfileAndRun()
-            } else {
-                launchRun()
-            }
+        closeChromeProfiles([selectedProfile], shouldShowToast: false) {
+            resetState()
         }
     }
 
@@ -4125,11 +5341,65 @@ final class ReelsModel: ObservableObject {
         showToast("\(profile.displayName) selected.")
     }
 
+    func assignFacebookPageProfile(_ record: SavedFacebookUploadPageRecord, to item: EditedPackageItem) {
+        let previousPageID = resolvedFacebookUploadTarget(for: item, showToastOnFailure: false)?.pageID
+        facebookPageAssignments[item.id] = record.pageID
+        persistFacebookPageAssignments()
+        applyFacebookPageAssignments(using: savedFacebookUploadPages)
+        if previousPageID != record.pageID {
+            removePackageFromFacebookPageQueueOrder(item.id, pageID: previousPageID)
+        }
+        recalculateFacebookQueue(forPageID: record.pageID)
+        if let previousPageID, previousPageID != record.pageID {
+            recalculateFacebookQueue(forPageID: previousPageID)
+        }
+        refreshMetadata()
+        showToast("Page selected: \(record.label)")
+    }
+
+    func assignFacebookPageProfileToSelectedPackages(_ record: SavedFacebookUploadPageRecord) {
+        let selectedItems = editedPackages.filter { selectedEditedPackageIDs.contains($0.id) }
+        guard !selectedItems.isEmpty else {
+            activateFacebookUploadPageProfile(record)
+            return
+        }
+        let previousPageIDs = Set(selectedItems.compactMap { resolvedFacebookUploadTarget(for: $0, showToastOnFailure: false)?.pageID })
+        for item in selectedItems {
+            facebookPageAssignments[item.id] = record.pageID
+        }
+        persistFacebookPageAssignments()
+        applyFacebookPageAssignments(using: savedFacebookUploadPages)
+        removePackagesFromFacebookPageQueueOrders(Set(selectedItems.map(\.id)))
+        for previousPageID in previousPageIDs where previousPageID != record.pageID {
+            recalculateFacebookQueue(forPageID: previousPageID)
+        }
+        recalculateFacebookQueue(forPageID: record.pageID)
+        refreshMetadata()
+        showToast("Assigned \(record.label) to \(selectedItems.count) card(s).")
+    }
+
     func clearAssignedChromeProfile(for item: EditedPackageItem) {
         guard chromeProfileAssignments.removeValue(forKey: item.id) != nil else { return }
         persistChromeProfileAssignments()
         applyChromeProfileAssignments(using: chromeProfiles)
         showToast("Profile cleared.")
+    }
+
+    func clearAssignedFacebookPageProfile(for item: EditedPackageItem) {
+        let previousPageID = resolvedFacebookUploadTarget(for: item, showToastOnFailure: false)?.pageID
+        guard facebookPageAssignments.removeValue(forKey: item.id) != nil else { return }
+        persistFacebookPageAssignments()
+        applyFacebookPageAssignments(using: savedFacebookUploadPages)
+        removePackageFromFacebookPageQueueOrder(item.id, pageID: previousPageID)
+        if let previousPageID {
+            recalculateFacebookQueue(forPageID: previousPageID)
+        }
+        if let newPageID = resolvedFacebookUploadTarget(for: item, showToastOnFailure: false)?.pageID,
+           newPageID != previousPageID {
+            recalculateFacebookQueue(forPageID: newPageID)
+        }
+        refreshMetadata()
+        showToast("Target page cleared.")
     }
 
     private func chromeProfileItem(forDirectoryName directoryName: String) -> ChromeProfileItem? {
@@ -4159,6 +5429,41 @@ final class ReelsModel: ObservableObject {
         return nil
     }
 
+    private func currentFacebookUploadPageSelection() -> (pageID: String, label: String, record: SavedFacebookUploadPageRecord?)? {
+        let saved = loadSavedSettings()
+        let pageID = (saved["FACEBOOK_PAGE_ID"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let token = (saved["FACEBOOK_PAGE_ACCESS_TOKEN"] ?? saved["FACEBOOK_ACCESS_TOKEN"] ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !pageID.isEmpty, !token.isEmpty else { return nil }
+        let record = savedFacebookUploadPages.first(where: { $0.pageID == pageID })
+        let label = record?.label ?? (facebookPageLabelStatus == "Not set" ? pageID : facebookPageLabelStatus)
+        return (pageID: pageID, label: label, record: record)
+    }
+
+    private func resolvedFacebookUploadTarget(
+        for item: EditedPackageItem,
+        showToastOnFailure: Bool = true
+    ) -> (pageID: String, label: String, record: SavedFacebookUploadPageRecord?)? {
+        let assignedPageID = item.assignedFacebookPageID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !assignedPageID.isEmpty {
+            if let record = savedFacebookUploadPages.first(where: { $0.pageID == assignedPageID }) {
+                return (pageID: record.pageID, label: record.label, record: record)
+            }
+            if showToastOnFailure {
+                showToast("Saved target page missing for \(item.packageName).")
+            }
+            return nil
+        }
+
+        guard let selection = currentFacebookUploadPageSelection() else {
+            if showToastOnFailure {
+                showToast("Select page and save token first.")
+            }
+            return nil
+        }
+        return selection
+    }
+
     private func existingFacebookPackageNames(from packageNames: [String]) -> [String] {
         packageNames.filter { packageName in
             let candidate = rootDir.appendingPathComponent(packageName, isDirectory: true)
@@ -4171,17 +5476,38 @@ final class ReelsModel: ObservableObject {
         let fileManager = FileManager.default
         var deletedNames: [String] = []
         var failedNames: [String] = []
+        var didUpdateAssignments = false
 
         for packageName in packageNames {
             let packageURL = rootDir.appendingPathComponent(packageName, isDirectory: true)
-            guard fileManager.fileExists(atPath: packageURL.path) else {
+            guard
+                fileManager.fileExists(atPath: packageURL.path)
+                || fileManager.fileExists(atPath: legacyPackagesRootDir.appendingPathComponent(packageName, isDirectory: true).path)
+                || fileManager.fileExists(atPath: hiddenLegacyPackagesRootDir.appendingPathComponent(packageName, isDirectory: true).path)
+            else {
                 continue
             }
             do {
-                try fileManager.removeItem(at: packageURL)
-                selectedEditedPackageIDs.remove(packageName)
-                if chromeProfileAssignments.removeValue(forKey: packageName) != nil {
-                    persistChromeProfileAssignments()
+                let matchingItem = editedPackages.first {
+                    $0.packageName == packageName || $0.id == packageName
+                }
+                _ = try deleteMirroredPackage(packageName: packageName, primaryURL: packageURL)
+                if let matchingItem {
+                    selectedEditedPackageIDs.remove(matchingItem.id)
+                    if facebookPageAssignments.removeValue(forKey: matchingItem.id) != nil {
+                        didUpdateAssignments = true
+                    }
+                    if chromeProfileAssignments.removeValue(forKey: matchingItem.id) != nil {
+                        didUpdateAssignments = true
+                    }
+                } else {
+                    selectedEditedPackageIDs.remove(packageName)
+                    if facebookPageAssignments.removeValue(forKey: packageName) != nil {
+                        didUpdateAssignments = true
+                    }
+                    if chromeProfileAssignments.removeValue(forKey: packageName) != nil {
+                        didUpdateAssignments = true
+                    }
                 }
                 deletedNames.append(packageName)
                 appendLog("[facebook-runner] Deleted \(packageName)")
@@ -4191,6 +5517,10 @@ final class ReelsModel: ObservableObject {
             }
         }
 
+        if didUpdateAssignments {
+            persistChromeProfileAssignments()
+            persistFacebookPageAssignments()
+        }
         refreshMetadata()
         if !deletedNames.isEmpty && failedNames.isEmpty {
             showToast("Deleted \(deletedNames.count) folder(s).")
@@ -4201,11 +5531,15 @@ final class ReelsModel: ObservableObject {
 
     func deletePackage(_ item: EditedPackageItem) {
         do {
-            try FileManager.default.removeItem(at: item.packageURL)
+            _ = try deleteMirroredPackage(packageName: item.packageName, primaryURL: item.packageURL)
             selectedEditedPackageIDs.remove(item.id)
+            if facebookPageAssignments.removeValue(forKey: item.id) != nil {
+                persistFacebookPageAssignments()
+            }
             if chromeProfileAssignments.removeValue(forKey: item.id) != nil {
                 persistChromeProfileAssignments()
             }
+            removePackagesFromFacebookPageQueueOrders([item.id])
             refreshMetadata()
             showToast("\(item.packageName) deleted.")
         } catch {
@@ -4220,18 +5554,25 @@ final class ReelsModel: ObservableObject {
         var didUpdateAssignments = false
         for package in packages {
             do {
-                try FileManager.default.removeItem(at: package)
+                let removed = try deleteMirroredPackage(packageName: package.lastPathComponent, primaryURL: package)
+                if facebookPageAssignments.removeValue(forKey: package.lastPathComponent) != nil {
+                    didUpdateAssignments = true
+                }
                 if chromeProfileAssignments.removeValue(forKey: package.lastPathComponent) != nil {
                     didUpdateAssignments = true
                 }
-                deletedCount += 1
+                if removed > 0 {
+                    deletedCount += 1
+                }
             } catch {
                 continue
             }
         }
         if didUpdateAssignments {
             persistChromeProfileAssignments()
+            persistFacebookPageAssignments()
         }
+        removePackagesFromFacebookPageQueueOrders(Set(packages.map { $0.lastPathComponent }))
         selectedEditedPackageIDs.removeAll()
         refreshMetadata()
         if deletedCount > 0 {
@@ -4266,13 +5607,18 @@ final class ReelsModel: ObservableObject {
 
         var deletedCount = 0
         var didUpdateAssignments = false
+        var deletedIDs: Set<String> = []
         for item in selectedItems {
             do {
-                try FileManager.default.removeItem(at: item.packageURL)
+                _ = try deleteMirroredPackage(packageName: item.packageName, primaryURL: item.packageURL)
+                if facebookPageAssignments.removeValue(forKey: item.id) != nil {
+                    didUpdateAssignments = true
+                }
                 if chromeProfileAssignments.removeValue(forKey: item.id) != nil {
                     didUpdateAssignments = true
                 }
                 deletedCount += 1
+                deletedIDs.insert(item.id)
             } catch {
                 continue
             }
@@ -4280,7 +5626,9 @@ final class ReelsModel: ObservableObject {
 
         if didUpdateAssignments {
             persistChromeProfileAssignments()
+            persistFacebookPageAssignments()
         }
+        removePackagesFromFacebookPageQueueOrders(deletedIDs)
         selectedEditedPackageIDs.removeAll()
         refreshMetadata()
 
@@ -4397,6 +5745,85 @@ final class ReelsModel: ObservableObject {
         persistSavedSettings(payload)
         refreshMetadata()
         showToast("\(provider.label) settings saved.")
+    }
+
+    func saveFacebookSettings(pageID: String, accessToken: String?, removeToken: Bool, deleteAfterSuccess: Bool) {
+        var payload = loadSavedSettings()
+        let trimmedPageID = pageID.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedPageID.isEmpty {
+            payload["FACEBOOK_PAGE_ID"] = trimmedPageID
+        }
+        payload["FACEBOOK_GRAPH_API_VERSION"] = payload["FACEBOOK_GRAPH_API_VERSION"] ?? "v23.0"
+        payload["FACEBOOK_GRAPH_VERSION"] = payload["FACEBOOK_GRAPH_VERSION"] ?? payload["FACEBOOK_GRAPH_API_VERSION"] ?? "v23.0"
+        payload["FACEBOOK_DELETE_AFTER_SUCCESS"] = deleteAfterSuccess ? "1" : "0"
+
+        if removeToken {
+            payload.removeValue(forKey: "FACEBOOK_PAGE_ACCESS_TOKEN")
+            payload.removeValue(forKey: "FACEBOOK_ACCESS_TOKEN")
+        } else if let accessToken {
+            let trimmedToken = accessToken.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmedToken.isEmpty {
+                payload["FACEBOOK_PAGE_ACCESS_TOKEN"] = trimmedToken
+                payload["FACEBOOK_ACCESS_TOKEN"] = trimmedToken
+            }
+        }
+
+        persistSavedSettings(payload)
+        refreshMetadata()
+        showToast(trimmedPageID.isEmpty ? "Facebook settings updated." : "Facebook settings saved for Page \(trimmedPageID).")
+    }
+
+    private func applyFacebookUploadPageRecordToSettings(_ record: SavedFacebookUploadPageRecord, deleteAfterSuccess: Bool) {
+        var payload = loadSavedSettings()
+        payload["FACEBOOK_PAGE_ID"] = record.pageID
+        payload["FACEBOOK_PAGE_ACCESS_TOKEN"] = record.accessToken
+        payload["FACEBOOK_ACCESS_TOKEN"] = record.accessToken
+        payload["FACEBOOK_GRAPH_API_VERSION"] = payload["FACEBOOK_GRAPH_API_VERSION"] ?? "v23.0"
+        payload["FACEBOOK_GRAPH_VERSION"] = payload["FACEBOOK_GRAPH_VERSION"] ?? payload["FACEBOOK_GRAPH_API_VERSION"] ?? "v23.0"
+        payload["FACEBOOK_DELETE_AFTER_SUCCESS"] = deleteAfterSuccess ? "1" : "0"
+        persistSavedSettings(payload)
+        refreshMetadata()
+    }
+
+    @discardableResult
+    func saveFacebookUploadPageProfile(label: String, pageID: String, accessToken: String, deleteAfterSuccess: Bool) -> SavedFacebookUploadPageRecord? {
+        guard let record = saveFacebookUploadPageRecord(label: label, pageID: pageID, accessToken: accessToken) else {
+            showToast("Enter page name, Page ID, and token first.")
+            return nil
+        }
+        saveFacebookSettings(
+            pageID: record.pageID,
+            accessToken: record.accessToken,
+            removeToken: false,
+            deleteAfterSuccess: deleteAfterSuccess
+        )
+        showToast("Saved Facebook page: \(record.label)")
+        return record
+    }
+
+    func activateFacebookUploadPageProfile(_ record: SavedFacebookUploadPageRecord, deleteAfterSuccess: Bool? = nil) {
+        saveFacebookSettings(
+            pageID: record.pageID,
+            accessToken: record.accessToken,
+            removeToken: false,
+            deleteAfterSuccess: deleteAfterSuccess ?? facebookDeleteAfterSuccessEnabled
+        )
+        showToast("Using page: \(record.label)")
+    }
+
+    func deleteFacebookUploadPageProfile(_ record: SavedFacebookUploadPageRecord) {
+        forgetSavedFacebookUploadPageRecord(record)
+        let removedPackageIDs = facebookPageAssignments
+            .filter { $0.value == record.pageID }
+            .map(\.key)
+        for packageID in removedPackageIDs {
+            facebookPageAssignments.removeValue(forKey: packageID)
+        }
+        if !removedPackageIDs.isEmpty {
+            persistFacebookPageAssignments()
+        }
+        refreshMetadata()
+        showToast("Removed page: \(record.label)")
     }
 
     func removeSavedSettings(removeOpenAI: Bool, removeGemini: Bool, provider: AIProvider) {
@@ -5155,6 +6582,7 @@ final class ReelsModel: ObservableObject {
             add(fileManager.isWritableFile(atPath: facebookRootDir.path) ? .ok : .warning, "Facebook Writable", facebookRootDir.path)
             add(exists(batchScript, requiresDirectory: false) ? .ok : .issue, "Batch Script", batchScript.path)
             add(exists(facebookBatchUploadScript, requiresDirectory: false) ? .ok : .warning, "Facebook Batch Upload", facebookBatchUploadScript.path)
+            add(exists(facebookAPIUploadScript, requiresDirectory: false) ? .ok : .warning, "Facebook API Upload", facebookAPIUploadScript.path)
             add(exists(facebookPreflightScript, requiresDirectory: false) ? .ok : .warning, "Facebook Preflight", facebookPreflightScript.path)
             add(exists(reelsDashboardServerScript, requiresDirectory: false) ? .ok : .warning, "Mac Control Server", reelsDashboardServerScript.path)
             add(exists(soraDownloaderScript, requiresDirectory: false) ? .ok : .issue, "Sora Downloader", soraDownloaderScript.path)
@@ -5167,6 +6595,9 @@ final class ReelsModel: ObservableObject {
 
             let openAIKey = (savedSettings["OPENAI_API_KEY"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
             let geminiKey = (savedSettings["GEMINI_API_KEY"] ?? savedSettings["GOOGLE_API_KEY"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            let facebookPageID = (savedSettings["FACEBOOK_PAGE_ID"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            let facebookToken = (savedSettings["FACEBOOK_PAGE_ACCESS_TOKEN"] ?? savedSettings["FACEBOOK_ACCESS_TOKEN"] ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
             let openAIRequired = mainProvider.providerKey == "openai" || chatProvider.providerKey == "openai"
             let geminiRequired = mainProvider.providerKey == "gemini" || chatProvider.providerKey == "gemini"
 
@@ -5180,6 +6611,18 @@ final class ReelsModel: ObservableObject {
                 add(geminiRequired ? .issue : .warning, "Gemini Key", "Not set")
             } else {
                 add(.ok, "Gemini Key", maskedKey(geminiKey))
+            }
+
+            if facebookPageID.isEmpty {
+                add(.warning, "Facebook Page ID", "Not set")
+            } else {
+                add(.ok, "Facebook Page ID", facebookPageID)
+            }
+
+            if facebookToken.isEmpty {
+                add(.warning, "Facebook Token", "Not set")
+            } else {
+                add(.ok, "Facebook Token", maskedKey(facebookToken))
             }
 
             add(.ok, "Source Videos", "\(currentSourceCount) found")
@@ -5291,9 +6734,134 @@ final class ReelsModel: ObservableObject {
             self.pingFacebookControlServer { [weak self] isOnline in
                 DispatchQueue.main.async {
                     self?.isFacebookControlServerOnline = isOnline
+                    if isOnline {
+                        self?.refreshFacebookControlServerRuntimeStatus()
+                    }
                 }
             }
         }
+    }
+
+    private func applyFacebookQueuePayload(_ payload: FacebookQueueStatusPayload?) {
+        guard let payload else { return }
+        facebookQueueMorningOnly = payload.morningOnly ?? false
+        facebookQueueTodayRemainingSlots = max(0, payload.todayRemainingSlots ?? 0)
+        facebookQueueNextQueueTime = payload.nextQueueLabelAmpm?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+            ? payload.nextQueueLabelAmpm!.trimmingCharacters(in: .whitespacesAndNewlines)
+            : "-"
+        facebookQueueReservedUntil = payload.reservedUntilLabelAmpm?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+            ? payload.reservedUntilLabelAmpm!.trimmingCharacters(in: .whitespacesAndNewlines)
+            : "-"
+        facebookQueueCurrentEditedEnd = payload.currentEditedEndLabelAmpm?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+            ? payload.currentEditedEndLabelAmpm!.trimmingCharacters(in: .whitespacesAndNewlines)
+            : "-"
+        facebookQueue40VideosEnd = payload.videos40EndLabelAmpm?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+            ? payload.videos40EndLabelAmpm!.trimmingCharacters(in: .whitespacesAndNewlines)
+            : "-"
+        facebookQueue80VideosEnd = payload.videos80EndLabelAmpm?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+            ? payload.videos80EndLabelAmpm!.trimmingCharacters(in: .whitespacesAndNewlines)
+            : "-"
+        facebookQueueReservedCount = max(0, payload.reservedCount ?? 0)
+        facebookQueueRecentResults = payload.recentResults ?? []
+    }
+
+    private func runnerProfileName(for profileDirectoryName: String) -> String {
+        let trimmedDirectory = profileDirectoryName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let selected = chromeProfileItem(forDirectoryName: trimmedDirectory) {
+            return selected.displayName
+        }
+        return trimmedDirectory
+    }
+
+    func refreshFacebookRunnerQueueInfo(profileDirectoryName: String, pageName: String) {
+        let trimmedPageName = normalizedFacebookRunnerPageName(pageName)
+        let trimmedProfileName = runnerProfileName(for: profileDirectoryName)
+        guard !trimmedPageName.isEmpty, !trimmedProfileName.isEmpty else { return }
+
+        withFacebookControlServerReady { [weak self] isReady in
+            guard let self, isReady else { return }
+            var components = URLComponents(
+                url: reelsDashboardServerBaseURL.appendingPathComponent("facebook-post-bootstrap"),
+                resolvingAgainstBaseURL: false
+            )
+            components?.queryItems = [
+                URLQueryItem(name: "chrome_name", value: trimmedProfileName),
+                URLQueryItem(name: "page_name", value: trimmedPageName),
+            ]
+            guard let url = components?.url else { return }
+            var request = URLRequest(url: url)
+            request.timeoutInterval = 2.0
+            URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
+                guard let self else { return }
+                guard error == nil,
+                      let httpResponse = response as? HTTPURLResponse,
+                      (200 ... 299).contains(httpResponse.statusCode),
+                      let data,
+                      let payload = try? JSONDecoder().decode(FacebookPostBootstrapPayload.self, from: data)
+                else {
+                    return
+                }
+                DispatchQueue.main.async {
+                    self.applyFacebookQueuePayload(payload.facebookQueue)
+                }
+            }.resume()
+        }
+    }
+
+    private func updateFacebookQueue(
+        path: String,
+        profileDirectoryName: String,
+        pageName: String,
+        extraPayload: [String: Any] = [:],
+        toastOnSuccess: Bool = true
+    ) {
+        let trimmedPageName = normalizedFacebookRunnerPageName(pageName)
+        let trimmedProfileName = runnerProfileName(for: profileDirectoryName)
+        guard !trimmedPageName.isEmpty, !trimmedProfileName.isEmpty else {
+            showToast("Select Chrome + page first.")
+            return
+        }
+
+        var payload: [String: Any] = [
+            "chrome_name": trimmedProfileName,
+            "page_name": trimmedPageName,
+        ]
+        for (key, value) in extraPayload {
+            payload[key] = value
+        }
+
+        postFacebookControlServerCommand(path: path, payload: payload, timeout: 8) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case let .success(response):
+                self.applyFacebookQueuePayload(response.facebookQueue)
+                if toastOnSuccess, let message = response.message?.trimmingCharacters(in: .whitespacesAndNewlines), !message.isEmpty {
+                    self.showToast(message)
+                }
+                self.refreshFacebookRunnerQueueInfo(profileDirectoryName: profileDirectoryName, pageName: pageName)
+            case let .failure(error):
+                let message = error.localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+                self.showToast(message.isEmpty ? "Queue update failed." : message)
+            }
+        }
+    }
+
+    func clearFacebookRunnerQueue(profileDirectoryName: String, pageName: String) {
+        updateFacebookQueue(path: "facebook-queue-clear", profileDirectoryName: profileDirectoryName, pageName: pageName)
+    }
+
+    func resetFacebookRunnerQueue(profileDirectoryName: String, pageName: String) {
+        updateFacebookQueue(path: "facebook-queue-reset", profileDirectoryName: profileDirectoryName, pageName: pageName)
+    }
+
+    func setFacebookRunnerMorningOnly(profileDirectoryName: String, pageName: String, enabled: Bool) {
+        updateFacebookQueue(
+            path: "facebook-queue-morning-only",
+            profileDirectoryName: profileDirectoryName,
+            pageName: pageName,
+            extraPayload: ["morning_only": enabled],
+            toastOnSuccess: false
+        )
     }
 
     private func startInternetPathMonitor() {
@@ -5343,18 +6911,91 @@ final class ReelsModel: ObservableObject {
             }
 
             finish {
+                let previousSourceCount = self.sourceCount
+                let previousPackageCount = self.packageCount
+                let previousLatestPackage = self.latestPackage
+                let previousEditedPackageCount = self.editedPackages.count
                 self.isFacebookControlServerOnline = true
+                if let serverStatus = payload.status, !serverStatus.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    self.status = serverStatus
+                }
+                if let serverDetail = payload.detail, !serverDetail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    self.detail = serverDetail
+                }
+                self.applyDashboardCounts(
+                    sourceCount: payload.sourceCount,
+                    packageCount: payload.packageCount,
+                    latestPackage: payload.latestPackage,
+                    allowPackageRegression: false
+                )
+                if let progressPercent = payload.progressPercent {
+                    self.batchProgressPercent = progressPercent
+                    self.downloadProgressPercent = progressPercent
+                }
+                if let progressLabel = payload.progressLabel {
+                    self.batchProgressLabel = progressLabel
+                    self.downloadProgressLabel = progressLabel
+                }
+                self.applyFacebookQueuePayload(payload.facebookQueue)
+                let isRunningNow = payload.running == true
+                self.facebookControlServerTaskKind = payload.taskKind?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                    .lowercased() ?? ""
+                self.facebookControlServerRemoteRunning = payload.remoteRunning == true
+                self.isRunning = isRunningNow
+                self.isBatchProgressVisible = isRunningNow
+                self.isDownloadProgressVisible = isRunningNow
+                if let openAIKeyStatus = payload.openAIKeyStatus, !openAIKeyStatus.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    self.openAIKeyStatus = openAIKeyStatus
+                }
+                if let geminiKeyStatus = payload.geminiKeyStatus, !geminiKeyStatus.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    self.geminiKeyStatus = geminiKeyStatus
+                }
+                if let aiProviderLabel = payload.aiProviderLabel, !aiProviderLabel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    self.encoderStatus = isRunningNow ? aiProviderLabel : self.encoderStatus
+                }
+                if let relayBaseURL = payload.relayBaseURL, !relayBaseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    self.facebookControlServerRelayBaseURL = relayBaseURL
+                }
+                if let relayClientURL = payload.relayClientURL, !relayClientURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    self.facebookControlServerRelayClientURL = relayClientURL
+                }
+                if let relayUserName = payload.relayUserName, !relayUserName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    self.facebookControlServerRelayUserName = relayUserName
+                }
+                if let relayMacName = payload.relayMacName, !relayMacName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    self.facebookControlServerRelayMacName = relayMacName
+                }
                 self.consumeFacebookControlServerAlerts(from: payload)
+
+                let serverPackageCount = payload.packageCount ?? self.packageCount
+                let serverSourceCount = payload.sourceCount ?? self.sourceCount
+                let serverLatestPackage = payload.latestPackage?.trimmingCharacters(in: .whitespacesAndNewlines) ?? self.latestPackage
+                let needsMetadataRefresh =
+                    serverSourceCount != previousSourceCount ||
+                    serverPackageCount != previousPackageCount ||
+                    (!serverLatestPackage.isEmpty && serverLatestPackage != previousLatestPackage) ||
+                    (serverPackageCount > 0 && previousEditedPackageCount == 0)
+
+                if needsMetadataRefresh,
+                   Date().timeIntervalSince(self.lastServerDrivenMetadataRefresh) > 0.8
+                {
+                    self.lastServerDrivenMetadataRefresh = Date()
+                    self.refreshMetadata()
+                }
             }
         }.resume()
     }
 
     func dismissMacControlAppAlert() {
+        macControlAppAlertDismissTask?.cancel()
+        macControlAppAlertDismissTask = nil
         if pendingMacControlAppAlerts.isEmpty {
             macControlAppAlert = nil
             return
         }
         macControlAppAlert = pendingMacControlAppAlerts.removeFirst()
+        scheduleMacControlAppAlertAutoDismiss()
     }
 
     private func consumeFacebookControlServerAlerts(from payload: MacControlServerStatusPayload) {
@@ -5383,9 +7024,28 @@ final class ReelsModel: ObservableObject {
         }
         if macControlAppAlert == nil {
             macControlAppAlert = alert
+            scheduleMacControlAppAlertAutoDismiss()
             return
         }
-        pendingMacControlAppAlerts.append(alert)
+        pendingMacControlAppAlerts.removeAll()
+        macControlAppAlert = alert
+        scheduleMacControlAppAlertAutoDismiss()
+    }
+
+    private func scheduleMacControlAppAlertAutoDismiss() {
+        macControlAppAlertDismissTask?.cancel()
+        guard let alert = macControlAppAlert else { return }
+        let delay = alert.level == "error"
+            ? macControlErrorAlertAutoDismissSeconds
+            : macControlInfoAlertAutoDismissSeconds
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            if self.macControlAppAlert?.id == alert.id {
+                self.dismissMacControlAppAlert()
+            }
+        }
+        macControlAppAlertDismissTask = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: workItem)
     }
 
     func copyFacebookControlServerURL(_ value: String) {
@@ -5396,6 +7056,130 @@ final class ReelsModel: ObservableObject {
         }
         copyToPasteboard(trimmed)
         showToast("Server URL copied.")
+    }
+
+    private func isFacebookControlServerFacebookRunnerActive(
+        taskKind: String? = nil,
+        runningValue: Bool? = nil,
+        remoteRunningValue: Bool? = nil
+    ) -> Bool {
+        let normalizedTaskKind = (taskKind ?? facebookControlServerTaskKind)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        let runningNow = runningValue ?? isRunning
+        let remoteRunningNow = remoteRunningValue ?? facebookControlServerRemoteRunning
+        return normalizedTaskKind == "facebook_post" && (runningNow || remoteRunningNow)
+    }
+
+    private func withFacebookControlServerReady(
+        remainingAttempts: Int = 8,
+        completion: @escaping (Bool) -> Void
+    ) {
+        ensureFacebookControlServerRunning()
+        pingFacebookControlServer { [weak self] isOnline in
+            if isOnline {
+                DispatchQueue.main.async {
+                    completion(true)
+                }
+                return
+            }
+            guard remainingAttempts > 0 else {
+                DispatchQueue.main.async {
+                    completion(false)
+                }
+                return
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
+                self?.withFacebookControlServerReady(
+                    remainingAttempts: remainingAttempts - 1,
+                    completion: completion
+                )
+            }
+        }
+    }
+
+    private func postFacebookControlServerCommand(
+        path: String,
+        payload: [String: Any],
+        timeout: TimeInterval = 15,
+        completion: @escaping (Result<MacControlServerCommandResponse, Error>) -> Void
+    ) {
+        withFacebookControlServerReady { isReady in
+            guard isReady else {
+                completion(
+                    .failure(
+                        NSError(
+                            domain: "SoraninMacControl",
+                            code: -1,
+                            userInfo: [NSLocalizedDescriptionKey: "Mac control server is offline."]
+                        )
+                    )
+                )
+                return
+            }
+
+            var request = URLRequest(url: reelsDashboardServerBaseURL.appendingPathComponent(path))
+            request.httpMethod = "POST"
+            request.timeoutInterval = timeout
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            let password = loadSavedFacebookControlPassword()
+            if !password.isEmpty {
+                request.setValue(password, forHTTPHeaderField: "X-Soranin-Password")
+            }
+
+            do {
+                request.httpBody = try JSONSerialization.data(withJSONObject: payload, options: [])
+            } catch {
+                completion(.failure(error))
+                return
+            }
+
+            URLSession.shared.dataTask(with: request) { data, response, error in
+                if let error {
+                    DispatchQueue.main.async {
+                        completion(.failure(error))
+                    }
+                    return
+                }
+
+                let decoded = data.flatMap { try? JSONDecoder().decode(MacControlServerCommandResponse.self, from: $0) }
+                guard let httpResponse = response as? HTTPURLResponse else {
+                    DispatchQueue.main.async {
+                        completion(
+                            .failure(
+                                NSError(
+                                    domain: "SoraninMacControl",
+                                    code: -2,
+                                    userInfo: [NSLocalizedDescriptionKey: "No response from Mac control server."]
+                                )
+                            )
+                        )
+                    }
+                    return
+                }
+
+                let message = decoded?.message?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                if (200 ... 299).contains(httpResponse.statusCode), let decoded {
+                    DispatchQueue.main.async {
+                        completion(.success(decoded))
+                    }
+                    return
+                }
+
+                let fallbackMessage = message.isEmpty ? "Mac control server request failed." : message
+                DispatchQueue.main.async {
+                    completion(
+                        .failure(
+                            NSError(
+                                domain: "SoraninMacControl",
+                                code: httpResponse.statusCode,
+                                userInfo: [NSLocalizedDescriptionKey: fallbackMessage]
+                            )
+                        )
+                    )
+                }
+            }.resume()
+        }
     }
 
     func saveFacebookControlRelaySettings(
@@ -5456,8 +7240,23 @@ final class ReelsModel: ObservableObject {
     }
 
     func ensureFacebookControlServerRunning(showToastIfStarted: Bool = false) {
+        if isStartingDashboardServer {
+            return
+        }
         if let dashboardServerProcess, dashboardServerProcess.isRunning {
             refreshFacebookControlServerConnectionInfo()
+            return
+        }
+        if let detachedPID = activeDetachedDashboardServerPID() {
+            didLaunchDashboardServer = true
+            if showToastIfStarted {
+                showToast("Mac control server already running.")
+            }
+            refreshFacebookControlServerConnectionInfo()
+            refreshFacebookControlServerRuntimeStatus()
+            return
+        }
+        if Date().timeIntervalSince(lastDashboardServerStartAttempt) < 2.0 {
             return
         }
         guard FileManager.default.fileExists(atPath: reelsDashboardServerScript.path) else { return }
@@ -5465,10 +7264,35 @@ final class ReelsModel: ObservableObject {
         pingFacebookControlServer { [weak self] isOnline in
             guard let self else { return }
             DispatchQueue.main.async {
+                guard !self.isStartingDashboardServer else { return }
                 if isOnline {
                     self.refreshFacebookControlServerConnectionInfo()
                 } else {
                     self.startFacebookControlServer(showToastIfStarted: showToastIfStarted)
+                }
+            }
+        }
+    }
+
+    private func refreshFacebookControlServerAfterProcessExit(_ exitCode: Int32) {
+        pingFacebookControlServer { [weak self] isOnline in
+            guard let self else { return }
+            DispatchQueue.main.async {
+                if isOnline {
+                    self.isFacebookControlServerOnline = true
+                    self.refreshFacebookControlServerConnectionInfo()
+                    self.refreshFacebookControlServerRuntimeStatus()
+                    if exitCode != 0 {
+                        self.appendLog("[mac-control] Server process exited (\(exitCode)); reusing active local server.")
+                    }
+                } else {
+                    self.isFacebookControlServerOnline = false
+                    if self.didLaunchDashboardServer, exitCode != 0 {
+                        self.appendLog("[mac-control] Server stopped (exit \(exitCode)).")
+                    }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+                        self?.ensureFacebookControlServerRunning()
+                    }
                 }
             }
         }
@@ -5486,6 +7310,41 @@ final class ReelsModel: ObservableObject {
         }.resume()
     }
 
+    private func activeDetachedDashboardServerPID() -> pid_t? {
+        guard
+            let pidText = try? String(contentsOf: dashboardServerPIDFile, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines),
+            let pidValue = Int32(pidText),
+            pidValue > 0
+        else {
+            return nil
+        }
+        let pid = pid_t(pidValue)
+        guard kill(pid, 0) == 0 else {
+            try? FileManager.default.removeItem(at: dashboardServerPIDFile)
+            return nil
+        }
+
+        let process = Process()
+        let output = Pipe()
+        process.executableURL = URL(fileURLWithPath: "/bin/ps")
+        process.arguments = ["-p", String(pidValue), "-o", "command="]
+        process.standardOutput = output
+        process.standardError = Pipe()
+        do {
+            try process.run()
+            process.waitUntilExit()
+            let command = String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+            if process.terminationStatus == 0, command.contains(reelsDashboardServerScript.path) {
+                return pid
+            }
+        } catch {
+            return nil
+        }
+
+        try? FileManager.default.removeItem(at: dashboardServerPIDFile)
+        return nil
+    }
+
     private func startFacebookControlServer(showToastIfStarted: Bool) {
         guard Thread.isMainThread else {
             DispatchQueue.main.async { [weak self] in
@@ -5494,52 +7353,62 @@ final class ReelsModel: ObservableObject {
             return
         }
         guard dashboardServerProcess == nil || dashboardServerProcess?.isRunning != true else { return }
+        if activeDetachedDashboardServerPID() != nil { return }
+        guard !isStartingDashboardServer else { return }
+        if Date().timeIntervalSince(lastDashboardServerStartAttempt) < 2.0 {
+            return
+        }
+        isStartingDashboardServer = true
+        lastDashboardServerStartAttempt = Date()
 
-        let pipe = Pipe()
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
-        process.arguments = [reelsDashboardServerScript.path]
-        process.standardOutput = pipe
-        process.standardError = pipe
-
-        pipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
-            let data = handle.availableData
-            guard !data.isEmpty else { return }
-            let text = String(decoding: data, as: UTF8.self)
-            let lines = text
-                .split(whereSeparator: \.isNewline)
-                .map { String($0) }
-                .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-            guard !lines.isEmpty else { return }
-            DispatchQueue.main.async {
-                for line in lines {
-                    self?.appendLog("[mac-control] \(line)")
-                }
-            }
+        func finishStartAttempt() {
+            isStartingDashboardServer = false
         }
 
-        process.terminationHandler = { [weak self] task in
-            DispatchQueue.main.async {
-                self?.dashboardServerOutputPipe?.fileHandleForReading.readabilityHandler = nil
-                self?.dashboardServerOutputPipe = nil
-                self?.dashboardServerProcess = nil
-                self?.isFacebookControlServerOnline = false
-                if self?.didLaunchDashboardServer == true, task.terminationStatus != 0 {
-                    self?.appendLog("[mac-control] Server stopped (exit \(task.terminationStatus)).")
-                }
-            }
+        try? FileManager.default.createDirectory(at: dashboardServerLogFile.deletingLastPathComponent(), withIntermediateDirectories: true)
+        if !FileManager.default.fileExists(atPath: dashboardServerLogFile.path) {
+            FileManager.default.createFile(atPath: dashboardServerLogFile.path, contents: nil)
         }
+
+        let launcher = Process()
+        launcher.executableURL = URL(fileURLWithPath: "/bin/zsh")
+        launcher.currentDirectoryURL = soraninScriptsDirURL
+        launcher.arguments = [
+            "-lc",
+            """
+            export SORANIN_RUNTIME_DIR=\(shellQuoted(soraninRuntimeDirURL.path))
+            export SORANIN_PACKAGES_ROOT=\(shellQuoted(rootDir.path))
+            export PYTHONPATH=\(shellQuoted(soraninScriptsDirURL.path))${PYTHONPATH:+:$PYTHONPATH}
+            nohup /usr/bin/python3 \(shellQuoted(reelsDashboardServerScript.path)) >> \(shellQuoted(dashboardServerLogFile.path)) 2>&1 < /dev/null &
+            echo $! > \(shellQuoted(dashboardServerPIDFile.path))
+            """
+        ]
+        launcher.standardOutput = Pipe()
+        launcher.standardError = Pipe()
 
         do {
-            try process.run()
-            dashboardServerProcess = process
-            dashboardServerOutputPipe = pipe
+            try launcher.run()
+            launcher.waitUntilExit()
+            guard launcher.terminationStatus == 0, let detachedPID = activeDetachedDashboardServerPID() else {
+                finishStartAttempt()
+                appendLog("[mac-control] FAILED to detach local server.")
+                if showToastIfStarted {
+                    showToast("Failed to start Mac control server.")
+                }
+                return
+            }
             didLaunchDashboardServer = true
-            refreshFacebookControlServerConnectionInfo()
+            appendLog("[mac-control] Detached server pid \(detachedPID) started.")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
+                self?.isStartingDashboardServer = false
+                self?.refreshFacebookControlServerConnectionInfo()
+                self?.refreshFacebookControlServerRuntimeStatus()
+            }
             if showToastIfStarted {
                 showToast("Mac control server started.")
             }
         } catch {
+            finishStartAttempt()
             appendLog("[mac-control] FAILED to start server: \(error.localizedDescription)")
             if showToastIfStarted {
                 showToast("Failed to start Mac control server.")
@@ -5550,7 +7419,20 @@ final class ReelsModel: ObservableObject {
     private func stopFacebookControlServer() {
         dashboardServerOutputPipe?.fileHandleForReading.readabilityHandler = nil
         dashboardServerOutputPipe = nil
-        guard let dashboardServerProcess else { return }
+        if let detachedPID = activeDetachedDashboardServerPID() {
+            kill(detachedPID, SIGTERM)
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.35) {
+                if kill(detachedPID, 0) == 0 {
+                    kill(detachedPID, SIGKILL)
+                }
+            }
+            try? FileManager.default.removeItem(at: dashboardServerPIDFile)
+        }
+        guard let dashboardServerProcess else {
+            refreshFacebookControlServerConnectionInfo()
+            refreshFacebookControlServerRuntimeStatus()
+            return
+        }
         if dashboardServerProcess.isRunning {
             dashboardServerProcess.terminate()
             DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.35) {
@@ -5560,7 +7442,10 @@ final class ReelsModel: ObservableObject {
             }
         }
         self.dashboardServerProcess = nil
-        isFacebookControlServerOnline = false
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) { [weak self] in
+            self?.refreshFacebookControlServerConnectionInfo()
+            self?.refreshFacebookControlServerRuntimeStatus()
+        }
     }
 
     private func runAutoHealthCheckWhenReady(retryCount: Int) {
@@ -5774,8 +7659,10 @@ final class ReelsModel: ObservableObject {
         outputPipe = nil
         isRunning = false
         currentTaskKind = nil
+        pendingFacebookRunnerDeletePackageNames = []
         pendingBatchStartAfterCurrentTask = false
         autoStartBatchAfterDownload = false
+        clearFacebookRunnerExecutionState()
         stopAIChatReplyVoicePlayback()
         stopFacebookControlServer()
     }
@@ -6817,39 +8704,122 @@ final class ReelsModel: ObservableObject {
         return nil
     }
 
-    func openChromeProfile(_ item: ChromeProfileItem) {
+    func openChromeProfile(_ item: ChromeProfileItem, urlString: String? = nil, actionName: String = "Opened") {
         guard let chromeApplicationURL = resolvedChromeApplicationURL() else {
             showToast("Google Chrome not found.")
             return
         }
+        let trimmedURL = urlString?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-        process.arguments = [
+        var arguments = [
             "-na",
             chromeApplicationURL.path,
             "--args",
             "--profile-directory=\(item.directoryName)",
         ]
+        if !trimmedURL.isEmpty {
+            arguments.append(trimmedURL)
+        }
+        process.arguments = arguments
         do {
             try process.run()
-            showToast("Opened \(item.displayName).")
+            showToast("\(actionName) \(item.displayName).")
         } catch {
             showToast("Failed to open Chrome profile.")
         }
     }
 
-    func closeChromeProfiles(_ items: [ChromeProfileItem]) {
+    func openChromeProfileForFacebookLogin(_ item: ChromeProfileItem) {
+        openChromeProfile(item, urlString: facebookChromeLoginURL, actionName: "Opened Facebook login in")
+    }
+
+    func openChromeProfileForFacebookPages(_ item: ChromeProfileItem) {
+        openChromeProfile(item, urlString: facebookChromePagesURL, actionName: "Opened Facebook pages in")
+    }
+
+    func openChromeProfileForFacebookContentLibrary(_ item: ChromeProfileItem) {
+        openChromeProfile(item, urlString: facebookChromeContentLibraryURL, actionName: "Opened Content Library in")
+    }
+
+    func openChromeProfileForFacebookURL(_ item: ChromeProfileItem, urlString: String) {
+        let trimmed = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            openChromeProfile(item, urlString: facebookChromeHomeURL, actionName: "Opened Facebook in")
+            return
+        }
+        openChromeProfile(item, urlString: trimmed, actionName: "Opened target in")
+    }
+
+    var isFacebookRunnerRunning: Bool {
+        (currentTaskKind == .facebookRunner && isRunning)
+            || isFacebookControlServerFacebookRunnerActive()
+    }
+
+    func stopFacebookRunner() {
+        if currentTaskKind == .facebookRunner, let process, process.isRunning {
+            stopRequestedByUser = true
+            pendingFacebookRunnerDeletePackageNames = []
+            status = "Stopping"
+            detail = "Stopping Facebook Runner..."
+            appendLog("STOP_REQUESTED")
+            process.terminate()
+            let pid = process.processIdentifier
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.5) {
+                if process.isRunning {
+                    kill(pid, SIGKILL)
+                }
+            }
+            return
+        }
+
+        guard isFacebookControlServerFacebookRunnerActive() else {
+            showToast("Facebook Runner is not running.")
+            return
+        }
+
+        stopRequestedByUser = true
+        pendingFacebookRunnerDeletePackageNames = []
+        status = "Stopping"
+        detail = "Stopping Facebook Runner..."
+        batchProgressLabel = detail
+        postFacebookControlServerCommand(path: "facebook-post-stop", payload: [:], timeout: 8) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case let .success(response):
+                let message = response.message?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "Stopping Facebook Runner..."
+                self.detail = message
+                self.refreshFacebookControlServerRuntimeStatus()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
+                    self?.refreshFacebookControlServerRuntimeStatus()
+                }
+            case let .failure(error):
+                let message = error.localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+                self.status = "Failed"
+                self.detail = message.isEmpty ? "Failed to stop Facebook Runner." : message
+                self.showToast(self.detail)
+            }
+        }
+    }
+
+    func closeChromeProfiles(_ items: [ChromeProfileItem], shouldShowToast: Bool = true, completion: (() -> Void)? = nil) {
         let directoryNames = Set(items.map(\.directoryName))
         guard !directoryNames.isEmpty else {
-            showToast("No profile selected.")
+            if shouldShowToast {
+                showToast("No profile selected.")
+            }
+            completion?()
             return
         }
 
         let runningProfiles = runningChromeProfileProcesses()
         let matchingPIDs = runningProfiles.compactMap { directoryNames.contains($0.directoryName) ? $0.pid : nil }
         guard !matchingPIDs.isEmpty else {
-            showToast("Selected profile is already offline.")
+            if shouldShowToast {
+                showToast("Selected profile is already offline.")
+            }
             refreshChromeProfiles()
+            completion?()
             return
         }
 
@@ -6860,10 +8830,13 @@ final class ReelsModel: ObservableObject {
             }
         }
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
             self.refreshChromeProfiles()
+            completion?()
         }
-        showToast(closedCount > 0 ? "Closed \(closedCount) Chrome profile process(es)." : "Failed to close selected profile.")
+        if shouldShowToast {
+            showToast(closedCount > 0 ? "Closed \(closedCount) Chrome profile process(es)." : "Failed to close selected profile.")
+        }
     }
 
     func addChromeProfile() {
@@ -7100,6 +9073,26 @@ final class ReelsModel: ObservableObject {
                let currentRange = Range(result.range(at: 2), in: progressLine),
                let totalRange = Range(result.range(at: 3), in: progressLine),
                let messageRange = Range(result.range(at: 4), in: progressLine) {
+                batchProgressTitle = "Edit Progress"
+                batchProgressPercent = Int(progressLine[percentRange]) ?? 0
+                let current = String(progressLine[currentRange])
+                let total = String(progressLine[totalRange])
+                let message = String(progressLine[messageRange]).trimmingCharacters(in: .whitespaces)
+                batchProgressLabel = "\(message) (\(current)/\(total))"
+                isBatchProgressVisible = true
+            }
+        }
+        if line.hasPrefix("[facebook-upload] Progress "),
+           let match = line.range(of: #"\[facebook-upload\] Progress (\d+)% \((\d+)/(\d+)\) (.+)"#, options: .regularExpression) {
+            let progressLine = String(line[match])
+            if let regex = try? NSRegularExpression(pattern: #"\[facebook-upload\] Progress (\d+)% \((\d+)/(\d+)\) (.+)"#),
+               let result = regex.firstMatch(in: progressLine, range: NSRange(progressLine.startIndex..<progressLine.endIndex, in: progressLine)),
+               result.numberOfRanges == 5,
+               let percentRange = Range(result.range(at: 1), in: progressLine),
+               let currentRange = Range(result.range(at: 2), in: progressLine),
+               let totalRange = Range(result.range(at: 3), in: progressLine),
+               let messageRange = Range(result.range(at: 4), in: progressLine) {
+                batchProgressTitle = "Upload Progress"
                 batchProgressPercent = Int(progressLine[percentRange]) ?? 0
                 let current = String(progressLine[currentRange])
                 let total = String(progressLine[totalRange])
@@ -7167,6 +9160,11 @@ final class ReelsModel: ObservableObject {
         sourceVideos(in: rootDir)
     }
 
+    private func shouldIgnoreSourceVideo(_ url: URL) -> Bool {
+        let name = url.lastPathComponent.lowercased()
+        return name.hasPrefix("codex-alert-")
+    }
+
     private func sourceVideos(in directory: URL) -> [URL] {
         let allowed = Set(["mp4", "mov", "m4v", "avi", "mkv"])
         let children = (try? FileManager.default.contentsOfDirectory(
@@ -7175,7 +9173,11 @@ final class ReelsModel: ObservableObject {
             options: [.skipsHiddenFiles]
         )) ?? []
         return children
-            .filter { !$0.hasDirectoryPath && allowed.contains($0.pathExtension.lowercased()) }
+            .filter {
+                !$0.hasDirectoryPath
+                    && allowed.contains($0.pathExtension.lowercased())
+                    && !shouldIgnoreSourceVideo($0)
+            }
             .sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
     }
 
@@ -7199,25 +9201,25 @@ final class ReelsModel: ObservableObject {
     }
 
     private func loadSavedSettings() -> [String: String] {
-        guard
-            let data = try? Data(contentsOf: apiKeysFile),
-            let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else {
-            return [:]
-        }
-        var result: [String: String] = [:]
-        for (key, value) in object {
-            if let value = value as? String {
-                result[key] = value
-            }
-        }
-        return result
+        loadSavedSettingsFromCandidates(primaryURL: apiKeysFile)
     }
 
     private func maskKey(_ value: String?) -> String {
         guard let value, !value.isEmpty else { return "Not set" }
         if value.count <= 8 { return "Saved" }
         return "Saved (...\(value.suffix(4)))"
+    }
+
+    private func boolFromSavedSetting(_ value: String?, defaultValue: Bool) -> Bool {
+        guard let value else { return defaultValue }
+        let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if ["1", "true", "yes", "on"].contains(normalized) {
+            return true
+        }
+        if ["0", "false", "no", "off"].contains(normalized) {
+            return false
+        }
+        return defaultValue
     }
 
     private func loadChromeProfiles() -> [ChromeProfileItem] {
@@ -7569,6 +9571,8 @@ final class ReelsModel: ObservableObject {
         let htmlText = (try? String(contentsOf: htmlURL, encoding: .utf8)) ?? ""
         let sourceName = firstMatch(in: htmlText, pattern: #"<p class="meta">(.*?)</p>"#) ?? videoURL.lastPathComponent
         let title = firstMatch(in: htmlText, pattern: #"<textarea id="titleField" readonly>(.*?)</textarea>"#) ?? "No title found."
+        let scheduleText = loadPackageScheduleText(from: htmlText)
+        let facebookStatus = loadPackageFacebookStatus(packageURL)
 
         return EditedPackageItem(
             id: packageURL.lastPathComponent,
@@ -7576,12 +9580,143 @@ final class ReelsModel: ObservableObject {
             sourceName: decodeHTMLEntities(sourceName),
             videoName: videoURL.lastPathComponent,
             title: normalizedUploadTitle(decodeHTMLEntities(title)),
+            scheduleText: scheduleText,
+            facebookStatusText: facebookStatus.text,
+            facebookStatusState: facebookStatus.state,
             thumbnailURL: thumbnailURL.flatMap { FileManager.default.fileExists(atPath: $0.path) ? $0 : nil },
             packageURL: packageURL,
+            assignedFacebookPageID: nil,
+            assignedFacebookPageLabel: nil,
+            assignedFacebookPageTokenStatus: nil,
             assignedProfileDirectoryName: nil,
             assignedProfileDisplayName: nil,
             assignedProfileOnline: false
         )
+    }
+
+    private func loadPackageScheduleText(from htmlText: String) -> String {
+        if let inputValue = firstMatch(in: htmlText, pattern: #"<input id="scheduleField" value="(.*?)" readonly>"#) {
+            return decodeHTMLEntities(inputValue)
+        }
+        if let rawJSValue = firstMatch(in: htmlText, pattern: #"(?:const|let) SCHEDULE_TEXT = (.*?);"#),
+           let data = rawJSValue.data(using: .utf8),
+           let decoded = try? JSONDecoder().decode(String.self, from: data) {
+            return decoded.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return ""
+    }
+
+    private func replaceFirstLiteralMatch(in text: String, pattern: String, replacement: String) -> String {
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..<text.endIndex, in: text)),
+              let range = Range(match.range, in: text) else {
+            return text
+        }
+        var updated = text
+        updated.replaceSubrange(range, with: replacement)
+        return updated
+    }
+
+    private func writePackageScheduleText(_ scheduleText: String, for packageURL: URL) throws {
+        let htmlURL = packageURL.appendingPathComponent("copy_title.html")
+        var htmlText = try String(contentsOf: htmlURL, encoding: .utf8)
+        let escapedValue = scheduleText
+            .replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "\"", with: "&quot;")
+        let encodedValue = (try? JSONEncoder().encode(scheduleText)).flatMap { String(data: $0, encoding: .utf8) } ?? "\"\(scheduleText)\""
+
+        htmlText = replaceFirstLiteralMatch(
+            in: htmlText,
+            pattern: #"<input id="scheduleField" value=".*?" readonly>"#,
+            replacement: #"<input id="scheduleField" value="\#(escapedValue)" readonly>"#
+        )
+        htmlText = replaceFirstLiteralMatch(
+            in: htmlText,
+            pattern: #"(?:const|let) SCHEDULE_TEXT = .*?;"#,
+            replacement: "const SCHEDULE_TEXT = \(encodedValue);"
+        )
+        try htmlText.write(to: htmlURL, atomically: true, encoding: .utf8)
+    }
+
+    private func parseSavedTimestamp(_ rawValue: Any?) -> Date? {
+        guard let rawValue = rawValue as? String else { return nil }
+        let cleaned = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleaned.isEmpty else { return nil }
+
+        let isoFormatter = ISO8601DateFormatter()
+        isoFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let parsed = isoFormatter.date(from: cleaned) {
+            return parsed
+        }
+        let fallbackFormatter = ISO8601DateFormatter()
+        fallbackFormatter.formatOptions = [.withInternetDateTime]
+        return fallbackFormatter.date(from: cleaned)
+    }
+
+    private func formatSavedTimestamp(_ rawValue: Any?) -> String {
+        guard let parsed = parseSavedTimestamp(rawValue) else { return "" }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd HH:mm (Z)"
+        formatter.timeZone = TimeZone.current
+        return formatter.string(from: parsed)
+    }
+
+    private func loadPackageFacebookStatus(_ packageURL: URL) -> (text: String, state: String) {
+        let statusURL = packageURL.appendingPathComponent("facebook_reel_status.json")
+        guard
+            let data = try? Data(contentsOf: statusURL),
+            let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else {
+            return ("Facebook: Not posted yet", "")
+        }
+
+        let state = ((object["state"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let debugSummary = (((object["facebook_debug_summary"] as? String) ?? "").replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let shortDebugSummary = debugSummary.count > 120 ? String(debugSummary.prefix(117)) + "..." : debugSummary
+        let debugSuffix = shortDebugSummary.isEmpty ? "" : "\n" + shortDebugSummary
+        let scheduleConfirmed = object["scheduled_confirmed_by_api"] as? Bool
+        let scheduleNote = (((object["scheduled_confirmation_note"] as? String) ?? "").replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let shortScheduleNote = scheduleNote.count > 72 ? String(scheduleNote.prefix(69)) + "..." : scheduleNote
+        let scheduleSuffix: String = {
+            switch scheduleConfirmed {
+            case true:
+                if shortScheduleNote.isEmpty {
+                    return "\nAPI schedule confirmed"
+                }
+                return "\nAPI schedule confirmed: \(shortScheduleNote)"
+            case false:
+                if shortScheduleNote.isEmpty {
+                    return "\nAPI schedule not confirmed"
+                }
+                return "\nAPI schedule not confirmed: \(shortScheduleNote)"
+            default:
+                if shortScheduleNote.isEmpty {
+                    return ""
+                }
+                return "\nAPI schedule check: \(shortScheduleNote)"
+            }
+        }()
+        switch state {
+        case "scheduled":
+            let label = formatSavedTimestamp(object["scheduled_publish_time"])
+            let base = label.isEmpty ? "Facebook: Scheduled" : "Facebook: Scheduled -> \(label)"
+            return (base + scheduleSuffix + debugSuffix, state)
+        case "published":
+            let label = formatSavedTimestamp(object["published_at"] ?? object["recorded_at"])
+            let base = label.isEmpty ? "Facebook: Published" : "Facebook: Published -> \(label)"
+            return (base + debugSuffix, state)
+        case "failed":
+            let rawMessage = (((object["message"] as? String) ?? "").replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression))
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let message = rawMessage.count > 72 ? String(rawMessage.prefix(69)) + "..." : rawMessage
+            let base = "Facebook: Failed -> \(message.isEmpty ? "Unknown error" : message)"
+            return (base + debugSuffix, state)
+        default:
+            return ("Facebook: Not posted yet", "")
+        }
     }
 
     private func loadChromeProfileAssignments() -> [String: String] {
@@ -7603,12 +9738,356 @@ final class ReelsModel: ObservableObject {
         return result
     }
 
+    private func loadFacebookPageAssignments() -> [String: String] {
+        guard
+            let data = try? Data(contentsOf: facebookPageAssignmentsFile),
+            let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else {
+            return [:]
+        }
+
+        var result: [String: String] = [:]
+        for (key, value) in object {
+            let packageID = key.trimmingCharacters(in: .whitespacesAndNewlines)
+            let pageID = (value as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if !packageID.isEmpty, !pageID.isEmpty {
+                result[packageID] = pageID
+            }
+        }
+        return result
+    }
+
     private func persistChromeProfileAssignments() {
         let payload = chromeProfileAssignments
         guard let data = try? JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted]) else {
             return
         }
         try? data.write(to: chromeProfileAssignmentsFile, options: [.atomic])
+    }
+
+    private func persistFacebookPageAssignments() {
+        let payload = facebookPageAssignments
+        guard let data = try? JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted]) else {
+            return
+        }
+        try? data.write(to: facebookPageAssignmentsFile, options: [.atomic])
+    }
+
+    private func loadFacebookPageQueueOrders() -> [String: [String]] {
+        guard
+            let data = try? Data(contentsOf: facebookPageQueueOrderFile),
+            let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else {
+            return [:]
+        }
+
+        var result: [String: [String]] = [:]
+        for (rawPageID, rawValue) in object {
+            let pageID = rawPageID.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !pageID.isEmpty, let values = rawValue as? [Any] else { continue }
+            var seen: Set<String> = []
+            let filtered = values.compactMap { raw -> String? in
+                let value = String(describing: raw).trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !value.isEmpty, !seen.contains(value) else { return nil }
+                seen.insert(value)
+                return value
+            }
+            if !filtered.isEmpty {
+                result[pageID] = filtered
+            }
+        }
+        return result
+    }
+
+    private func persistFacebookPageQueueOrders() {
+        let payload = facebookPageQueueOrders
+        guard let data = try? JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted]) else {
+            return
+        }
+        try? data.write(to: facebookPageQueueOrderFile, options: [.atomic])
+    }
+
+    private func applyStoredFacebookPageQueueOrder() {
+        let existingIDs = Set(editedPackages.map(\.id))
+        var cleanedOrders: [String: [String]] = [:]
+        for (pageID, ids) in facebookPageQueueOrders {
+            let filtered = ids.filter { existingIDs.contains($0) }
+            if !filtered.isEmpty {
+                cleanedOrders[pageID] = filtered
+            }
+        }
+        if cleanedOrders != facebookPageQueueOrders {
+            facebookPageQueueOrders = cleanedOrders
+            persistFacebookPageQueueOrders()
+        }
+
+        var reordered = editedPackages
+        for (pageID, orderedIDs) in cleanedOrders {
+            let positions = reordered.indices.filter {
+                reordered[$0].assignedFacebookPageID?.trimmingCharacters(in: .whitespacesAndNewlines) == pageID
+            }
+            guard positions.count > 1 else { continue }
+            let pageItems = positions.map { reordered[$0] }
+            let fallbackRank = Dictionary(uniqueKeysWithValues: pageItems.enumerated().map { ($1.id, $0) })
+            let explicitRank = Dictionary(uniqueKeysWithValues: orderedIDs.enumerated().map { ($1, $0) })
+            let sortedItems = pageItems.sorted { lhs, rhs in
+                let lhsRank = explicitRank[lhs.id] ?? (10_000 + (fallbackRank[lhs.id] ?? 0))
+                let rhsRank = explicitRank[rhs.id] ?? (10_000 + (fallbackRank[rhs.id] ?? 0))
+                if lhsRank != rhsRank {
+                    return lhsRank < rhsRank
+                }
+                return (fallbackRank[lhs.id] ?? 0) < (fallbackRank[rhs.id] ?? 0)
+            }
+            for (offset, position) in positions.enumerated() {
+                reordered[position] = sortedItems[offset]
+            }
+        }
+        editedPackages = reordered
+    }
+
+    private func removePackagesFromFacebookPageQueueOrders(_ packageIDs: Set<String>) {
+        guard !packageIDs.isEmpty else { return }
+        var didChange = false
+        for (pageID, ids) in facebookPageQueueOrders {
+            let filtered = ids.filter { !packageIDs.contains($0) }
+            if filtered.count != ids.count {
+                didChange = true
+                if filtered.isEmpty {
+                    facebookPageQueueOrders.removeValue(forKey: pageID)
+                } else {
+                    facebookPageQueueOrders[pageID] = filtered
+                }
+            }
+        }
+        if didChange {
+            persistFacebookPageQueueOrders()
+        }
+    }
+
+    private func removePackageFromFacebookPageQueueOrder(_ packageID: String, pageID: String?) {
+        let trimmedPageID = pageID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !trimmedPageID.isEmpty, let ids = facebookPageQueueOrders[trimmedPageID] else { return }
+        let filtered = ids.filter { $0 != packageID }
+        if filtered.isEmpty {
+            facebookPageQueueOrders.removeValue(forKey: trimmedPageID)
+        } else {
+            facebookPageQueueOrders[trimmedPageID] = filtered
+        }
+        persistFacebookPageQueueOrders()
+    }
+
+    private func persistedFacebookQueueOrder(forPageID pageID: String) -> [String] {
+        let trimmedPageID = pageID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedPageID.isEmpty else { return [] }
+        return facebookPageQueueOrders[trimmedPageID] ?? []
+    }
+
+    private func setPersistedFacebookQueueOrder(_ packageIDs: [String], forPageID pageID: String) {
+        let trimmedPageID = pageID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedPageID.isEmpty else { return }
+        let filtered = Array(NSOrderedSet(array: packageIDs.filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty })) as? [String] ?? []
+        if filtered.isEmpty {
+            facebookPageQueueOrders.removeValue(forKey: trimmedPageID)
+        } else {
+            facebookPageQueueOrders[trimmedPageID] = filtered
+        }
+        persistFacebookPageQueueOrders()
+    }
+
+    private func isPendingEditableFacebookQueueItem(_ item: EditedPackageItem) -> Bool {
+        let state = item.facebookStatusState.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return state != "published" && state != "scheduled"
+    }
+
+    private func futureAllowedSlotDate(for item: EditedPackageItem) -> Date? {
+        let trimmed = item.scheduleText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let parsed = parseFacebookScheduleCardText(trimmed) else {
+            return nil
+        }
+        let slotDate = currentKhmerMinute(parsed)
+        guard isAllowedFacebookKhmerSlot(slotDate), slotDate >= currentKhmerMinute(Date()) else {
+            return nil
+        }
+        return slotDate
+    }
+
+    private func reserveFutureSlotKeys(excluding packageIDs: Set<String>) -> Set<Int> {
+        var result: Set<Int> = []
+        for item in editedPackages where !packageIDs.contains(item.id) {
+            if let slotDate = futureAllowedSlotDate(for: item) {
+                result.insert(khmerSlotKey(slotDate))
+            }
+        }
+        return result
+    }
+
+    private func queueItemsForFacebookPage(pageID: String) -> [EditedPackageItem] {
+        let trimmedPageID = pageID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedPageID.isEmpty else { return [] }
+        let matching = editedPackages.filter { item in
+            guard isPendingEditableFacebookQueueItem(item) else { return false }
+            return resolvedFacebookUploadTarget(for: item, showToastOnFailure: false)?.pageID == trimmedPageID
+        }
+        guard !matching.isEmpty else { return [] }
+
+        let fallbackRank = Dictionary(uniqueKeysWithValues: matching.enumerated().map { ($1.id, $0) })
+        let storedOrder = persistedFacebookQueueOrder(forPageID: trimmedPageID)
+        let explicitRank = Dictionary(uniqueKeysWithValues: storedOrder.enumerated().map { ($1, $0) })
+        return matching.sorted { lhs, rhs in
+            let lhsRank = explicitRank[lhs.id] ?? (10_000 + (fallbackRank[lhs.id] ?? 0))
+            let rhsRank = explicitRank[rhs.id] ?? (10_000 + (fallbackRank[rhs.id] ?? 0))
+            if lhsRank != rhsRank {
+                return lhsRank < rhsRank
+            }
+            return (fallbackRank[lhs.id] ?? 0) < (fallbackRank[rhs.id] ?? 0)
+        }
+    }
+
+    @discardableResult
+    private func ensureExplicitFacebookPageAssignments(forPageID pageID: String) -> Bool {
+        let trimmedPageID = pageID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedPageID.isEmpty else { return false }
+        var didChange = false
+        for item in editedPackages {
+            guard isPendingEditableFacebookQueueItem(item) else { continue }
+            guard let target = resolvedFacebookUploadTarget(for: item, showToastOnFailure: false), target.pageID == trimmedPageID else { continue }
+            let existingAssignedPageID = item.assignedFacebookPageID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            guard existingAssignedPageID != trimmedPageID else { continue }
+            facebookPageAssignments[item.id] = trimmedPageID
+            didChange = true
+        }
+        if didChange {
+            persistFacebookPageAssignments()
+            applyFacebookPageAssignments(using: savedFacebookUploadPages)
+        }
+        return didChange
+    }
+
+    private func queueAnchorDate(for items: [EditedPackageItem]) -> Date {
+        let baseline = currentKhmerMinute(Date().addingTimeInterval(Double(facebookQueueRescheduleLeadMinutes * 60)))
+        let futureDates = items.compactMap(futureAllowedSlotDate(for:))
+        guard let earliest = futureDates.min() else {
+            return baseline
+        }
+        return earliest < baseline ? baseline : earliest
+    }
+
+    private func updateEditedPackageScheduleTexts(_ scheduleTexts: [String: String]) {
+        guard !scheduleTexts.isEmpty else { return }
+        editedPackages = editedPackages.map { item in
+            guard let newScheduleText = scheduleTexts[item.id] else { return item }
+            return EditedPackageItem(
+                id: item.id,
+                packageName: item.packageName,
+                sourceName: item.sourceName,
+                videoName: item.videoName,
+                title: item.title,
+                scheduleText: newScheduleText,
+                facebookStatusText: item.facebookStatusText,
+                facebookStatusState: item.facebookStatusState,
+                thumbnailURL: item.thumbnailURL,
+                packageURL: item.packageURL,
+                assignedFacebookPageID: item.assignedFacebookPageID,
+                assignedFacebookPageLabel: item.assignedFacebookPageLabel,
+                assignedFacebookPageTokenStatus: item.assignedFacebookPageTokenStatus,
+                assignedProfileDirectoryName: item.assignedProfileDirectoryName,
+                assignedProfileDisplayName: item.assignedProfileDisplayName,
+                assignedProfileOnline: item.assignedProfileOnline
+            )
+        }
+    }
+
+    private func recalculateFacebookQueue(forPageID pageID: String, anchorDate: Date? = nil) {
+        let trimmedPageID = pageID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedPageID.isEmpty else { return }
+        _ = ensureExplicitFacebookPageAssignments(forPageID: trimmedPageID)
+        let queueItems = queueItemsForFacebookPage(pageID: trimmedPageID)
+        guard !queueItems.isEmpty else {
+            setPersistedFacebookQueueOrder([], forPageID: trimmedPageID)
+            return
+        }
+
+        let orderedIDs = queueItems.map(\.id)
+        setPersistedFacebookQueueOrder(orderedIDs, forPageID: trimmedPageID)
+
+        let reservedSlotKeys = reserveFutureSlotKeys(excluding: Set(orderedIDs))
+        var usedSlotKeys = reservedSlotKeys
+        var nextStart = anchorDate ?? queueAnchorDate(for: queueItems)
+        var updatedScheduleTexts: [String: String] = [:]
+
+        for item in queueItems {
+            guard let slotDate = nextAvailableFacebookKhmerSlot(
+                start: nextStart,
+                reservedSlotKeys: usedSlotKeys,
+                leadMinutes: facebookQueueRescheduleLeadMinutes
+            ) else {
+                appendLog("[facebook-queue] FAILED reserve slot for \(item.packageName)")
+                continue
+            }
+            let scheduleText = formatFacebookScheduleCardText(slotDate)
+            do {
+                try writePackageScheduleText(scheduleText, for: item.packageURL)
+                updatedScheduleTexts[item.id] = scheduleText
+                usedSlotKeys.insert(khmerSlotKey(slotDate))
+                nextStart = slotDate.addingTimeInterval(60)
+            } catch {
+                appendLog("[facebook-queue] FAILED update \(item.packageName): \(error.localizedDescription)")
+            }
+        }
+
+        updateEditedPackageScheduleTexts(updatedScheduleTexts)
+    }
+
+    private func resolveQueueTargetPage(for item: EditedPackageItem) -> (pageID: String, label: String, record: SavedFacebookUploadPageRecord?)? {
+        resolvedFacebookUploadTarget(for: item, showToastOnFailure: false)
+    }
+
+    private func moveEditedPackage(_ item: EditedPackageItem, direction: Int) {
+        guard !isBusy else {
+            showToast("Wait for current task to finish.")
+            return
+        }
+        guard isPendingEditableFacebookQueueItem(item) else {
+            showToast("This card is already published or scheduled.")
+            return
+        }
+        guard let target = resolveQueueTargetPage(for: item) else {
+            showToast("Assign page to this card first.")
+            return
+        }
+
+        if (item.assignedFacebookPageID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "").isEmpty {
+            facebookPageAssignments[item.id] = target.pageID
+            persistFacebookPageAssignments()
+            applyFacebookPageAssignments(using: savedFacebookUploadPages)
+        }
+
+        _ = ensureExplicitFacebookPageAssignments(forPageID: target.pageID)
+        var orderedIDs = queueItemsForFacebookPage(pageID: target.pageID).map(\.id)
+        guard let currentIndex = orderedIDs.firstIndex(of: item.id) else {
+            showToast("Queue item not found.")
+            return
+        }
+
+        let targetIndex = currentIndex + direction
+        guard orderedIDs.indices.contains(targetIndex) else {
+            showToast(direction < 0 ? "Already first in this page queue." : "Already last in this page queue.")
+            return
+        }
+
+        orderedIDs.swapAt(currentIndex, targetIndex)
+        setPersistedFacebookQueueOrder(orderedIDs, forPageID: target.pageID)
+        recalculateFacebookQueue(forPageID: target.pageID)
+        refreshMetadata()
+        showToast(direction < 0 ? "Moved earlier for \(target.label)." : "Moved later for \(target.label).")
+    }
+
+    func moveEditedPackageEarlier(_ item: EditedPackageItem) {
+        moveEditedPackage(item, direction: -1)
+    }
+
+    func moveEditedPackageLater(_ item: EditedPackageItem) {
+        moveEditedPackage(item, direction: 1)
     }
 
     private func applyChromeProfileAssignments(using profiles: [ChromeProfileItem]) {
@@ -7622,13 +10101,46 @@ final class ReelsModel: ObservableObject {
                 sourceName: item.sourceName,
                 videoName: item.videoName,
                 title: item.title,
+                scheduleText: item.scheduleText,
+                facebookStatusText: item.facebookStatusText,
+                facebookStatusState: item.facebookStatusState,
                 thumbnailURL: item.thumbnailURL,
                 packageURL: item.packageURL,
+                assignedFacebookPageID: item.assignedFacebookPageID,
+                assignedFacebookPageLabel: item.assignedFacebookPageLabel,
+                assignedFacebookPageTokenStatus: item.assignedFacebookPageTokenStatus,
                 assignedProfileDirectoryName: assignedDirectoryName,
                 assignedProfileDisplayName: assignedProfile?.displayName ?? assignedDirectoryName,
                 assignedProfileOnline: assignedProfile?.isOnline ?? false
             )
         }
+    }
+
+    private func applyFacebookPageAssignments(using pages: [SavedFacebookUploadPageRecord]) {
+        let pageMap = Dictionary(uniqueKeysWithValues: pages.map { ($0.pageID, $0) })
+        editedPackages = editedPackages.map { item in
+            let assignedPageID = facebookPageAssignments[item.id]
+            let assignedPage = assignedPageID.flatMap { pageMap[$0] }
+            return EditedPackageItem(
+                id: item.id,
+                packageName: item.packageName,
+                sourceName: item.sourceName,
+                videoName: item.videoName,
+                title: item.title,
+                scheduleText: item.scheduleText,
+                facebookStatusText: item.facebookStatusText,
+                facebookStatusState: item.facebookStatusState,
+                thumbnailURL: item.thumbnailURL,
+                packageURL: item.packageURL,
+                assignedFacebookPageID: assignedPageID,
+                assignedFacebookPageLabel: assignedPage?.label ?? assignedPageID,
+                assignedFacebookPageTokenStatus: maskKey(assignedPage?.accessToken),
+                assignedProfileDirectoryName: item.assignedProfileDirectoryName,
+                assignedProfileDisplayName: item.assignedProfileDisplayName,
+                assignedProfileOnline: item.assignedProfileOnline
+            )
+        }
+        applyStoredFacebookPageQueueOrder()
     }
 
     private func normalizedUploadTitle(_ text: String) -> String {
@@ -8991,13 +11503,16 @@ struct DropVideosPanel: View {
 struct ThumbnailPreviewView: View {
     let url: URL?
 
+    private let previewWidth: CGFloat = 160
+    private let previewHeight: CGFloat = 214
+
     var body: some View {
         Group {
             if let url, let image = NSImage(contentsOf: url) {
                 Image(nsImage: image)
                     .resizable()
                     .scaledToFill()
-                    .frame(width: 170, height: 230, alignment: .center)
+                    .frame(width: previewWidth, height: previewHeight, alignment: .center)
                     .clipped()
             } else {
                 ZStack {
@@ -9008,7 +11523,7 @@ struct ThumbnailPreviewView: View {
                 }
             }
         }
-        .frame(width: 170, height: 230)
+        .frame(width: previewWidth, height: previewHeight)
         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
     }
 }
@@ -9079,14 +11594,56 @@ struct EditedPackageCard: View {
     let item: EditedPackageItem
     let isBusy: Bool
     let isSelected: Bool
+    let facebookPageLabel: String
+    let facebookPageIDStatus: String
+    let facebookTokenStatus: String
     let onCopyTitle: () -> Void
     let onToggleSelection: () -> Void
     let onShowDetails: () -> Void
     let onOpenPackage: () -> Void
     let onOpenProfiles: () -> Void
+    let onOpenTargetPage: () -> Void
+    let onMoveEarlier: () -> Void
+    let onMoveLater: () -> Void
+    let onPublishNow: () -> Void
+    let onSchedule: () -> Void
     let onDeletePackage: () -> Void
 
     @State private var showDeleteConfirm = false
+
+    private var facebookStatusColor: Color {
+        switch item.facebookStatusState {
+        case "published":
+            return SoraninPalette.success
+        case "scheduled":
+            return SoraninPalette.accentEnd
+        case "failed":
+            return Color(red: 1.0, green: 0.48, blue: 0.48)
+        default:
+            return SoraninPalette.secondaryText
+        }
+    }
+
+    private var effectiveFacebookPageLabel: String {
+        let assigned = item.assignedFacebookPageLabel?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !assigned.isEmpty { return assigned }
+        let fallback = facebookPageLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+        return fallback.isEmpty ? "Select page first" : fallback
+    }
+
+    private var effectiveFacebookPageID: String {
+        let assigned = item.assignedFacebookPageID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !assigned.isEmpty { return assigned }
+        let fallback = facebookPageIDStatus.trimmingCharacters(in: .whitespacesAndNewlines)
+        return fallback.isEmpty ? "Not set" : fallback
+    }
+
+    private var effectiveFacebookTokenStatus: String {
+        let assigned = item.assignedFacebookPageTokenStatus?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !assigned.isEmpty, assigned != "Not set" { return assigned }
+        let fallback = facebookTokenStatus.trimmingCharacters(in: .whitespacesAndNewlines)
+        return fallback.isEmpty ? "Not set" : fallback
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -9193,6 +11750,41 @@ struct EditedPackageCard: View {
                     .foregroundStyle(SoraninPalette.primaryText)
                     .lineLimit(3)
                     .frame(maxWidth: .infinity, alignment: .leading)
+
+                Text("Schedule: \(item.scheduleText.isEmpty ? "Not found" : item.scheduleText)")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(SoraninPalette.secondaryText)
+                    .lineLimit(2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                Text(item.facebookStatusText)
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(facebookStatusColor)
+                    .lineLimit(4)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                Text("Thumbnail: Local Only")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(SoraninPalette.accentEnd)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                Text("Target Page: \(effectiveFacebookPageLabel)")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(SoraninPalette.success)
+                    .lineLimit(2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                Text("Page ID: \(effectiveFacebookPageID)")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(SoraninPalette.secondaryText)
+                    .lineLimit(1)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                Text("Token: \(effectiveFacebookTokenStatus)")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(SoraninPalette.secondaryText)
+                    .lineLimit(1)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
             .contentShape(Rectangle())
             .onTapGesture {
@@ -9225,9 +11817,64 @@ struct EditedPackageCard: View {
                 }
                 .buttonStyle(SoraninSecondaryButtonStyle(compact: true))
             }
+
+            Button {
+                onOpenTargetPage()
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "flag.fill")
+                        .font(.system(size: 10, weight: .bold))
+                    Text(effectiveFacebookPageLabel)
+                        .lineLimit(1)
+                }
+            }
+            .buttonStyle(SoraninSecondaryButtonStyle(compact: true))
+            .disabled(isBusy)
+
+            HStack(spacing: 8) {
+                Button {
+                    onMoveEarlier()
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "arrow.left.to.line.compact")
+                            .font(.system(size: 10, weight: .bold))
+                        Text("Earlier")
+                            .lineLimit(1)
+                    }
+                }
+                .buttonStyle(SoraninSecondaryButtonStyle(compact: true))
+                .disabled(isBusy)
+
+                Button {
+                    onMoveLater()
+                } label: {
+                    HStack(spacing: 6) {
+                        Text("Later")
+                            .lineLimit(1)
+                        Image(systemName: "arrow.right.to.line.compact")
+                            .font(.system(size: 10, weight: .bold))
+                    }
+                }
+                .buttonStyle(SoraninSecondaryButtonStyle(compact: true))
+                .disabled(isBusy)
+            }
+
+            HStack(spacing: 8) {
+                Button("Publish Now") {
+                    onPublishNow()
+                }
+                .buttonStyle(SoraninSecondaryButtonStyle(compact: true))
+                .disabled(isBusy)
+
+                Button("Schedule") {
+                    onSchedule()
+                }
+                .buttonStyle(SoraninPrimaryButtonStyle(compact: true))
+                .disabled(isBusy)
+            }
         }
-        .frame(width: 190, alignment: .topLeading)
-        .frame(minHeight: 386, alignment: .topLeading)
+        .frame(width: 200, alignment: .topLeading)
+        .frame(minHeight: 540, alignment: .topLeading)
         .padding(12)
         .background(
             RoundedRectangle(cornerRadius: 20, style: .continuous)
@@ -9252,12 +11899,30 @@ struct EditedPackagesPanel: View {
     let items: [EditedPackageItem]
     let isBusy: Bool
     let selectedIDs: Set<String>
+    let facebookPageLabel: String
+    let facebookPageIDStatus: String
+    let facebookTokenStatus: String
+    let savedFacebookPages: [SavedFacebookUploadPageRecord]
+    let facebookQueueTodayRemainingSlots: Int
+    let facebookQueueNextQueueTime: String
+    let facebookQueueReservedUntil: String
+    let facebookDeleteAfterSuccessEnabled: Bool
     let onCopyTitle: (EditedPackageItem) -> Void
     let onCopyAllTitles: () -> Void
     let onToggleSelection: (EditedPackageItem) -> Void
     let onShowDetails: (EditedPackageItem) -> Void
     let onOpenPackage: (EditedPackageItem) -> Void
     let onOpenProfiles: (EditedPackageItem) -> Void
+    let onPublishPackage: (EditedPackageItem) -> Void
+    let onSchedulePackage: (EditedPackageItem) -> Void
+    let onPublishSelected: () -> Void
+    let onScheduleSelected: () -> Void
+    let onSelectFacebookPage: (SavedFacebookUploadPageRecord) -> Void
+    let onEditFacebookPage: (SavedFacebookUploadPageRecord) -> Void
+    let onOpenFacebookPagePicker: (EditedPackageItem) -> Void
+    let onMoveEarlier: (EditedPackageItem) -> Void
+    let onMoveLater: (EditedPackageItem) -> Void
+    let onToggleFacebookDeleteAfterSuccess: (Bool) -> Void
     let onDeletePackage: (EditedPackageItem) -> Void
     let onDeleteSelected: () -> Void
     let onClearSelection: () -> Void
@@ -9265,6 +11930,45 @@ struct EditedPackagesPanel: View {
 
     @State private var showDeleteAllConfirm = false
     @State private var showDeleteSelectedConfirm = false
+
+    private var selectedItems: [EditedPackageItem] {
+        items.filter { selectedIDs.contains($0.id) }
+    }
+
+    private var selectedTargetSummaryText: String {
+        if selectedItems.isEmpty {
+            return "Selected page: \(facebookPageLabel)"
+        }
+        return "Selected cards will publish/schedule to: \(facebookPageLabel)"
+    }
+
+    private func savedPageIsActive(_ record: SavedFacebookUploadPageRecord) -> Bool {
+        record.pageID == facebookPageIDStatus
+    }
+
+    @ViewBuilder
+    private func queueValuePill(_ title: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.system(size: 10, weight: .bold))
+                .foregroundStyle(SoraninPalette.secondaryText)
+            Text(value)
+                .font(.system(size: 12, weight: .bold))
+                .foregroundStyle(SoraninPalette.primaryText)
+                .lineLimit(1)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(SoraninPalette.cardSoft)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(SoraninPalette.border, lineWidth: 1)
+        )
+    }
 
     var body: some View {
         let selectedCount = selectedIDs.count
@@ -9307,6 +12011,263 @@ struct EditedPackagesPanel: View {
                     .foregroundStyle(SoraninPalette.secondaryText)
             }
 
+            if !items.isEmpty {
+                VStack(alignment: .leading, spacing: 10) {
+                    ViewThatFits(in: .horizontal) {
+                        HStack(spacing: 10) {
+                            Button("Publish Selected") {
+                                onPublishSelected()
+                            }
+                            .buttonStyle(SoraninSecondaryButtonStyle(compact: true))
+                            .disabled(isBusy || selectedCount == 0)
+
+                            Button("Schedule Selected") {
+                                onScheduleSelected()
+                            }
+                            .buttonStyle(SoraninPrimaryButtonStyle(compact: true))
+                            .disabled(isBusy || selectedCount == 0)
+
+                            Spacer(minLength: 8)
+
+                            Menu {
+                                if savedFacebookPages.isEmpty {
+                                    Text("No saved page").foregroundStyle(SoraninPalette.secondaryText)
+                                } else {
+                                    ForEach(savedFacebookPages) { record in
+                                        Button("\(record.label) • \(record.pageID)") {
+                                            onSelectFacebookPage(record)
+                                        }
+                                    }
+                                }
+                            } label: {
+                                HStack(spacing: 8) {
+                                    Image(systemName: "flag.fill")
+                                        .font(.system(size: 11, weight: .bold))
+                                        .foregroundStyle(SoraninPalette.success)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text("Selected Page")
+                                            .font(.system(size: 10, weight: .bold))
+                                            .foregroundStyle(SoraninPalette.secondaryText)
+                                        Text(facebookPageLabel)
+                                            .font(.system(size: 12, weight: .bold))
+                                            .foregroundStyle(SoraninPalette.primaryText)
+                                            .lineLimit(1)
+                                    }
+                                    Text("\(savedFacebookPages.count)")
+                                        .font(.system(size: 11, weight: .bold))
+                                        .foregroundStyle(SoraninPalette.secondaryText)
+                                    Image(systemName: "chevron.down")
+                                        .foregroundStyle(SoraninPalette.secondaryText)
+                                }
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 10)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                        .fill(SoraninPalette.cardSoft)
+                                )
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                        .stroke(SoraninPalette.border, lineWidth: 1)
+                                )
+                            }
+                            .disabled(savedFacebookPages.isEmpty || isBusy)
+                        }
+
+                        VStack(alignment: .leading, spacing: 10) {
+                            HStack(spacing: 10) {
+                                Button("Publish Selected") {
+                                    onPublishSelected()
+                                }
+                                .buttonStyle(SoraninSecondaryButtonStyle(compact: true))
+                                .disabled(isBusy || selectedCount == 0)
+
+                                Button("Schedule Selected") {
+                                    onScheduleSelected()
+                                }
+                                .buttonStyle(SoraninPrimaryButtonStyle(compact: true))
+                                .disabled(isBusy || selectedCount == 0)
+                            }
+
+                            Menu {
+                                if savedFacebookPages.isEmpty {
+                                    Text("No saved page").foregroundStyle(SoraninPalette.secondaryText)
+                                } else {
+                                    ForEach(savedFacebookPages) { record in
+                                        Button("\(record.label) • \(record.pageID)") {
+                                            onSelectFacebookPage(record)
+                                        }
+                                    }
+                                }
+                            } label: {
+                                HStack(spacing: 8) {
+                                    Image(systemName: "flag.fill")
+                                        .font(.system(size: 11, weight: .bold))
+                                        .foregroundStyle(SoraninPalette.success)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text("Selected Page")
+                                            .font(.system(size: 10, weight: .bold))
+                                            .foregroundStyle(SoraninPalette.secondaryText)
+                                        Text(facebookPageLabel)
+                                            .font(.system(size: 12, weight: .bold))
+                                            .foregroundStyle(SoraninPalette.primaryText)
+                                            .lineLimit(1)
+                                    }
+                                    Text("\(savedFacebookPages.count)")
+                                        .font(.system(size: 11, weight: .bold))
+                                        .foregroundStyle(SoraninPalette.secondaryText)
+                                    Image(systemName: "chevron.down")
+                                        .foregroundStyle(SoraninPalette.secondaryText)
+                                }
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 10)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                        .fill(SoraninPalette.cardSoft)
+                                )
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                        .stroke(SoraninPalette.border, lineWidth: 1)
+                                )
+                            }
+                            .disabled(savedFacebookPages.isEmpty || isBusy)
+                        }
+                    }
+
+                    Text(selectedTargetSummaryText)
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(SoraninPalette.success)
+
+                    ViewThatFits(in: .horizontal) {
+                        HStack(spacing: 10) {
+                            queueValuePill("Next Queue Time", value: facebookQueueNextQueueTime)
+                            queueValuePill("Reserved Until", value: facebookQueueReservedUntil)
+                            queueValuePill("Today Remaining", value: "\(facebookQueueTodayRemainingSlots) slot(s)")
+                        }
+
+                        VStack(alignment: .leading, spacing: 8) {
+                            queueValuePill("Next Queue Time", value: facebookQueueNextQueueTime)
+                            queueValuePill("Reserved Until", value: facebookQueueReservedUntil)
+                            queueValuePill("Today Remaining", value: "\(facebookQueueTodayRemainingSlots) slot(s)")
+                        }
+                    }
+
+                    if !savedFacebookPages.isEmpty {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Saved Pages")
+                                .font(.system(size: 11, weight: .bold))
+                                .foregroundStyle(SoraninPalette.secondaryText)
+
+                            ScrollView(.horizontal, showsIndicators: false) {
+                                HStack(spacing: 10) {
+                                    ForEach(savedFacebookPages) { record in
+                                        VStack(alignment: .leading, spacing: 8) {
+                                            HStack(alignment: .top, spacing: 8) {
+                                                VStack(alignment: .leading, spacing: 4) {
+                                                    Text(record.label)
+                                                        .font(.system(size: 12, weight: .bold))
+                                                        .foregroundStyle(SoraninPalette.primaryText)
+                                                        .lineLimit(1)
+                                                    Text(record.pageID)
+                                                        .font(.system(size: 10, weight: .medium, design: .monospaced))
+                                                        .foregroundStyle(SoraninPalette.secondaryText)
+                                                        .lineLimit(1)
+                                                    Text("Token: \(maskedFacebookTokenStatus(record.accessToken))")
+                                                        .font(.system(size: 10, weight: .semibold))
+                                                        .foregroundStyle(SoraninPalette.secondaryText)
+                                                        .lineLimit(1)
+                                                    Text("Token Age: \(facebookTokenCountdownLabel(savedAt: record.tokenSavedAt, expiresAt: record.tokenEstimatedExpiryAt))")
+                                                        .font(.system(size: 10, weight: .bold))
+                                                        .foregroundStyle(SoraninPalette.success)
+                                                        .lineLimit(1)
+                                                    Text("Saved: \(facebookTokenSavedLabel(record.tokenSavedAt)) • Exp: \(facebookTokenExpiryLabel(record.tokenEstimatedExpiryAt))")
+                                                        .font(.system(size: 10, weight: .medium))
+                                                        .foregroundStyle(SoraninPalette.secondaryText)
+                                                        .lineLimit(2)
+                                                }
+                                                Spacer(minLength: 6)
+                                                if savedPageIsActive(record) {
+                                                    Text("Using")
+                                                        .font(.system(size: 10, weight: .bold))
+                                                        .foregroundStyle(SoraninPalette.success)
+                                                        .padding(.horizontal, 8)
+                                                        .padding(.vertical, 5)
+                                                        .background(
+                                                            Capsule(style: .continuous)
+                                                                .fill(SoraninPalette.success.opacity(0.12))
+                                                        )
+                                                }
+                                            }
+
+                                            HStack(spacing: 8) {
+                                                Button("Use") {
+                                                    onSelectFacebookPage(record)
+                                                }
+                                                .buttonStyle(SoraninPrimaryButtonStyle(compact: true))
+                                                .disabled(isBusy)
+
+                                                Button("Edit") {
+                                                    onEditFacebookPage(record)
+                                                }
+                                                .buttonStyle(SoraninSecondaryButtonStyle(compact: true))
+                                                .disabled(isBusy)
+                                            }
+
+                                            if savedPageIsActive(record) {
+                                                VStack(alignment: .leading, spacing: 4) {
+                                                    Text("Next Queue: \(facebookQueueNextQueueTime)")
+                                                        .font(.system(size: 10, weight: .bold))
+                                                        .foregroundStyle(SoraninPalette.primaryText)
+                                                    Text("Reserved Until: \(facebookQueueReservedUntil)")
+                                                        .font(.system(size: 10, weight: .medium))
+                                                        .foregroundStyle(SoraninPalette.secondaryText)
+                                                    Text("Today Remaining: \(facebookQueueTodayRemainingSlots) slot(s)")
+                                                        .font(.system(size: 10, weight: .medium))
+                                                        .foregroundStyle(SoraninPalette.secondaryText)
+                                                }
+                                            }
+                                        }
+                                        .frame(width: 220, alignment: .leading)
+                                        .padding(10)
+                                        .background(
+                                            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                                .fill(savedPageIsActive(record) ? SoraninPalette.cardSoft : SoraninPalette.cardStrong)
+                                        )
+                                        .overlay(
+                                            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                                .stroke(savedPageIsActive(record) ? SoraninPalette.success : SoraninPalette.border, lineWidth: savedPageIsActive(record) ? 2 : 1)
+                                        )
+                                    }
+                                }
+                                .padding(.vertical, 2)
+                            }
+                        }
+                    }
+
+                    Toggle(
+                        "Delete package after Facebook success",
+                        isOn: Binding(
+                            get: { facebookDeleteAfterSuccessEnabled },
+                            set: { onToggleFacebookDeleteAfterSuccess($0) }
+                        )
+                    )
+                    .toggleStyle(.switch)
+                    .disabled(isBusy)
+
+                    Text("Failed packages stay on Mac for retry. Thumbnail stays local only.")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(SoraninPalette.secondaryText)
+                }
+                .padding(12)
+                .background(
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .fill(SoraninPalette.cardStrong)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .stroke(SoraninPalette.border, lineWidth: 1)
+                )
+            }
+
             if items.isEmpty {
                 RoundedRectangle(cornerRadius: 20, style: .continuous)
                     .fill(SoraninPalette.cardStrong)
@@ -9324,18 +12285,26 @@ struct EditedPackagesPanel: View {
                                 item: item,
                                 isBusy: isBusy,
                                 isSelected: selectedIDs.contains(item.id),
+                                facebookPageLabel: facebookPageLabel,
+                                facebookPageIDStatus: facebookPageIDStatus,
+                                facebookTokenStatus: facebookTokenStatus,
                                 onCopyTitle: { onCopyTitle(item) },
                                 onToggleSelection: { onToggleSelection(item) },
                                 onShowDetails: { onShowDetails(item) },
                                 onOpenPackage: { onOpenPackage(item) },
                                 onOpenProfiles: { onOpenProfiles(item) },
+                                onOpenTargetPage: { onOpenFacebookPagePicker(item) },
+                                onMoveEarlier: { onMoveEarlier(item) },
+                                onMoveLater: { onMoveLater(item) },
+                                onPublishNow: { onPublishPackage(item) },
+                                onSchedule: { onSchedulePackage(item) },
                                 onDeletePackage: { onDeletePackage(item) }
                             )
                         }
                     }
                     .padding(.vertical, 2)
                 }
-                .frame(height: 416)
+                .frame(height: 610)
             }
         }
         .padding(14)
@@ -9368,6 +12337,7 @@ struct EditedPackagesPanel: View {
 
 struct EditProgressPanel: View {
     let isVisible: Bool
+    let title: String
     let percent: Int
     let label: String
 
@@ -9375,7 +12345,7 @@ struct EditProgressPanel: View {
         if isVisible {
             VStack(alignment: .leading, spacing: 6) {
                 HStack {
-                    Text("Edit Progress")
+                    Text(title)
                         .font(.system(size: 13, weight: .bold))
                         .foregroundStyle(SoraninPalette.primaryText)
                     Spacer()
@@ -9409,41 +12379,191 @@ struct APISettingsSheet: View {
     let currentProvider: AIProvider
     let openAIStatus: String
     let geminiStatus: String
+    let facebookPageLabelStatus: String
+    let facebookPageIDStatus: String
+    let facebookTokenStatus: String
+    let savedFacebookPages: [SavedFacebookUploadPageRecord]
+    let facebookDeleteAfterSuccess: Bool
+    let initialFacebookPageRecord: SavedFacebookUploadPageRecord?
     let onSave: (String?, String?, AIProvider) -> Void
     let onRemove: (Bool, Bool, AIProvider) -> Void
+    let onSaveFacebook: (String, String?, Bool, Bool) -> Void
+    let onSaveFacebookPageProfile: (String, String, String, Bool) -> SavedFacebookUploadPageRecord?
+    let onApplyFacebookPageProfile: (SavedFacebookUploadPageRecord, Bool?) -> Void
+    let onDeleteFacebookPageProfile: (SavedFacebookUploadPageRecord) -> Void
     let onTest: (AIProvider, @escaping (String) -> Void) -> Void
 
     @State private var selectedProvider: AIProvider
     @State private var openAIKey = ""
     @State private var geminiKey = ""
+    @State private var facebookPageLabel = ""
+    @State private var facebookPageID = ""
+    @State private var facebookToken = ""
     @State private var openAIStatusText: String
     @State private var geminiStatusText: String
+    @State private var facebookTokenStatusText: String
+    @State private var savedFacebookPageRecords: [SavedFacebookUploadPageRecord]
     @State private var openAIHealthText = ""
     @State private var geminiHealthText = ""
     @State private var showOpenAIInput: Bool
     @State private var showGeminiInput: Bool
     @State private var isTestingOpenAI = false
     @State private var isTestingGemini = false
+    @State private var shouldRemoveFacebookToken = false
+    @State private var facebookDeleteAfterSuccessState: Bool
+
+    private func clipboardText() -> String {
+        (NSPasteboard.general.string(forType: .string) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func maskedStatus(for value: String) -> String {
+        maskedFacebookTokenStatus(value)
+    }
+
+    private func editFacebookPageProfile(_ record: SavedFacebookUploadPageRecord) {
+        facebookPageLabel = record.label
+        facebookPageID = record.pageID
+        facebookToken = ""
+        facebookTokenStatusText = maskedStatus(for: record.accessToken)
+        shouldRemoveFacebookToken = false
+    }
+
+    private func saveOpenAIKeyImmediately() {
+        let value = clipboardText()
+        guard !value.isEmpty else { return }
+        onSave(value, nil, selectedProvider)
+        openAIStatusText = "Saved"
+        showOpenAIInput = false
+        openAIKey = ""
+    }
+
+    private func saveGeminiKeyImmediately() {
+        let value = clipboardText()
+        guard !value.isEmpty else { return }
+        onSave(nil, value, selectedProvider)
+        geminiStatusText = "Saved"
+        showGeminiInput = false
+        geminiKey = ""
+    }
+
+    private func saveFacebookTokenImmediately() {
+        let value = clipboardText()
+        guard !value.isEmpty else { return }
+        facebookToken = value
+        shouldRemoveFacebookToken = false
+        onSaveFacebook(
+            facebookPageID.trimmingCharacters(in: .whitespacesAndNewlines),
+            value,
+            false,
+            facebookDeleteAfterSuccessState
+        )
+        facebookTokenStatusText = maskedStatus(for: value)
+        if let record = saveFacebookUploadPageRecord(
+            label: facebookPageLabel.trimmingCharacters(in: .whitespacesAndNewlines),
+            pageID: facebookPageID.trimmingCharacters(in: .whitespacesAndNewlines),
+            accessToken: value
+        ) {
+            savedFacebookPageRecords = loadSavedFacebookUploadPageRecords()
+            facebookPageLabel = record.label
+            facebookPageID = record.pageID
+        }
+        facebookToken = ""
+    }
+
+    private func saveFacebookPageProfileImmediately() {
+        let trimmedLabel = facebookPageLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedPageID = facebookPageID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedToken = facebookToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let record = onSaveFacebookPageProfile(
+            trimmedLabel,
+            trimmedPageID,
+            trimmedToken,
+            facebookDeleteAfterSuccessState
+        ) else {
+            return
+        }
+        savedFacebookPageRecords = loadSavedFacebookUploadPageRecords()
+        facebookPageLabel = record.label
+        facebookPageID = record.pageID
+        facebookTokenStatusText = maskedStatus(for: record.accessToken)
+        facebookToken = ""
+        shouldRemoveFacebookToken = false
+    }
+
+    private func applyFacebookPageProfile(_ record: SavedFacebookUploadPageRecord) {
+        onApplyFacebookPageProfile(record, facebookDeleteAfterSuccessState)
+        facebookPageLabel = record.label
+        facebookPageID = record.pageID
+        facebookTokenStatusText = maskedStatus(for: record.accessToken)
+        facebookToken = ""
+        shouldRemoveFacebookToken = false
+    }
+
+    private func deleteFacebookPageProfile(_ record: SavedFacebookUploadPageRecord) {
+        onDeleteFacebookPageProfile(record)
+        savedFacebookPageRecords = loadSavedFacebookUploadPageRecords()
+        if facebookPageID.trimmingCharacters(in: .whitespacesAndNewlines) == record.pageID {
+            facebookPageLabel = savedFacebookPageRecords.first(where: { $0.pageID == facebookPageID })?.label ?? ""
+        }
+    }
+
+    private func applyProviderImmediately(_ provider: AIProvider) {
+        guard selectedProvider != provider else { return }
+        selectedProvider = provider
+        onSave(nil, nil, provider)
+    }
 
     init(
         currentProvider: AIProvider,
         openAIStatus: String,
         geminiStatus: String,
+        facebookPageLabelStatus: String,
+        facebookPageIDStatus: String,
+        facebookTokenStatus: String,
+        savedFacebookPages: [SavedFacebookUploadPageRecord],
+        facebookDeleteAfterSuccess: Bool,
+        initialFacebookPageRecord: SavedFacebookUploadPageRecord?,
         onSave: @escaping (String?, String?, AIProvider) -> Void,
         onRemove: @escaping (Bool, Bool, AIProvider) -> Void,
+        onSaveFacebook: @escaping (String, String?, Bool, Bool) -> Void,
+        onSaveFacebookPageProfile: @escaping (String, String, String, Bool) -> SavedFacebookUploadPageRecord?,
+        onApplyFacebookPageProfile: @escaping (SavedFacebookUploadPageRecord, Bool?) -> Void,
+        onDeleteFacebookPageProfile: @escaping (SavedFacebookUploadPageRecord) -> Void,
         onTest: @escaping (AIProvider, @escaping (String) -> Void) -> Void
     ) {
         self.currentProvider = currentProvider
         self.openAIStatus = openAIStatus
         self.geminiStatus = geminiStatus
+        self.facebookPageLabelStatus = facebookPageLabelStatus
+        self.facebookPageIDStatus = facebookPageIDStatus
+        self.facebookTokenStatus = facebookTokenStatus
+        self.savedFacebookPages = savedFacebookPages
+        self.facebookDeleteAfterSuccess = facebookDeleteAfterSuccess
+        self.initialFacebookPageRecord = initialFacebookPageRecord
         self.onSave = onSave
         self.onRemove = onRemove
+        self.onSaveFacebook = onSaveFacebook
+        self.onSaveFacebookPageProfile = onSaveFacebookPageProfile
+        self.onApplyFacebookPageProfile = onApplyFacebookPageProfile
+        self.onDeleteFacebookPageProfile = onDeleteFacebookPageProfile
         self.onTest = onTest
         _selectedProvider = State(initialValue: currentProvider)
         _openAIStatusText = State(initialValue: openAIStatus)
         _geminiStatusText = State(initialValue: geminiStatus)
+        if let initialFacebookPageRecord {
+            _facebookPageLabel = State(initialValue: initialFacebookPageRecord.label)
+            _facebookPageID = State(initialValue: initialFacebookPageRecord.pageID)
+            _facebookTokenStatusText = State(initialValue: maskedFacebookTokenStatus(initialFacebookPageRecord.accessToken))
+        } else {
+            _facebookPageLabel = State(initialValue: facebookPageLabelStatus == "Not set" ? "" : facebookPageLabelStatus)
+            _facebookPageID = State(initialValue: facebookPageIDStatus == "Not set" ? "" : facebookPageIDStatus)
+            _facebookTokenStatusText = State(initialValue: facebookTokenStatus)
+        }
+        _savedFacebookPageRecords = State(initialValue: savedFacebookPages)
         _showOpenAIInput = State(initialValue: openAIStatus == "Not set")
         _showGeminiInput = State(initialValue: geminiStatus == "Not set")
+        _facebookDeleteAfterSuccessState = State(initialValue: facebookDeleteAfterSuccess)
     }
 
     var body: some View {
@@ -9451,10 +12571,10 @@ struct APISettingsSheet: View {
             VStack(alignment: .leading, spacing: 18) {
                 HStack {
                     VStack(alignment: .leading, spacing: 6) {
-                        Text("AI Settings")
+                        Text("API Settings")
                             .font(.system(size: 24, weight: .bold))
                             .foregroundStyle(SoraninPalette.primaryText)
-                        Text("រក្សាទុក API key នៅទីនេះ។ AI Chat អាចប្តូរ OpenAI ឬ Gemini ផ្ទាល់ក្នុង chat បាន ដោយមិនពាក់ព័ន្ធនឹង popup នេះ។")
+                        Text("រក្សាទុក AI keys និង Facebook Reels Page settings នៅទីនេះ។ Thumbnail នៅតែ local only; direct Facebook upload ប្រើ title ពី package.")
                             .foregroundStyle(SoraninPalette.secondaryText)
                     }
                     Spacer()
@@ -9464,7 +12584,7 @@ struct APISettingsSheet: View {
                     HStack(spacing: 12) {
                         ForEach(AIProvider.allCases) { provider in
                             Button {
-                                selectedProvider = provider
+                                applyProviderImmediately(provider)
                             } label: {
                                 ProviderOptionTile(provider: provider, isSelected: selectedProvider == provider)
                             }
@@ -9475,7 +12595,7 @@ struct APISettingsSheet: View {
                     VStack(spacing: 12) {
                         ForEach(AIProvider.allCases) { provider in
                             Button {
-                                selectedProvider = provider
+                                applyProviderImmediately(provider)
                             } label: {
                                 ProviderOptionTile(provider: provider, isSelected: selectedProvider == provider)
                             }
@@ -9497,6 +12617,15 @@ struct APISettingsSheet: View {
                         openAIHealthText = ""
                         showOpenAIInput = true
                         openAIKey = ""
+                    },
+                    pasteAction: {
+                        let value = clipboardText()
+                        guard !value.isEmpty else { return }
+                        openAIKey = value
+                        showOpenAIInput = true
+                    },
+                    pasteAndSaveAction: {
+                        saveOpenAIKeyImmediately()
                     },
                     testAction: {
                         guard !isTestingOpenAI else { return }
@@ -9523,6 +12652,15 @@ struct APISettingsSheet: View {
                         showGeminiInput = true
                         geminiKey = ""
                     },
+                    pasteAction: {
+                        let value = clipboardText()
+                        guard !value.isEmpty else { return }
+                        geminiKey = value
+                        showGeminiInput = true
+                    },
+                    pasteAndSaveAction: {
+                        saveGeminiKeyImmediately()
+                    },
                     testAction: {
                         guard !isTestingGemini else { return }
                         geminiHealthText = "កំពុងឆែក Gemini..."
@@ -9534,6 +12672,8 @@ struct APISettingsSheet: View {
                         }
                     }
                 )
+
+                facebookSettingsSection
 
                 ViewThatFits(in: .horizontal) {
                     HStack {
@@ -9548,10 +12688,18 @@ struct APISettingsSheet: View {
                         Button("Save") {
                             let openAIValue = openAIKey.trimmingCharacters(in: .whitespacesAndNewlines)
                             let geminiValue = geminiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+                            let facebookPageIDValue = facebookPageID.trimmingCharacters(in: .whitespacesAndNewlines)
+                            let facebookTokenValue = facebookToken.trimmingCharacters(in: .whitespacesAndNewlines)
                             onSave(
                                 showOpenAIInput && !openAIValue.isEmpty ? openAIValue : nil,
                                 showGeminiInput && !geminiValue.isEmpty ? geminiValue : nil,
                                 selectedProvider
+                            )
+                            onSaveFacebook(
+                                facebookPageIDValue,
+                                facebookTokenValue.isEmpty ? nil : facebookTokenValue,
+                                shouldRemoveFacebookToken,
+                                facebookDeleteAfterSuccessState
                             )
                             if showOpenAIInput && !openAIValue.isEmpty {
                                 openAIStatusText = "Saved"
@@ -9563,6 +12711,13 @@ struct APISettingsSheet: View {
                                 showGeminiInput = false
                                 geminiKey = ""
                             }
+                            if shouldRemoveFacebookToken {
+                                facebookTokenStatusText = "Not set"
+                            } else if !facebookTokenValue.isEmpty {
+                                facebookTokenStatusText = maskedStatus(for: facebookTokenValue)
+                                facebookToken = ""
+                            }
+                            shouldRemoveFacebookToken = false
                             dismiss()
                         }
                         .buttonStyle(SoraninPrimaryButtonStyle(compact: true))
@@ -9580,10 +12735,18 @@ struct APISettingsSheet: View {
                             Button("Save") {
                                 let openAIValue = openAIKey.trimmingCharacters(in: .whitespacesAndNewlines)
                                 let geminiValue = geminiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+                                let facebookPageIDValue = facebookPageID.trimmingCharacters(in: .whitespacesAndNewlines)
+                                let facebookTokenValue = facebookToken.trimmingCharacters(in: .whitespacesAndNewlines)
                                 onSave(
                                     showOpenAIInput && !openAIValue.isEmpty ? openAIValue : nil,
                                     showGeminiInput && !geminiValue.isEmpty ? geminiValue : nil,
                                     selectedProvider
+                                )
+                                onSaveFacebook(
+                                    facebookPageIDValue,
+                                    facebookTokenValue.isEmpty ? nil : facebookTokenValue,
+                                    shouldRemoveFacebookToken,
+                                    facebookDeleteAfterSuccessState
                                 )
                                 if showOpenAIInput && !openAIValue.isEmpty {
                                     openAIStatusText = "Saved"
@@ -9595,6 +12758,13 @@ struct APISettingsSheet: View {
                                     showGeminiInput = false
                                     geminiKey = ""
                                 }
+                                if shouldRemoveFacebookToken {
+                                    facebookTokenStatusText = "Not set"
+                                } else if !facebookTokenValue.isEmpty {
+                                    facebookTokenStatusText = maskedStatus(for: facebookTokenValue)
+                                    facebookToken = ""
+                                }
+                                shouldRemoveFacebookToken = false
                                 dismiss()
                             }
                             .buttonStyle(SoraninPrimaryButtonStyle(compact: true))
@@ -9617,6 +12787,8 @@ struct APISettingsSheet: View {
         isInputVisible: Binding<Bool>,
         keyText: Binding<String>,
         removeAction: @escaping () -> Void,
+        pasteAction: @escaping () -> Void,
+        pasteAndSaveAction: @escaping () -> Void,
         testAction: @escaping () -> Void
     ) -> some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -9637,6 +12809,17 @@ struct APISettingsSheet: View {
                             .stroke(SoraninPalette.border, lineWidth: 1)
                     )
                     .foregroundStyle(SoraninPalette.primaryText)
+                HStack {
+                    Button("Paste Token") {
+                        pasteAction()
+                    }
+                    .buttonStyle(SoraninSecondaryButtonStyle(compact: true))
+                    Button("Paste + Save") {
+                        pasteAndSaveAction()
+                    }
+                    .buttonStyle(SoraninPrimaryButtonStyle(compact: true))
+                    Spacer()
+                }
                 Text(statusText)
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(SoraninPalette.secondaryText)
@@ -9668,6 +12851,166 @@ struct APISettingsSheet: View {
                     }
                 }
             }
+        }
+    }
+
+    @ViewBuilder
+    private var facebookSettingsSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Facebook Reels Upload")
+                .font(.system(size: 13, weight: .bold))
+                .foregroundStyle(SoraninPalette.secondaryText)
+
+            TextField("Page Name / Label", text: $facebookPageLabel)
+                .textFieldStyle(.plain)
+                .padding(14)
+                .background(
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .fill(SoraninPalette.input)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .stroke(SoraninPalette.border, lineWidth: 1)
+                )
+                .foregroundStyle(SoraninPalette.primaryText)
+
+            TextField("Facebook Page ID", text: $facebookPageID)
+                .textFieldStyle(.plain)
+                .padding(14)
+                .background(
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .fill(SoraninPalette.input)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .stroke(SoraninPalette.border, lineWidth: 1)
+                )
+                .foregroundStyle(SoraninPalette.primaryText)
+
+            SecureField("Leave blank to keep the saved Page access token", text: $facebookToken)
+                .textFieldStyle(.plain)
+                .padding(14)
+                .background(
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .fill(SoraninPalette.input)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .stroke(SoraninPalette.border, lineWidth: 1)
+                )
+                .foregroundStyle(SoraninPalette.primaryText)
+
+            HStack {
+                Button("Paste Token") {
+                    let value = clipboardText()
+                    guard !value.isEmpty else { return }
+                    facebookToken = value
+                    shouldRemoveFacebookToken = false
+                }
+                .buttonStyle(SoraninSecondaryButtonStyle(compact: true))
+
+                Button("Paste + Save") {
+                    saveFacebookTokenImmediately()
+                }
+                .buttonStyle(SoraninPrimaryButtonStyle(compact: true))
+
+                Button("Save Page") {
+                    saveFacebookPageProfileImmediately()
+                }
+                .buttonStyle(SoraninSecondaryButtonStyle(compact: true))
+
+                Spacer()
+
+                Button("Remove Token") {
+                    facebookToken = ""
+                    shouldRemoveFacebookToken = true
+                    facebookTokenStatusText = "Not set"
+                }
+                .buttonStyle(SoraninSecondaryButtonStyle(compact: true))
+            }
+
+            Text("Page ID: \(facebookPageID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Not set" : facebookPageID)")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(SoraninPalette.secondaryText)
+
+            Text("Page Name: \(facebookPageLabel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Not set" : facebookPageLabel)")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(SoraninPalette.secondaryText)
+
+            Text("Token: \(facebookTokenStatusText)")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(SoraninPalette.secondaryText)
+
+            if !savedFacebookPageRecords.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Saved Pages")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(SoraninPalette.secondaryText)
+
+                    ForEach(savedFacebookPageRecords) { record in
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(record.label)
+                                        .font(.system(size: 13, weight: .bold))
+                                        .foregroundStyle(SoraninPalette.primaryText)
+                                    Text(record.pageID)
+                                        .font(.system(size: 11, weight: .medium, design: .monospaced))
+                                        .foregroundStyle(SoraninPalette.secondaryText)
+                                    Text("Token: \(maskedFacebookTokenStatus(record.accessToken))")
+                                        .font(.system(size: 11, weight: .semibold))
+                                        .foregroundStyle(SoraninPalette.secondaryText)
+                                    Text("Token Age: \(facebookTokenCountdownLabel(savedAt: record.tokenSavedAt, expiresAt: record.tokenEstimatedExpiryAt))")
+                                        .font(.system(size: 11, weight: .bold))
+                                        .foregroundStyle(SoraninPalette.success)
+                                    Text("Saved: \(facebookTokenSavedLabel(record.tokenSavedAt)) • Exp: \(facebookTokenExpiryLabel(record.tokenEstimatedExpiryAt))")
+                                        .font(.system(size: 11, weight: .medium))
+                                        .foregroundStyle(SoraninPalette.secondaryText)
+                                }
+                                Spacer()
+                            }
+
+                            HStack(spacing: 8) {
+                                Button("Use") {
+                                    applyFacebookPageProfile(record)
+                                }
+                                .buttonStyle(SoraninPrimaryButtonStyle(compact: true))
+
+                                Button("Edit") {
+                                    editFacebookPageProfile(record)
+                                }
+                                .buttonStyle(SoraninSecondaryButtonStyle(compact: true))
+
+                                Button("Delete") {
+                                    deleteFacebookPageProfile(record)
+                                }
+                                .buttonStyle(SoraninSecondaryButtonStyle(compact: true))
+                            }
+                        }
+                        .padding(12)
+                        .background(
+                            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                .fill(SoraninPalette.cardStrong)
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                .stroke(
+                                    record.pageID == facebookPageID.trimmingCharacters(in: .whitespacesAndNewlines)
+                                        ? SoraninPalette.success
+                                        : SoraninPalette.border,
+                                    lineWidth: record.pageID == facebookPageID.trimmingCharacters(in: .whitespacesAndNewlines) ? 2 : 1
+                                )
+                        )
+                    }
+                }
+            }
+
+            Toggle("Delete package after Facebook success", isOn: $facebookDeleteAfterSuccessState)
+                .toggleStyle(.switch)
+
+            Text("Publish uses the saved title. Thumbnail stays local-only and is not uploaded through the Facebook API.")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(SoraninPalette.secondaryText)
         }
     }
 }
@@ -10804,6 +14147,10 @@ struct ChromeProfilesSheet: View {
     @State private var selectedProfileIDs: Set<String> = []
     @State private var showDeleteConfirm = false
 
+    private var selectedItems: [ChromeProfileItem] {
+        model.chromeProfiles.filter { selectedProfileIDs.contains($0.id) }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack {
@@ -10811,7 +14158,7 @@ struct ChromeProfilesSheet: View {
                     Text("Chrome Profiles")
                         .font(.system(size: 22, weight: .bold))
                         .foregroundStyle(SoraninPalette.primaryText)
-                    Text("Select a Chrome profile to open. Status stays live.")
+                    Text("Select a Chrome profile, then open Facebook directly with that account.")
                         .font(.system(size: 13, weight: .medium))
                         .foregroundStyle(SoraninPalette.secondaryText)
                 }
@@ -10855,15 +14202,42 @@ struct ChromeProfilesSheet: View {
                             )
                     } else {
                         ForEach(model.chromeProfiles) { item in
-                            HStack(spacing: 12) {
-                                Image(systemName: selectedProfileIDs.contains(item.id) ? "checkmark.circle.fill" : "circle")
-                                    .font(.system(size: 15, weight: .bold))
-                                    .foregroundStyle(selectedProfileIDs.contains(item.id) ? SoraninPalette.success : SoraninPalette.secondaryText)
-                                Text(item.displayName)
-                                    .font(.system(size: 14, weight: .semibold))
-                                    .foregroundStyle(SoraninPalette.primaryText)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                ChromeProfileStatusPill(isOnline: item.isOnline)
+                            VStack(alignment: .leading, spacing: 8) {
+                                HStack(spacing: 12) {
+                                    Image(systemName: selectedProfileIDs.contains(item.id) ? "checkmark.circle.fill" : "circle")
+                                        .font(.system(size: 15, weight: .bold))
+                                        .foregroundStyle(selectedProfileIDs.contains(item.id) ? SoraninPalette.success : SoraninPalette.secondaryText)
+                                    Text(item.displayName)
+                                        .font(.system(size: 14, weight: .semibold))
+                                        .foregroundStyle(SoraninPalette.primaryText)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                    ChromeProfileStatusPill(isOnline: item.isOnline)
+                                }
+                                let savedPages = savedFacebookPages(for: item)
+                                if !savedPages.isEmpty {
+                                    Text("\(savedPages.count) saved page\(savedPages.count == 1 ? "" : "s")")
+                                        .font(.system(size: 12, weight: .medium))
+                                        .foregroundStyle(SoraninPalette.secondaryText)
+                                    ScrollView(.horizontal, showsIndicators: false) {
+                                        HStack(spacing: 8) {
+                                            ForEach(Array(savedPages.prefix(6))) { record in
+                                                Text(record.pageName)
+                                                    .font(.system(size: 11, weight: .bold))
+                                                    .foregroundStyle(SoraninPalette.primaryText)
+                                                    .padding(.horizontal, 10)
+                                                    .padding(.vertical, 6)
+                                                    .background(
+                                                        Capsule(style: .continuous)
+                                                            .fill(SoraninPalette.cardSoft)
+                                                    )
+                                                    .overlay(
+                                                        Capsule(style: .continuous)
+                                                            .stroke(SoraninPalette.border, lineWidth: 1)
+                                                    )
+                                            }
+                                        }
+                                    }
+                                }
                             }
                             .padding(14)
                             .background(
@@ -10883,7 +14257,7 @@ struct ChromeProfilesSheet: View {
                                 }
                             }
                             .onTapGesture(count: 2) {
-                                model.openChromeProfile(item)
+                                model.openChromeProfile(item, urlString: facebookChromeHomeURL, actionName: "Opened Facebook in")
                             }
                         }
                     }
@@ -10907,17 +14281,29 @@ struct ChromeProfilesSheet: View {
                 }
                 .buttonStyle(SoraninSecondaryButtonStyle(compact: true))
 
-                if !selectedProfileIDs.isEmpty {
-                    Button("Open") {
-                        let selectedItems = model.chromeProfiles.filter { selectedProfileIDs.contains($0.id) }
+                if !selectedItems.isEmpty {
+                    Button("Open Facebook") {
                         for item in selectedItems {
-                            model.openChromeProfile(item)
+                            model.openChromeProfile(item, urlString: facebookChromeHomeURL, actionName: "Opened Facebook in")
+                        }
+                    }
+                    .buttonStyle(SoraninPrimaryButtonStyle(compact: true))
+
+                    Button("FB Login") {
+                        for item in selectedItems {
+                            model.openChromeProfileForFacebookLogin(item)
+                        }
+                    }
+                    .buttonStyle(SoraninSecondaryButtonStyle(compact: true))
+
+                    Button("FB Pages") {
+                        for item in selectedItems {
+                            model.openChromeProfileForFacebookPages(item)
                         }
                     }
                     .buttonStyle(SoraninSecondaryButtonStyle(compact: true))
 
                     Button("Close") {
-                        let selectedItems = model.chromeProfiles.filter { selectedProfileIDs.contains($0.id) }
                         model.closeChromeProfiles(selectedItems)
                     }
                     .buttonStyle(SoraninSecondaryButtonStyle(compact: true))
@@ -11071,6 +14457,132 @@ struct ChromeProfilePickerSheet: View {
     }
 }
 
+struct FacebookPagePickerSheet: View {
+    let packageName: String
+    let items: [SavedFacebookUploadPageRecord]
+    let currentPageID: String?
+    let defaultPageLabel: String
+    let onAssign: (SavedFacebookUploadPageRecord) -> Void
+    let onClear: () -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var selectedPageID: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Select Target Page")
+                    .font(.system(size: 22, weight: .bold))
+                    .foregroundStyle(SoraninPalette.primaryText)
+                Text(packageName)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(SoraninPalette.secondaryText)
+            }
+
+            Text("Default: \(defaultPageLabel)")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(SoraninPalette.primaryText)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .background(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .fill(SoraninPalette.cardStrong)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .stroke(SoraninPalette.border, lineWidth: 1)
+                )
+
+            if items.isEmpty {
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .fill(SoraninPalette.cardStrong)
+                    .frame(height: 140)
+                    .overlay(
+                        Text("No saved Facebook page yet.")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(SoraninPalette.secondaryText)
+                    )
+            } else {
+                ScrollView {
+                    VStack(spacing: 10) {
+                        ForEach(items) { item in
+                            HStack(spacing: 12) {
+                                Image(systemName: selectedPageID == item.pageID ? "checkmark.circle.fill" : "circle")
+                                    .font(.system(size: 15, weight: .bold))
+                                    .foregroundStyle(selectedPageID == item.pageID ? SoraninPalette.success : SoraninPalette.secondaryText)
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(item.label)
+                                        .font(.system(size: 14, weight: .semibold))
+                                        .foregroundStyle(SoraninPalette.primaryText)
+                                    Text(item.pageID)
+                                        .font(.system(size: 11, weight: .medium))
+                                        .foregroundStyle(SoraninPalette.secondaryText)
+                                    Text("Token: \(maskedFacebookTokenStatus(item.accessToken))")
+                                        .font(.system(size: 11, weight: .semibold))
+                                        .foregroundStyle(SoraninPalette.secondaryText)
+                                }
+                                Spacer()
+                            }
+                            .padding(14)
+                            .background(
+                                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                    .fill(selectedPageID == item.pageID ? SoraninPalette.cardSoft : SoraninPalette.cardStrong)
+                            )
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                    .stroke(selectedPageID == item.pageID ? SoraninPalette.success : SoraninPalette.border, lineWidth: selectedPageID == item.pageID ? 2 : 1)
+                            )
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                selectedPageID = item.pageID
+                            }
+                            .onTapGesture(count: 2) {
+                                onAssign(item)
+                                dismiss()
+                            }
+                        }
+                    }
+                }
+            }
+
+            HStack(spacing: 10) {
+                if currentPageID != nil {
+                    Button("Use Default") {
+                        onClear()
+                        dismiss()
+                    }
+                    .buttonStyle(SoraninSecondaryButtonStyle(compact: true))
+                }
+
+                Spacer()
+
+                Button("Assign") {
+                    guard let selectedPageID,
+                          let item = items.first(where: { $0.pageID == selectedPageID })
+                    else {
+                        return
+                    }
+                    onAssign(item)
+                    dismiss()
+                }
+                .buttonStyle(SoraninPrimaryButtonStyle(compact: true))
+                .disabled(selectedPageID == nil)
+
+                Button("Done") {
+                    dismiss()
+                }
+                .buttonStyle(SoraninSecondaryButtonStyle(compact: true))
+            }
+        }
+        .padding(24)
+        .background(SoraninPalette.bgTop)
+        .frame(minWidth: 520, idealWidth: 640, maxWidth: 760, minHeight: 420)
+        .onAppear {
+            selectedPageID = currentPageID
+        }
+    }
+}
+
 struct HealthStatusSheet: View {
     @ObservedObject var model: ReelsModel
 
@@ -11170,16 +14682,41 @@ struct HealthStatusSheet: View {
 struct FacebookRunnerPackageCard: View {
     let item: EditedPackageItem
     let isSelected: Bool
+    let isBusy: Bool
     let onToggle: () -> Void
+    let onDelete: () -> Void
+
+    @State private var showDeleteConfirm = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             ThumbnailPreviewView(url: item.thumbnailURL)
                 .overlay(alignment: .topTrailing) {
-                    Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-                        .font(.system(size: 18, weight: .bold))
-                        .foregroundStyle(isSelected ? SoraninPalette.success : .white.opacity(0.95))
-                        .padding(8)
+                    HStack(spacing: 6) {
+                        Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                            .font(.system(size: 18, weight: .bold))
+                            .foregroundStyle(isSelected ? SoraninPalette.success : .white.opacity(0.95))
+
+                        Button {
+                            showDeleteConfirm = true
+                        } label: {
+                            Image(systemName: "xmark")
+                                .font(.system(size: 10, weight: .black))
+                                .foregroundStyle(.white)
+                                .frame(width: 22, height: 22)
+                                .background(
+                                    Circle()
+                                        .fill(Color.red.opacity(0.92))
+                                )
+                                .overlay(
+                                    Circle()
+                                        .stroke(Color.white.opacity(0.18), lineWidth: 1)
+                                )
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(isBusy)
+                    }
+                    .padding(8)
                 }
 
             Text(item.packageName)
@@ -11204,6 +14741,14 @@ struct FacebookRunnerPackageCard: View {
         .contentShape(Rectangle())
         .onTapGesture {
             onToggle()
+        }
+        .confirmationDialog("Delete this folder?", isPresented: $showDeleteConfirm, titleVisibility: .visible) {
+            Button("Delete", role: .destructive) {
+                onDelete()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(item.packageName)
         }
     }
 }
@@ -11241,17 +14786,10 @@ struct MacControlAlertPanel: View {
                         .foregroundStyle(SoraninPalette.secondaryText)
                         .fixedSize(horizontal: false, vertical: true)
                 }
-
-                Spacer(minLength: 8)
-
-                Button("OK") {
-                    onDismiss()
-                }
-                .buttonStyle(SoraninSecondaryButtonStyle(compact: true))
             }
         }
         .padding(16)
-        .frame(maxWidth: 420, alignment: .leading)
+        .frame(maxWidth: 360, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: 18, style: .continuous)
                 .fill(SoraninPalette.cardStrong)
@@ -11261,6 +14799,9 @@ struct MacControlAlertPanel: View {
                 .stroke(accentColor, lineWidth: 1)
         )
         .shadow(color: Color.black.opacity(0.28), radius: 20, y: 12)
+        .onTapGesture {
+            onDismiss()
+        }
     }
 }
 
@@ -11268,6 +14809,8 @@ struct FacebookRunnerSheet: View {
     @ObservedObject var model: ReelsModel
     @Binding var selectedProfileDirectoryName: String
     @Binding var pageName: String
+    @Binding var pageURL: String
+    @Binding var pageTargetKind: String
     @Binding var packageNamesText: String
     @Binding var intervalMinutes: Int
     @Binding var closeAfterEach: Bool
@@ -11282,6 +14825,10 @@ struct FacebookRunnerSheet: View {
     @State private var showingControlPasswordEditor = false
     @State private var controlPasswordDraft = ""
     @State private var controlPasswordConfirm = ""
+    @State private var showingSavedPageEditor = false
+    @State private var savedPageDraftName = ""
+    @State private var savedPageDraftURL = ""
+    @State private var savedPageDraftKind = "page"
     @State private var relayBaseURLDraft = ""
     @State private var relayUserNameDraft = ""
     @State private var relayMacNameDraft = ""
@@ -11294,8 +14841,27 @@ struct FacebookRunnerSheet: View {
         return model.chromeProfiles.first(where: { $0.directoryName == trimmed })
     }
 
+    private var currentSavedPageRecords: [SavedFacebookPageRecord] {
+        var seen: Set<String> = []
+        return savedFacebookPages(for: selectedProfile).filter { record in
+            let normalizedName = normalizedFacebookRunnerPageName(record.pageName).lowercased()
+            let normalizedKind = normalizedSavedFacebookPageKind(record.pageKind)
+            let key = "\(normalizedName)|\(normalizedKind)"
+            guard !normalizedName.isEmpty, seen.insert(key).inserted else { return false }
+            return true
+        }
+    }
+
+    private var currentPageSuggestions: [String] {
+        currentSavedPageRecords.map(\.pageName)
+    }
+
     private var normalizedPageName: String {
         normalizedFacebookRunnerPageName(pageName)
+    }
+
+    private var normalizedPageTargetKind: String {
+        normalizedSavedFacebookPageKind(pageTargetKind)
     }
 
     private var parsedPackageNames: [String] {
@@ -11367,6 +14933,54 @@ struct FacebookRunnerSheet: View {
 
     private var canSaveRelaySettings: Bool {
         !normalizedRelayBaseURL.isEmpty && !normalizedRelaySecretToken.isEmpty && URL(string: normalizedRelayBaseURL) != nil
+    }
+
+    private var canSavePageMemory: Bool {
+        selectedProfile != nil && !normalizedFacebookRunnerPageName(savedPageDraftName).isEmpty
+    }
+
+    private var canManageQueue: Bool {
+        selectedProfile != nil && !normalizedPageName.isEmpty
+    }
+
+    private var selectedSavedPageRecord: SavedFacebookPageRecord? {
+        savedPageRecord(for: pageName)
+    }
+
+    private var targetKindDisplayName: String {
+        normalizedPageTargetKind == "account" ? "Account" : "Page"
+    }
+
+    private var savedDraftKindDisplayName: String {
+        normalizedSavedFacebookPageKind(savedPageDraftKind) == "account" ? "Account" : "Page"
+    }
+
+    private func savedPageRecord(for suggestion: String) -> SavedFacebookPageRecord? {
+        let normalized = normalizedFacebookRunnerPageName(suggestion).lowercased()
+        guard !normalized.isEmpty else { return nil }
+        return currentSavedPageRecords.first {
+            normalizedFacebookRunnerPageName($0.pageName).lowercased() == normalized
+        }
+    }
+
+    private func applySavedPageSuggestion(_ suggestion: String) {
+        let cleaned = normalizedFacebookRunnerPageName(suggestion)
+        guard !cleaned.isEmpty else { return }
+        pageName = cleaned
+        if let record = savedPageRecord(for: suggestion) {
+            pageURL = record.pageURL
+            pageTargetKind = normalizedSavedFacebookPageKind(record.pageKind)
+        }
+    }
+
+    private func savedPageDisplayLabel(_ record: SavedFacebookPageRecord) -> String {
+        let kindLabel = normalizedSavedFacebookPageKind(record.pageKind) == "account" ? "Account" : "Page"
+        return "\(record.pageName) • \(kindLabel)"
+    }
+
+    private func savedPageIsSelected(_ record: SavedFacebookPageRecord) -> Bool {
+        normalizedFacebookRunnerPageName(pageName).lowercased() == normalizedFacebookRunnerPageName(record.pageName).lowercased()
+            && normalizedSavedFacebookPageKind(pageTargetKind) == normalizedSavedFacebookPageKind(record.pageKind)
     }
 
     private func beginEditingControlPassword() {
@@ -11444,6 +15058,58 @@ struct FacebookRunnerSheet: View {
         }
     }
 
+    private func beginSavingCurrentPage() {
+        savedPageDraftName = normalizedFacebookRunnerPageName(pageName)
+        if let existing = currentSavedPageRecords.first(where: {
+            normalizedFacebookRunnerPageName($0.pageName).lowercased() == normalizedFacebookRunnerPageName(pageName).lowercased()
+        }) {
+            savedPageDraftURL = existing.pageURL
+            savedPageDraftKind = normalizedSavedFacebookPageKind(existing.pageKind)
+        } else {
+            savedPageDraftURL = pageURL.trimmingCharacters(in: .whitespacesAndNewlines)
+            savedPageDraftKind = normalizedPageTargetKind
+        }
+        showingSavedPageEditor = true
+    }
+
+    private func saveCurrentPageToMemory() {
+        guard let selectedProfile else {
+            showLocalToast("Choose Chrome Profile first.")
+            return
+        }
+        guard let _ = saveFacebookPageRecord(
+            profile: selectedProfile,
+            pageName: savedPageDraftName,
+            pageURL: savedPageDraftURL,
+            pageKind: savedPageDraftKind
+        ) else {
+            showLocalToast("Enter Page Name first.")
+            return
+        }
+        pageName = normalizedFacebookRunnerPageName(savedPageDraftName)
+        pageURL = savedPageDraftURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        pageTargetKind = normalizedSavedFacebookPageKind(savedPageDraftKind)
+        showingSavedPageEditor = false
+        showLocalToast("Saved page for \(selectedProfile.displayName).")
+    }
+
+    private func clearInvalidPageNameIfNeeded() {
+        let cleaned = normalizedFacebookRunnerPageName(pageName)
+        if cleaned != pageName {
+            pageName = cleaned
+        }
+    }
+
+    private func applyRememberedPageSuggestion(force: Bool = false) {
+        let suggestions = currentPageSuggestions
+        guard let first = suggestions.first else { return }
+        let current = normalizedFacebookRunnerPageName(pageName).lowercased()
+        let containsCurrent = suggestions.contains { normalizedFacebookRunnerPageName($0).lowercased() == current }
+        if force || current.isEmpty || (!containsCurrent && suggestions.count == 1) {
+            applySavedPageSuggestion(first)
+        }
+    }
+
     @ViewBuilder
     private func serverURLRow(title: String, value: String, isPrimary: Bool = false) -> some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -11497,6 +15163,13 @@ struct FacebookRunnerSheet: View {
         syncFoldersTextFromSelectedCards()
     }
 
+    private func deleteRunnerPackage(_ item: EditedPackageItem) {
+        selectedPackageIDs.remove(item.id)
+        model.deletePackage(item)
+        pruneMissingPackagesFromText()
+        syncSelectedPackageIDsFromText()
+    }
+
     private func addSelectedPackagesToFolders() {
         let selectedNames = model.editedPackages
             .filter { selectedPackageIDs.contains($0.id) }
@@ -11539,6 +15212,24 @@ struct FacebookRunnerSheet: View {
                 Text("Run Facebook Reels preflight and batch upload inside Soranin.")
                     .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(SoraninPalette.secondaryText)
+                if model.isFacebookRunnerRunning {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Running Chrome: \(model.facebookRunnerActiveProfileName.isEmpty ? "Current Chrome" : model.facebookRunnerActiveProfileName)")
+                            .font(.system(size: 12, weight: .bold))
+                            .foregroundStyle(SoraninPalette.primaryText)
+                        let targetKind = model.facebookRunnerActiveTargetKind == "account" ? "Account" : "Page"
+                        Text("Running \(targetKind): \(model.facebookRunnerActiveTargetName)")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(SoraninPalette.secondaryText)
+                        if !model.facebookRunnerActivePackagesSummary.isEmpty {
+                            Text("Folders: \(model.facebookRunnerActivePackagesSummary)")
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundStyle(SoraninPalette.secondaryText)
+                                .lineLimit(2)
+                        }
+                    }
+                    .padding(.top, 2)
+                }
             }
             Spacer()
             Text(model.isBusy ? model.status : "Ready")
@@ -12007,9 +15698,208 @@ struct FacebookRunnerSheet: View {
 
     private var pageSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Facebook Page")
-                .font(.system(size: 13, weight: .bold))
-                .foregroundStyle(SoraninPalette.secondaryText)
+            HStack {
+                Text("Facebook Page / Account")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundStyle(SoraninPalette.secondaryText)
+                Spacer()
+                Button("Save \(targetKindDisplayName)") {
+                    beginSavingCurrentPage()
+                }
+                .buttonStyle(SoraninSecondaryButtonStyle(compact: true))
+                .disabled(selectedProfile == nil)
+            }
+
+            if let selectedProfile {
+                HStack(spacing: 10) {
+                    Button("Facebook Login") {
+                        model.openChromeProfileForFacebookLogin(selectedProfile)
+                    }
+                    .buttonStyle(SoraninSecondaryButtonStyle(compact: true))
+
+                    Button("Open Facebook") {
+                        model.openChromeProfile(selectedProfile, urlString: facebookChromeHomeURL, actionName: "Opened Facebook in")
+                    }
+                    .buttonStyle(SoraninSecondaryButtonStyle(compact: true))
+
+                    Button("Content Library") {
+                        model.openChromeProfileForFacebookContentLibrary(selectedProfile)
+                    }
+                    .buttonStyle(SoraninSecondaryButtonStyle(compact: true))
+
+                    if !pageURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        Button("Open Target URL") {
+                            model.openChromeProfileForFacebookURL(selectedProfile, urlString: pageURL)
+                        }
+                        .buttonStyle(SoraninSecondaryButtonStyle(compact: true))
+                    }
+                }
+
+                Text("Login each Facebook account in its own Chrome profile. Saved page list below is separate for each profile.")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(SoraninPalette.secondaryText)
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Target Type")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(SoraninPalette.secondaryText)
+                Picker("Target Type", selection: $pageTargetKind) {
+                    Text("Page").tag("page")
+                    Text("Account").tag("account")
+                }
+                .pickerStyle(.segmented)
+            }
+
+            if !currentSavedPageRecords.isEmpty {
+                Menu {
+                    ForEach(currentSavedPageRecords) { record in
+                        Button(savedPageDisplayLabel(record)) {
+                            applySavedPageSuggestion(record.pageName)
+                        }
+                    }
+                } label: {
+                    HStack {
+                        Label("Choose Saved Page / Account", systemImage: "flag")
+                        Spacer()
+                        Text("\(currentSavedPageRecords.count)")
+                            .font(.system(size: 12, weight: .bold))
+                            .foregroundStyle(SoraninPalette.secondaryText)
+                        Image(systemName: "chevron.down")
+                            .foregroundStyle(SoraninPalette.secondaryText)
+                    }
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(SoraninPalette.primaryText)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 12)
+                    .background(
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .fill(SoraninPalette.cardStrong)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .stroke(SoraninPalette.border, lineWidth: 1)
+                    )
+                }
+
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(currentSavedPageRecords) { record in
+                            Button(savedPageDisplayLabel(record)) {
+                                applySavedPageSuggestion(record.pageName)
+                            }
+                            .buttonStyle(.plain)
+                            .font(.system(size: 12, weight: .bold))
+                            .foregroundStyle(SoraninPalette.primaryText)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 8)
+                            .background(
+                                Capsule(style: .continuous)
+                                    .fill(
+                                        savedPageIsSelected(record)
+                                            ? SoraninPalette.success.opacity(0.22)
+                                            : SoraninPalette.cardSoft
+                                    )
+                            )
+                            .overlay(
+                                Capsule(style: .continuous)
+                                    .stroke(
+                                        savedPageIsSelected(record)
+                                            ? SoraninPalette.success.opacity(0.7)
+                                            : SoraninPalette.border,
+                                        lineWidth: 1
+                                    )
+                            )
+                        }
+                    }
+                    .padding(.vertical, 2)
+                }
+
+                Text("Saved Page/Account records for this Chrome profile only. Click one to fill Name + URL + Type quickly.")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(SoraninPalette.secondaryText)
+
+                VStack(spacing: 8) {
+                    ForEach(currentSavedPageRecords) { record in
+                        VStack(alignment: .leading, spacing: 10) {
+                            HStack(alignment: .top, spacing: 10) {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    HStack(spacing: 8) {
+                                        Text(record.pageName)
+                                            .font(.system(size: 13, weight: .bold))
+                                            .foregroundStyle(SoraninPalette.primaryText)
+                                        Text(normalizedSavedFacebookPageKind(record.pageKind) == "account" ? "Account" : "Page")
+                                            .font(.system(size: 11, weight: .bold))
+                                            .foregroundStyle(SoraninPalette.secondaryText)
+                                            .padding(.horizontal, 8)
+                                            .padding(.vertical, 4)
+                                            .background(
+                                                Capsule(style: .continuous)
+                                                    .fill(SoraninPalette.cardSoft)
+                                            )
+                                            .overlay(
+                                                Capsule(style: .continuous)
+                                                    .stroke(SoraninPalette.border, lineWidth: 1)
+                                            )
+                                    }
+                                    if !record.pageURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                                        Text(record.pageURL)
+                                            .font(.system(size: 11, weight: .medium, design: .monospaced))
+                                            .foregroundStyle(SoraninPalette.secondaryText)
+                                            .lineLimit(1)
+                                            .truncationMode(.middle)
+                                            .textSelection(.enabled)
+                                    } else {
+                                        Text("No saved URL yet. This record can still fill the target name.")
+                                            .font(.system(size: 11, weight: .medium))
+                                            .foregroundStyle(SoraninPalette.secondaryText)
+                                    }
+                                }
+                                Spacer(minLength: 12)
+                            }
+
+                            HStack(spacing: 8) {
+                                Button(savedPageIsSelected(record) ? "Using" : "Use") {
+                                    applySavedPageSuggestion(record.pageName)
+                                }
+                                .buttonStyle(SoraninSecondaryButtonStyle(compact: true))
+
+                                if let selectedProfile, !record.pageURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                                    Button("Open") {
+                                        model.openChromeProfileForFacebookURL(selectedProfile, urlString: record.pageURL)
+                                    }
+                                    .buttonStyle(SoraninSecondaryButtonStyle(compact: true))
+                                }
+
+                                Button("Forget") {
+                                    forgetSavedFacebookPageRecord(record)
+                                    if savedPageIsSelected(record) {
+                                        if currentSavedPageRecords.count == 1 {
+                                            pageURL = ""
+                                        }
+                                    }
+                                    showLocalToast("Removed saved \(normalizedSavedFacebookPageKind(record.pageKind) == "account" ? "account" : "page").")
+                                }
+                                .buttonStyle(SoraninSecondaryButtonStyle(compact: true))
+                            }
+                        }
+                        .padding(14)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(
+                            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                .fill(savedPageIsSelected(record) ? SoraninPalette.cardSoft : SoraninPalette.cardStrong)
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                .stroke(savedPageIsSelected(record) ? SoraninPalette.success : SoraninPalette.border, lineWidth: savedPageIsSelected(record) ? 2 : 1)
+                        )
+                    }
+                }
+            } else if selectedProfile != nil {
+                Text("No saved Page or Account for this Chrome profile yet. Open Facebook Login in this Chrome profile, sign in, then click Save Page after you fill Name + URL.")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(SoraninPalette.secondaryText)
+            }
 
             TextField("Nin Fishing", text: $pageName)
                 .textFieldStyle(.plain)
@@ -12024,7 +15914,196 @@ struct FacebookRunnerSheet: View {
                         .stroke(SoraninPalette.border, lineWidth: 1)
                 )
                 .foregroundStyle(SoraninPalette.primaryText)
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Facebook URL (optional)")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(SoraninPalette.secondaryText)
+                TextField("https://web.facebook.com/...", text: $pageURL)
+                    .textFieldStyle(.plain)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 12)
+                    .background(
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .fill(SoraninPalette.cardStrong)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .stroke(SoraninPalette.border, lineWidth: 1)
+                    )
+                    .foregroundStyle(SoraninPalette.primaryText)
+            }
+
+            HStack(spacing: 10) {
+                Text("Current Target")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(SoraninPalette.secondaryText)
+                Text(targetKindDisplayName)
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(SoraninPalette.primaryText)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(
+                        Capsule(style: .continuous)
+                            .fill(SoraninPalette.cardSoft)
+                    )
+                    .overlay(
+                        Capsule(style: .continuous)
+                            .stroke(SoraninPalette.border, lineWidth: 1)
+                    )
+            }
+
+            if let selectedSavedPageRecord {
+                HStack(spacing: 10) {
+                    Text(normalizedSavedFacebookPageKind(selectedSavedPageRecord.pageKind) == "account" ? "Account" : "Page")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(SoraninPalette.primaryText)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(
+                            Capsule(style: .continuous)
+                                .fill(SoraninPalette.cardSoft)
+                        )
+                        .overlay(
+                            Capsule(style: .continuous)
+                                .stroke(SoraninPalette.border, lineWidth: 1)
+                        )
+                    if !selectedSavedPageRecord.pageURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        Text(selectedSavedPageRecord.pageURL)
+                            .font(.system(size: 12, weight: .medium, design: .monospaced))
+                            .foregroundStyle(SoraninPalette.secondaryText)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                }
+            }
+
+            if let selectedProfile {
+                Text("Profile: \(selectedProfile.displayName). Save Page remembers Name + URL + Page/Account and run will try URL + Switch first.")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(SoraninPalette.secondaryText)
+            }
         }
+    }
+
+    private var savedPageEditorSheet: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Save \(savedDraftKindDisplayName)")
+                        .font(.system(size: 22, weight: .bold))
+                        .foregroundStyle(SoraninPalette.primaryText)
+                    Text("Remember this Facebook \(savedDraftKindDisplayName.lowercased()) for the selected Chrome profile.")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(SoraninPalette.secondaryText)
+                }
+                Spacer()
+                Button("Close") {
+                    showingSavedPageEditor = false
+                }
+                .buttonStyle(SoraninSecondaryButtonStyle(compact: true))
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Chrome Profile")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundStyle(SoraninPalette.secondaryText)
+                Picker("Chrome Profile", selection: $selectedProfileDirectoryName) {
+                    Text("Choose Chrome Profile").tag("")
+                    ForEach(model.chromeProfiles) { item in
+                        Text(item.displayName + (item.isOnline ? " • Online" : ""))
+                            .tag(item.directoryName)
+                    }
+                }
+                .pickerStyle(.menu)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 12)
+                .background(
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .fill(SoraninPalette.cardStrong)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .stroke(SoraninPalette.border, lineWidth: 1)
+                )
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Give Name \(savedDraftKindDisplayName)")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundStyle(SoraninPalette.secondaryText)
+                TextField("Tha Danin", text: $savedPageDraftName)
+                    .textFieldStyle(.plain)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 12)
+                    .background(
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .fill(SoraninPalette.cardStrong)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .stroke(SoraninPalette.border, lineWidth: 1)
+                    )
+                    .foregroundStyle(SoraninPalette.primaryText)
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("URL \(savedDraftKindDisplayName)")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundStyle(SoraninPalette.secondaryText)
+                TextField("https://web.facebook.com/...", text: $savedPageDraftURL)
+                    .textFieldStyle(.plain)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 12)
+                    .background(
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .fill(SoraninPalette.cardStrong)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .stroke(SoraninPalette.border, lineWidth: 1)
+                    )
+                    .foregroundStyle(SoraninPalette.primaryText)
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Type")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundStyle(SoraninPalette.secondaryText)
+                Picker("Type", selection: $savedPageDraftKind) {
+                    Text("Page").tag("page")
+                    Text("Account").tag("account")
+                }
+                .pickerStyle(.segmented)
+            }
+
+            if let selectedProfile {
+                Text("This \(savedDraftKindDisplayName.lowercased()) will be remembered under Chrome profile: \(selectedProfile.displayName)")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(SoraninPalette.secondaryText)
+            } else {
+                Text("Choose Chrome Profile first. This \(savedDraftKindDisplayName.lowercased()) will be remembered only for that profile.")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(SoraninPalette.secondaryText)
+            }
+
+            HStack {
+                Spacer()
+                Button("Cancel") {
+                    showingSavedPageEditor = false
+                }
+                .buttonStyle(SoraninSecondaryButtonStyle(compact: false))
+
+                Button("Add") {
+                    saveCurrentPageToMemory()
+                }
+                .buttonStyle(SoraninPrimaryButtonStyle(compact: false))
+                .disabled(!canSavePageMemory)
+            }
+        }
+        .padding(24)
+        .background(SoraninPalette.bgTop)
+        .frame(minWidth: 560, idealWidth: 640, maxWidth: 760, minHeight: 420)
     }
 
     private var foldersSection: some View {
@@ -12090,7 +16169,9 @@ struct FacebookRunnerSheet: View {
                         FacebookRunnerPackageCard(
                             item: item,
                             isSelected: selectedPackageIDs.contains(item.id),
-                            onToggle: { togglePackage(item) }
+                            isBusy: model.isBusy,
+                            onToggle: { togglePackage(item) },
+                            onDelete: { deleteRunnerPackage(item) }
                         )
                     }
                 }
@@ -12117,7 +16198,7 @@ struct FacebookRunnerSheet: View {
                     .foregroundStyle(SoraninPalette.primaryText)
             }
 
-            Toggle("Open selected Chrome profile first if it is offline", isOn: $openChromeFirst)
+            Toggle("Restart selected Chrome profile before run", isOn: $openChromeFirst)
             Toggle("Close Chrome after each package", isOn: $closeAfterEach)
             Toggle("Close Chrome after finish", isOn: $closeAfterFinish)
             Toggle("Post now but keep queue moving", isOn: $postNowAdvanceSlot)
@@ -12125,6 +16206,121 @@ struct FacebookRunnerSheet: View {
         }
         .toggleStyle(.switch)
         .foregroundStyle(SoraninPalette.primaryText)
+        .padding(16)
+        .background(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(SoraninPalette.cardStrong)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(SoraninPalette.border, lineWidth: 1)
+        )
+    }
+
+    @ViewBuilder
+    private func queueValueRow(_ title: String, value: String) -> some View {
+        HStack {
+            Text(title)
+                .font(.system(size: 12, weight: .bold))
+                .foregroundStyle(SoraninPalette.secondaryText)
+            Spacer()
+            Text(value)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(SoraninPalette.primaryText)
+                .multilineTextAlignment(.trailing)
+        }
+    }
+
+    private var queueSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("Queue Memory")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundStyle(SoraninPalette.secondaryText)
+                Spacer()
+                Text(model.facebookQueueReservedCount > 0 ? "\(model.facebookQueueReservedCount) reserved" : "Live")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(SoraninPalette.primaryText)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(
+                        Capsule(style: .continuous)
+                            .fill(SoraninPalette.cardSoft)
+                    )
+            }
+
+            queueValueRow("Today Remaining Slots", value: "\(model.facebookQueueTodayRemainingSlots)")
+            queueValueRow("Next Queue Time", value: model.facebookQueueNextQueueTime)
+            queueValueRow("Reserved Until", value: model.facebookQueueReservedUntil)
+            queueValueRow("Current Edited End", value: model.facebookQueueCurrentEditedEnd)
+            queueValueRow("40 Videos End", value: model.facebookQueue40VideosEnd)
+            queueValueRow("80 Videos End", value: model.facebookQueue80VideosEnd)
+
+            Toggle(
+                "Morning Only",
+                isOn: Binding(
+                    get: { model.facebookQueueMorningOnly },
+                    set: { newValue in
+                        model.facebookQueueMorningOnly = newValue
+                        model.setFacebookRunnerMorningOnly(
+                            profileDirectoryName: selectedProfileDirectoryName,
+                            pageName: pageName,
+                            enabled: newValue
+                        )
+                    }
+                )
+            )
+            .toggleStyle(.switch)
+            .disabled(!canManageQueue)
+
+            HStack(spacing: 10) {
+                Button("Reset Times") {
+                    model.resetFacebookRunnerQueue(profileDirectoryName: selectedProfileDirectoryName, pageName: pageName)
+                }
+                .buttonStyle(SoraninSecondaryButtonStyle(compact: true))
+                .disabled(!canManageQueue)
+
+                Button("Clear Queue") {
+                    model.clearFacebookRunnerQueue(profileDirectoryName: selectedProfileDirectoryName, pageName: pageName)
+                }
+                .buttonStyle(SoraninSecondaryButtonStyle(compact: true))
+                .disabled(!canManageQueue)
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Recent Results")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(SoraninPalette.secondaryText)
+                if model.facebookQueueRecentResults.isEmpty {
+                    Text("No recent results yet.")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(SoraninPalette.secondaryText)
+                } else {
+                    ForEach(Array(model.facebookQueueRecentResults.prefix(6))) { item in
+                        HStack(alignment: .top, spacing: 8) {
+                            Text((item.result ?? "-").uppercased())
+                                .font(.system(size: 10, weight: .bold))
+                                .foregroundStyle(
+                                    (item.result ?? "").lowercased() == "success"
+                                        ? SoraninPalette.success
+                                        : Color(red: 1.0, green: 0.48, blue: 0.48)
+                                )
+                                .frame(width: 54, alignment: .leading)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(item.packageName ?? "-")
+                                    .font(.system(size: 12, weight: .semibold))
+                                    .foregroundStyle(SoraninPalette.primaryText)
+                                Text(item.effectiveLabelAmpm ?? item.note ?? "-")
+                                    .font(.system(size: 11, weight: .medium))
+                                    .foregroundStyle(SoraninPalette.secondaryText)
+                                    .lineLimit(2)
+                            }
+                            Spacer()
+                        }
+                    }
+                }
+            }
+        }
         .padding(16)
         .background(
             RoundedRectangle(cornerRadius: 18, style: .continuous)
@@ -12174,6 +16370,8 @@ struct FacebookRunnerSheet: View {
                 model.runFacebookRunnerPreflight(
                     profileDirectoryName: selectedProfileDirectoryName,
                     pageName: pageName,
+                    pageURL: pageURL,
+                    pageTargetKind: pageTargetKind,
                     packageNamesText: packageNamesText,
                     intervalMinutes: intervalMinutes
                 )
@@ -12186,6 +16384,8 @@ struct FacebookRunnerSheet: View {
                 model.runFacebookRunnerBatch(
                     profileDirectoryName: selectedProfileDirectoryName,
                     pageName: pageName,
+                    pageURL: pageURL,
+                    pageTargetKind: pageTargetKind,
                     packageNamesText: packageNamesText,
                     intervalMinutes: intervalMinutes,
                     closeAfterEach: closeAfterEach,
@@ -12198,8 +16398,18 @@ struct FacebookRunnerSheet: View {
             .buttonStyle(SoraninPrimaryButtonStyle(compact: false))
             .disabled(!canRun)
 
-            Button("Quit Chrome") {
-                model.quitGoogleChromeCompletely()
+            Button("Stop Run") {
+                model.stopFacebookRunner()
+            }
+            .buttonStyle(SoraninSecondaryButtonStyle(compact: false))
+            .disabled(!model.isFacebookRunnerRunning)
+
+            Button(selectedProfile != nil ? "Close Selected Chrome" : "Quit Chrome") {
+                if let selectedProfile {
+                    model.closeChromeProfiles([selectedProfile])
+                } else {
+                    model.quitGoogleChromeCompletely()
+                }
             }
             .buttonStyle(SoraninSecondaryButtonStyle(compact: false))
 
@@ -12220,6 +16430,7 @@ struct FacebookRunnerSheet: View {
             foldersSection
             selectionSection
             optionsSection
+            queueSection
             infoSection
         }
     }
@@ -12251,6 +16462,7 @@ struct FacebookRunnerSheet: View {
             if facebookControlPassword.isEmpty {
                 facebookControlPassword = loadSavedFacebookControlPassword()
             }
+            clearInvalidPageNameIfNeeded()
             controlPasswordDraft = facebookControlPassword
             controlPasswordConfirm = facebookControlPassword
             loadRelayEditorFromSavedConfig()
@@ -12264,12 +16476,34 @@ struct FacebookRunnerSheet: View {
             }
             syncSelectedPackageIDsFromText()
             pruneMissingPackagesFromText()
+            model.refreshFacebookRunnerQueueInfo(
+                profileDirectoryName: selectedProfileDirectoryName,
+                pageName: pageName
+            )
         }
         .onChange(of: model.chromeProfiles) { profiles in
             if selectedProfileDirectoryName.isEmpty,
                let firstOnline = profiles.first(where: { $0.isOnline }) {
                 selectedProfileDirectoryName = firstOnline.directoryName
             }
+        }
+        .onChange(of: selectedProfileDirectoryName) { _ in
+            clearInvalidPageNameIfNeeded()
+            applyRememberedPageSuggestion()
+            model.refreshFacebookRunnerQueueInfo(
+                profileDirectoryName: selectedProfileDirectoryName,
+                pageName: pageName
+            )
+        }
+        .onChange(of: pageName) { _ in
+            clearInvalidPageNameIfNeeded()
+            model.refreshFacebookRunnerQueueInfo(
+                profileDirectoryName: selectedProfileDirectoryName,
+                pageName: pageName
+            )
+        }
+        .onChange(of: pageTargetKind) { newValue in
+            pageTargetKind = normalizedSavedFacebookPageKind(newValue)
         }
         .onChange(of: packageNamesText) { _ in
             syncSelectedPackageIDsFromText()
@@ -12285,6 +16519,9 @@ struct FacebookRunnerSheet: View {
                 controlPasswordConfirm = newValue
             }
         }
+        .sheet(isPresented: $showingSavedPageEditor) {
+            savedPageEditorSheet
+        }
     }
 }
 
@@ -12297,9 +16534,13 @@ struct ContentView: View {
     @State private var showingAIChat = false
     @State private var detailItem: EditedPackageItem?
     @State private var profilePickerItem: EditedPackageItem?
+    @State private var facebookPagePickerItem: EditedPackageItem?
+    @State private var editingFacebookPageRecord: SavedFacebookUploadPageRecord?
     @State private var isDropTargeted = false
     @AppStorage("soranin.facebookRunner.profileDirectoryName") private var facebookRunnerProfileDirectoryName = ""
     @AppStorage("soranin.facebookRunner.pageName") private var facebookRunnerPageName = ""
+    @AppStorage("soranin.facebookRunner.pageURL") private var facebookRunnerPageURL = ""
+    @AppStorage("soranin.facebookRunner.pageTargetKind") private var facebookRunnerPageTargetKind = "page"
     @AppStorage("soranin.facebookRunner.packageNamesText") private var facebookRunnerPackageNamesText = ""
     @AppStorage("soranin.facebookRunner.intervalMinutes") private var facebookRunnerIntervalMinutes = 30
     @AppStorage("soranin.facebookRunner.closeAfterEach") private var facebookRunnerCloseAfterEach = true
@@ -12353,6 +16594,13 @@ struct ContentView: View {
                                     }
                                     .buttonStyle(SoraninSecondaryButtonStyle(compact: true))
 
+                                    if model.isFacebookRunnerRunning {
+                                        Button("Stop Runner") {
+                                            model.stopFacebookRunner()
+                                        }
+                                        .buttonStyle(SoraninSecondaryButtonStyle(compact: true))
+                                    }
+
                                     Button("API Keys") {
                                         showingSettings = true
                                     }
@@ -12388,6 +16636,13 @@ struct ContentView: View {
                                         model.refreshChromeProfiles()
                                     }
                                     .buttonStyle(SoraninSecondaryButtonStyle(compact: true))
+
+                                    if model.isFacebookRunnerRunning {
+                                        Button("Stop Runner") {
+                                            model.stopFacebookRunner()
+                                        }
+                                        .buttonStyle(SoraninSecondaryButtonStyle(compact: true))
+                                    }
 
                                     Button("API Keys") {
                                         showingSettings = true
@@ -12500,6 +16755,7 @@ struct ContentView: View {
 
                         EditProgressPanel(
                             isVisible: model.isBatchProgressVisible,
+                            title: model.batchProgressTitle,
                             percent: model.batchProgressPercent,
                             label: model.batchProgressLabel
                         )
@@ -12508,6 +16764,14 @@ struct ContentView: View {
                             items: model.editedPackages,
                             isBusy: model.isBusy,
                             selectedIDs: model.selectedEditedPackageIDs,
+                            facebookPageLabel: model.facebookPageLabelStatus,
+                            facebookPageIDStatus: model.facebookPageIDStatus,
+                            facebookTokenStatus: model.facebookPageTokenStatus,
+                            savedFacebookPages: model.savedFacebookUploadPages,
+                            facebookQueueTodayRemainingSlots: model.facebookQueueTodayRemainingSlots,
+                            facebookQueueNextQueueTime: model.facebookQueueNextQueueTime,
+                            facebookQueueReservedUntil: model.facebookQueueReservedUntil,
+                            facebookDeleteAfterSuccessEnabled: model.facebookDeleteAfterSuccessEnabled,
                             onCopyTitle: { model.copyTitle($0) },
                             onCopyAllTitles: { model.copyAllTitles() },
                             onToggleSelection: { model.toggleEditedPackageSelection($0) },
@@ -12516,6 +16780,26 @@ struct ContentView: View {
                             onOpenProfiles: {
                                 model.refreshChromeProfiles()
                                 profilePickerItem = $0
+                            },
+                            onPublishPackage: { model.publishFacebookPackage($0, scheduled: false) },
+                            onSchedulePackage: { model.publishFacebookPackage($0, scheduled: true) },
+                            onPublishSelected: { model.publishSelectedEditedPackagesToFacebook(scheduled: false) },
+                            onScheduleSelected: { model.publishSelectedEditedPackagesToFacebook(scheduled: true) },
+                            onSelectFacebookPage: { model.activateFacebookUploadPageProfile($0) },
+                            onEditFacebookPage: { record in
+                                editingFacebookPageRecord = record
+                                showingSettings = true
+                            },
+                            onOpenFacebookPagePicker: { facebookPagePickerItem = $0 },
+                            onMoveEarlier: { model.moveEditedPackageEarlier($0) },
+                            onMoveLater: { model.moveEditedPackageLater($0) },
+                            onToggleFacebookDeleteAfterSuccess: { enabled in
+                                model.saveFacebookSettings(
+                                    pageID: model.facebookPageIDStatus == "Not set" ? "" : model.facebookPageIDStatus,
+                                    accessToken: nil,
+                                    removeToken: false,
+                                    deleteAfterSuccess: enabled
+                                )
                             },
                             onDeletePackage: { model.deletePackage($0) },
                             onDeleteSelected: { model.deleteSelectedPackages() },
@@ -12547,15 +16831,41 @@ struct ContentView: View {
                     .background(
                         LinearGradient(colors: [SoraninPalette.bgTop, SoraninPalette.bgBottom], startPoint: .top, endPoint: .bottom)
                     )
-                    .sheet(isPresented: $showingSettings) {
+                    .sheet(isPresented: $showingSettings, onDismiss: {
+                        editingFacebookPageRecord = nil
+                    }) {
                         APISettingsSheet(
                             currentProvider: model.activeProvider,
                             openAIStatus: model.openAIKeyStatus,
-                            geminiStatus: model.geminiKeyStatus
+                            geminiStatus: model.geminiKeyStatus,
+                            facebookPageLabelStatus: model.facebookPageLabelStatus,
+                            facebookPageIDStatus: model.facebookPageIDStatus,
+                            facebookTokenStatus: model.facebookPageTokenStatus,
+                            savedFacebookPages: model.savedFacebookUploadPages,
+                            facebookDeleteAfterSuccess: model.facebookDeleteAfterSuccessEnabled,
+                            initialFacebookPageRecord: editingFacebookPageRecord
                         ) { openAIKey, geminiKey, provider in
                             model.saveSettings(openAIKey: openAIKey, geminiKey: geminiKey, provider: provider)
                         } onRemove: { removeOpenAI, removeGemini, provider in
                             model.removeSavedSettings(removeOpenAI: removeOpenAI, removeGemini: removeGemini, provider: provider)
+                        } onSaveFacebook: { pageID, token, removeToken, deleteAfterSuccess in
+                            model.saveFacebookSettings(
+                                pageID: pageID,
+                                accessToken: token,
+                                removeToken: removeToken,
+                                deleteAfterSuccess: deleteAfterSuccess
+                            )
+                        } onSaveFacebookPageProfile: { label, pageID, token, deleteAfterSuccess in
+                            model.saveFacebookUploadPageProfile(
+                                label: label,
+                                pageID: pageID,
+                                accessToken: token,
+                                deleteAfterSuccess: deleteAfterSuccess
+                            )
+                        } onApplyFacebookPageProfile: { record, deleteAfterSuccess in
+                            model.activateFacebookUploadPageProfile(record, deleteAfterSuccess: deleteAfterSuccess)
+                        } onDeleteFacebookPageProfile: { record in
+                            model.deleteFacebookUploadPageProfile(record)
                         } onTest: { provider, completion in
                             model.testSavedAIProvider(provider, completion: completion)
                         }
@@ -12568,6 +16878,8 @@ struct ContentView: View {
                             model: model,
                             selectedProfileDirectoryName: $facebookRunnerProfileDirectoryName,
                             pageName: $facebookRunnerPageName,
+                            pageURL: $facebookRunnerPageURL,
+                            pageTargetKind: $facebookRunnerPageTargetKind,
                             packageNamesText: $facebookRunnerPackageNamesText,
                             intervalMinutes: $facebookRunnerIntervalMinutes,
                             closeAfterEach: $facebookRunnerCloseAfterEach,
@@ -12595,10 +16907,23 @@ struct ContentView: View {
                             onClear: { model.clearAssignedChromeProfile(for: item) }
                         )
                     }
+                    .sheet(item: $facebookPagePickerItem) { item in
+                        FacebookPagePickerSheet(
+                            packageName: item.packageName,
+                            items: model.savedFacebookUploadPages,
+                            currentPageID: item.assignedFacebookPageID,
+                            defaultPageLabel: model.facebookPageLabelStatus,
+                            onAssign: { model.assignFacebookPageProfile($0, to: item) },
+                            onClear: { model.clearAssignedFacebookPageProfile(for: item) }
+                        )
+                    }
                     .onReceive(timer) { _ in
                         model.refreshMetadata()
                         model.refreshFacebookControlServerConnectionInfo()
                         model.refreshFacebookControlServerRuntimeStatus()
+                        if !model.isFacebookControlServerOnline {
+                            model.ensureFacebookControlServerRunning()
+                        }
                     }
                     .onChange(of: model.soraInput) { _ in
                         model.normalizeSoraInputAfterEdit()
@@ -12612,6 +16937,7 @@ struct ContentView: View {
                         showingAIChat = false
                         detailItem = nil
                         profilePickerItem = nil
+                        facebookPagePickerItem = nil
                     }
                 }
                 .allowsHitTesting(!showingAIChat)
@@ -12659,6 +16985,7 @@ struct ContentView: View {
         .preferredColorScheme(.dark)
         .onAppear {
             model.setAIChatVisibility(false)
+            model.refreshMetadata()
             model.ensureFacebookControlServerRunning()
             model.refreshFacebookControlServerConnectionInfo()
             model.refreshFacebookControlServerRuntimeStatus()
