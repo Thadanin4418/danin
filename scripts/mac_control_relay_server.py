@@ -365,7 +365,13 @@ class RelayHandler(BaseHTTPRequestHandler):
             self._send_json(body, status)
             return
 
-        if tail in {"/facebook-post-preflight", "/facebook-post-run", "/quit-chrome", "/remote-run"}:
+        if tail in {
+            "/facebook-post-preflight",
+            "/facebook-post-run",
+            "/facebook-upload-run",
+            "/quit-chrome",
+            "/remote-run",
+        }:
             client = STORE.client_status(token)
             if not now_is_recent(client.get("last_seen_at"), CLIENT_STALE_SECONDS):
                 self._send_json(
