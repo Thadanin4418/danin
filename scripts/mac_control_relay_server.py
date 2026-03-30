@@ -46,18 +46,26 @@ def _relay_store_path() -> Path:
 
 STORE_PATH = _relay_store_path()
 SHARED_QUEUE_DIR = STORE_PATH.parent / "facebook_shared_queues"
-SHARED_QUEUE_LOCK = threading.Lock()
+SHARED_QUEUE_LOCKS: dict[str, threading.Lock] = {}
+SHARED_QUEUE_LOCKS_GUARD = threading.Lock()
 
 
 @contextmanager
-def _shared_queue_guard():
-    acquired = SHARED_QUEUE_LOCK.acquire(timeout=SHARED_QUEUE_LOCK_TIMEOUT_SECONDS)
+def _shared_queue_guard(page_id: str, queue_secret: str = ""):
+    state_path = _shared_queue_state_path(page_id, queue_secret)
+    lock_key = str(state_path)
+    with SHARED_QUEUE_LOCKS_GUARD:
+        queue_lock = SHARED_QUEUE_LOCKS.get(lock_key)
+        if queue_lock is None:
+            queue_lock = threading.Lock()
+            SHARED_QUEUE_LOCKS[lock_key] = queue_lock
+    acquired = queue_lock.acquire(timeout=SHARED_QUEUE_LOCK_TIMEOUT_SECONDS)
     if not acquired:
         raise RuntimeError("Shared queue is busy. Try again.")
     try:
         yield
     finally:
-        SHARED_QUEUE_LOCK.release()
+        queue_lock.release()
 
 
 class RelayStore:
@@ -223,7 +231,7 @@ def _is_allowed_fixed_slot(candidate: object, morning_only: bool) -> bool:
 
 
 def _shared_queue_status(page_id: str, *, queue_secret: str = "", package_count: int = 0) -> dict[str, object]:
-    with _shared_queue_guard():
+    with _shared_queue_guard(page_id, queue_secret):
         state_path = _shared_queue_state_path(page_id, queue_secret)
         identity = _shared_queue_identity(page_id)
         state = facebook_timing.load_state(state_path)
@@ -242,7 +250,7 @@ def _shared_queue_reserve(
     reservation_key: str = "",
     requested_schedule_at: str = "",
 ) -> dict[str, object]:
-    with _shared_queue_guard():
+    with _shared_queue_guard(page_id, queue_secret):
         state_path = _shared_queue_state_path(page_id, queue_secret)
         identity = _shared_queue_identity(page_id)
         now = facebook_timing.now_khmer()
@@ -353,7 +361,7 @@ def _shared_queue_finalize(
     decision_payload: dict[str, object],
     interval_minutes: int | None = None,
 ) -> dict[str, object]:
-    with _shared_queue_guard():
+    with _shared_queue_guard(page_id, queue_secret):
         state_path = _shared_queue_state_path(page_id, queue_secret)
         identity = _shared_queue_identity(page_id)
         action = str(decision_payload.get("action") or "schedule").strip()
@@ -399,7 +407,7 @@ def _shared_queue_release(
     reservation_key: str = "",
     anchor_at: str = "",
 ) -> dict[str, object]:
-    with _shared_queue_guard():
+    with _shared_queue_guard(page_id, queue_secret):
         state_path = _shared_queue_state_path(page_id, queue_secret)
         identity = _shared_queue_identity(page_id)
         state = facebook_timing.load_state(state_path)
@@ -458,7 +466,7 @@ def _shared_queue_record_result(
     action: str = "",
     effective_at: str = "",
 ) -> dict[str, object]:
-    with _shared_queue_guard():
+    with _shared_queue_guard(page_id, queue_secret):
         state_path = _shared_queue_state_path(page_id, queue_secret)
         identity = _shared_queue_identity(page_id)
         effective_dt = facebook_timing.deserialize_dt(effective_at) if effective_at else None
