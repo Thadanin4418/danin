@@ -78,7 +78,7 @@ def relay_request_json(
     return parsed
 
 
-def fetch_queue_statuses(page_ids: list[str], *, package_count: int = 0, timeout: float = 4.0) -> dict[str, dict[str, Any]]:
+def fetch_queue_statuses(page_ids: list[str], *, package_count: int = 0, timeout: float = 1.5) -> dict[str, dict[str, Any]]:
     base = relay_base_url()
     cleaned = [str(page_id or "").strip() for page_id in page_ids if str(page_id or "").strip()]
     if not base or not cleaned:
@@ -114,7 +114,7 @@ def reserve_schedule(
     package_name: str,
     reservation_key: str = "",
     requested_schedule_at: str = "",
-    timeout: float = 8.0,
+    timeout: float = 1.5,
 ) -> dict[str, Any] | None:
     base = relay_base_url()
     if not base:
