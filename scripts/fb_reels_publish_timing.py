@@ -14,7 +14,7 @@ from soranin_paths import FACEBOOK_STATE_PATH
 POST_INTERVAL_MINUTES = 30
 MIN_SCHEDULE_LEAD_MINUTES = 30
 DEFAULT_STATE_PATH = FACEBOOK_STATE_PATH
-STATE_SCHEMA_VERSION = 6
+STATE_SCHEMA_VERSION = 7
 MAX_RECENT_RESULTS = 20
 SUMMARY_FIELDS = (
     "interval_minutes",
@@ -197,6 +197,39 @@ def _normalize_reserved_slots(profile_state: dict, now: datetime | None = None) 
     reserved = sorted({slot for slot in reserved})
     profile_state["reserved_slots"] = [serialize_dt(slot) for slot in reserved]
     return reserved
+
+
+def _normalize_pending_reservations(
+    profile_state: dict,
+    now: datetime | None = None,
+) -> dict[str, dict[str, str]]:
+    now_floor = current_minute(now or now_khmer())
+    raw_map = profile_state.get("pending_reservations")
+    if not isinstance(raw_map, dict):
+        raw_map = {}
+    normalized: dict[str, dict[str, str]] = {}
+    for raw_key, raw_value in raw_map.items():
+        reservation_key = str(raw_key or "").strip()
+        if not reservation_key:
+            continue
+        if isinstance(raw_value, dict):
+            anchor_raw = str(raw_value.get("anchor_at") or "").strip()
+            package_name = str(raw_value.get("package_name") or "").strip()
+        else:
+            anchor_raw = str(raw_value or "").strip()
+            package_name = ""
+        anchor_dt = deserialize_dt(anchor_raw)
+        if anchor_dt is None:
+            continue
+        anchor_slot = current_minute(anchor_dt)
+        if anchor_slot < now_floor:
+            continue
+        normalized[reservation_key] = {
+            "anchor_at": serialize_dt(anchor_slot),
+            "package_name": package_name,
+        }
+    profile_state["pending_reservations"] = normalized
+    return normalized
 
 
 def _normalize_reserved_slot_values(values: list[object] | None, now: datetime | None = None) -> list[datetime]:
@@ -403,6 +436,7 @@ def empty_profile_state(identity: ProfileIdentity) -> dict:
         "history": [],
         "recent_results": [],
         "reserved_slots": [],
+        "pending_reservations": {},
         "morning_only": False,
     }
 
@@ -637,8 +671,10 @@ def normalize_state(raw_state: dict | None, legacy_profile: ProfileIdentity | No
         profile_state["history"] = annotate_history(profile_value.get("history", []), identity)
         profile_state["recent_results"] = normalize_recent_results(profile_value.get("recent_results", []), identity)
         profile_state["reserved_slots"] = list(profile_value.get("reserved_slots", []) or [])
+        profile_state["pending_reservations"] = dict(profile_value.get("pending_reservations", {}) or {})
         profile_state["morning_only"] = bool(profile_value.get("morning_only"))
         _refresh_profile_summary(profile_state)
+        _normalize_pending_reservations(profile_state)
         normalized_profiles[identity.profile_key] = profile_state
 
     state["profiles"] = normalized_profiles
@@ -773,8 +809,11 @@ def ensure_profile_state(
         profile_state["recent_results"] = []
     if not isinstance(profile_state.get("reserved_slots"), list):
         profile_state["reserved_slots"] = []
+    if not isinstance(profile_state.get("pending_reservations"), dict):
+        profile_state["pending_reservations"] = {}
     profile_state["morning_only"] = bool(profile_state.get("morning_only"))
     _refresh_profile_summary(profile_state)
+    _normalize_pending_reservations(profile_state)
     return profile_state
 
 
@@ -838,12 +877,12 @@ def queue_status(
         profile_directory=profile_directory,
         page_name=page_name,
     )
-    global_reserved_slots = _all_reserved_slots(state, now=now)
+    reserved_slots = _normalize_reserved_slots(profile_state, now=now)
     summary = _refresh_profile_summary(
         profile_state,
         now=now,
         package_count=package_count,
-        reserved_slots=global_reserved_slots,
+        reserved_slots=reserved_slots,
     )
     summary["profile_key"] = profile_state.get("profile_key")
     summary["profile_name"] = profile_state.get("profile_name")
@@ -937,7 +976,7 @@ def record_decision(
         page_name=page_name,
     )
     resolved_interval_minutes = resolve_interval_minutes(profile_state, interval_minutes)
-    reserved_slots = _all_reserved_slots(state)
+    reserved_slots = _normalize_reserved_slots(profile_state)
     anchor_slot = current_minute(decision.anchor_at)
     if anchor_slot not in reserved_slots:
         reserved_slots.append(anchor_slot)
@@ -1004,7 +1043,7 @@ def reserve_anchor(
         page_name=page_name,
     )
     resolved_interval_minutes = resolve_interval_minutes(profile_state, interval_minutes)
-    reserved_slots = _all_reserved_slots(state)
+    reserved_slots = _normalize_reserved_slots(profile_state)
     anchor_slot = current_minute(anchor_at)
     if anchor_slot not in reserved_slots:
         reserved_slots.append(anchor_slot)
@@ -1031,10 +1070,20 @@ def release_anchor(
     state = load_state(state_path)
     anchor_key = serialize_dt(current_minute(anchor_at))
     profiles = state.get("profiles", {})
+    target_profile_state: dict | None = None
     if isinstance(profiles, dict):
-        for profile_state in profiles.values():
-            if not isinstance(profile_state, dict):
-                continue
+        if profile_key or profile_name or profile_directory or page_name:
+            target_profile_state = ensure_profile_state(
+                state,
+                profile_key=profile_key,
+                profile_name=profile_name,
+                profile_directory=profile_directory,
+                page_name=page_name,
+            )
+            targets = [target_profile_state]
+        else:
+            targets = [value for value in profiles.values() if isinstance(value, dict)]
+        for profile_state in targets:
             slots = [
                 raw
                 for raw in list(profile_state.get("reserved_slots", []) or [])
@@ -1054,7 +1103,7 @@ def release_anchor(
         if isinstance(selected_key, str) and selected_key in profiles:
             apply_root_summary_from_profile(state, profiles[selected_key])
         else:
-            profile_state = ensure_profile_state(
+            profile_state = target_profile_state or ensure_profile_state(
                 state,
                 profile_key=profile_key,
                 profile_name=profile_name,

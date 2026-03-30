@@ -112,6 +112,7 @@ def reserve_schedule(
     *,
     page_id: str,
     package_name: str,
+    reservation_key: str = "",
     requested_schedule_at: str = "",
     timeout: float = 8.0,
 ) -> dict[str, Any] | None:
@@ -124,6 +125,7 @@ def reserve_schedule(
         payload={
             "page_id": str(page_id or "").strip(),
             "package_name": str(package_name or "").strip(),
+            "reservation_key": str(reservation_key or "").strip(),
             "requested_schedule_at": str(requested_schedule_at or "").strip(),
         },
         timeout=timeout,
@@ -135,6 +137,7 @@ def finalize_schedule(
     *,
     page_id: str,
     package_name: str,
+    reservation_key: str = "",
     decision: dict[str, object],
     interval_minutes: int | None = None,
     timeout: float = 8.0,
@@ -145,6 +148,7 @@ def finalize_schedule(
     payload: dict[str, object] = {
         "page_id": str(page_id or "").strip(),
         "package_name": str(package_name or "").strip(),
+        "reservation_key": str(reservation_key or "").strip(),
         "decision": dict(decision),
     }
     if interval_minutes is not None:
@@ -161,7 +165,8 @@ def finalize_schedule(
 def release_schedule(
     *,
     page_id: str,
-    anchor_at: str,
+    reservation_key: str = "",
+    anchor_at: str = "",
     timeout: float = 8.0,
 ) -> dict[str, Any] | None:
     base = relay_base_url()
@@ -172,6 +177,7 @@ def release_schedule(
         f"{base}/shared/facebook-page-queue/release",
         payload={
             "page_id": str(page_id or "").strip(),
+            "reservation_key": str(reservation_key or "").strip(),
             "anchor_at": str(anchor_at or "").strip(),
         },
         timeout=timeout,
@@ -183,6 +189,7 @@ def record_result(
     *,
     page_id: str,
     package_name: str,
+    reservation_key: str = "",
     result: str,
     note: str,
     action: str = "",
@@ -198,6 +205,7 @@ def record_result(
         payload={
             "page_id": str(page_id or "").strip(),
             "package_name": str(package_name or "").strip(),
+            "reservation_key": str(reservation_key or "").strip(),
             "result": str(result or "").strip(),
             "note": str(note or "").strip(),
             "action": str(action or "").strip(),

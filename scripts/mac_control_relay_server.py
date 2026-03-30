@@ -161,6 +161,20 @@ def _shared_queue_identity(page_id: str) -> dict[str, str]:
     }
 
 
+def _shared_queue_owner_key(package_name: str, reservation_key: str = "") -> str:
+    explicit = str(reservation_key or "").strip()
+    if explicit:
+        return explicit
+    fallback = str(package_name or "").strip()
+    if fallback:
+        return f"package::{fallback}"
+    raise RuntimeError("Shared queue reservation key is required.")
+
+
+def _shared_queue_pending_map(profile_state: dict, *, now=None) -> dict[str, dict[str, str]]:
+    return facebook_timing._normalize_pending_reservations(profile_state, now=now)
+
+
 def _is_allowed_fixed_slot(candidate: object, morning_only: bool) -> bool:
     if not hasattr(candidate, "tzinfo"):
         return False
@@ -191,6 +205,7 @@ def _shared_queue_reserve(
     *,
     queue_secret: str = "",
     package_name: str,
+    reservation_key: str = "",
     requested_schedule_at: str = "",
 ) -> dict[str, object]:
     with SHARED_QUEUE_LOCK:
@@ -199,6 +214,23 @@ def _shared_queue_reserve(
         now = facebook_timing.now_khmer()
         state = facebook_timing.load_state(state_path)
         profile_state = facebook_timing.ensure_profile_state(state, **identity)
+        owner_key = _shared_queue_owner_key(package_name, reservation_key)
+        pending = _shared_queue_pending_map(profile_state, now=now)
+        existing_pending = pending.get(owner_key)
+        existing_anchor = None
+        if isinstance(existing_pending, dict):
+            existing_anchor = facebook_timing.deserialize_dt(str(existing_pending.get("anchor_at") or "").strip())
+        if existing_anchor is not None:
+            facebook_timing.release_anchor(
+                anchor_at=existing_anchor,
+                state_path=state_path,
+                **identity,
+            )
+            state = facebook_timing.load_state(state_path)
+            profile_state = facebook_timing.ensure_profile_state(state, **identity)
+            pending = _shared_queue_pending_map(profile_state, now=now)
+            pending.pop(owner_key, None)
+            facebook_timing.save_state(state, state_path)
         morning_only = bool(profile_state.get("morning_only"))
         reserved_slots = facebook_timing._all_reserved_slots(state, now=now)
         reserved_keys = {facebook_timing.serialize_dt(slot) for slot in reserved_slots}
@@ -248,6 +280,14 @@ def _shared_queue_reserve(
             state_path=state_path,
             **identity,
         )
+        state = facebook_timing.load_state(state_path)
+        profile_state = facebook_timing.ensure_profile_state(state, **identity)
+        pending = _shared_queue_pending_map(profile_state, now=now)
+        pending[owner_key] = {
+            "anchor_at": facebook_timing.serialize_dt(decision.anchor_at),
+            "package_name": str(package_name or "").strip(),
+        }
+        facebook_timing.save_state(state, state_path)
         queue = facebook_timing.queue_status(
             facebook_timing.load_state(state_path),
             **identity,
@@ -256,6 +296,7 @@ def _shared_queue_reserve(
             "ok": True,
             "page_id": page_id,
             "package_name": str(package_name or "").strip(),
+            "reservation_key": owner_key,
             "scheduled_publish_time": int(decision.effective_at.timestamp()),
             "summary": summary,
             "decision": {
@@ -274,6 +315,7 @@ def _shared_queue_finalize(
     *,
     queue_secret: str = "",
     package_name: str,
+    reservation_key: str = "",
     decision_payload: dict[str, object],
     interval_minutes: int | None = None,
 ) -> dict[str, object]:
@@ -300,6 +342,12 @@ def _shared_queue_finalize(
             interval_minutes=interval_minutes,
             **identity,
         )
+        state = facebook_timing.load_state(state_path)
+        profile_state = facebook_timing.ensure_profile_state(state, **identity)
+        owner_key = _shared_queue_owner_key(package_name, reservation_key)
+        pending = _shared_queue_pending_map(profile_state)
+        pending.pop(owner_key, None)
+        facebook_timing.save_state(state, state_path)
         return {
             "ok": True,
             "page_id": page_id,
@@ -310,18 +358,51 @@ def _shared_queue_finalize(
         }
 
 
-def _shared_queue_release(page_id: str, *, queue_secret: str = "", anchor_at: str) -> dict[str, object]:
+def _shared_queue_release(
+    page_id: str,
+    *,
+    queue_secret: str = "",
+    reservation_key: str = "",
+    anchor_at: str = "",
+) -> dict[str, object]:
     with SHARED_QUEUE_LOCK:
         state_path = _shared_queue_state_path(page_id, queue_secret)
         identity = _shared_queue_identity(page_id)
+        state = facebook_timing.load_state(state_path)
+        profile_state = facebook_timing.ensure_profile_state(state, **identity)
+        owner_key = _shared_queue_owner_key("", reservation_key) if str(reservation_key or "").strip() else ""
+        pending = _shared_queue_pending_map(profile_state)
         anchor_dt = facebook_timing.deserialize_dt(anchor_at)
-        if anchor_dt is None:
-            raise RuntimeError("Shared queue release requires anchor_at.")
-        facebook_timing.release_anchor(
-            anchor_at=anchor_dt,
-            state_path=state_path,
-            **identity,
-        )
+        if owner_key:
+            pending_entry = pending.get(owner_key)
+            if isinstance(pending_entry, dict):
+                owner_anchor = facebook_timing.deserialize_dt(str(pending_entry.get("anchor_at") or "").strip())
+                if owner_anchor is not None:
+                    anchor_dt = owner_anchor
+        if anchor_dt is not None:
+            facebook_timing.release_anchor(
+                anchor_at=anchor_dt,
+                state_path=state_path,
+                **identity,
+            )
+            state = facebook_timing.load_state(state_path)
+            profile_state = facebook_timing.ensure_profile_state(state, **identity)
+            pending = _shared_queue_pending_map(profile_state)
+        if owner_key:
+            pending.pop(owner_key, None)
+        if anchor_dt is not None:
+            anchor_key = facebook_timing.serialize_dt(anchor_dt)
+            stale_keys = [
+                key
+                for key, value in pending.items()
+                if isinstance(value, dict) and str(value.get("anchor_at") or "").strip() == anchor_key
+            ]
+            for stale_key in stale_keys:
+                pending.pop(stale_key, None)
+        if owner_key or anchor_dt is not None:
+            facebook_timing.save_state(state, state_path)
+        elif not str(anchor_at or "").strip():
+            raise RuntimeError("Shared queue release requires reservation_key or anchor_at.")
         return {
             "ok": True,
             "page_id": page_id,
@@ -337,6 +418,7 @@ def _shared_queue_record_result(
     *,
     queue_secret: str = "",
     package_name: str,
+    reservation_key: str = "",
     result: str,
     note: str,
     action: str = "",
@@ -358,6 +440,12 @@ def _shared_queue_record_result(
             action=str(action or "").strip() or None,
             **identity,
         )
+        state = facebook_timing.load_state(state_path)
+        profile_state = facebook_timing.ensure_profile_state(state, **identity)
+        owner_key = _shared_queue_owner_key(package_name, reservation_key)
+        pending = _shared_queue_pending_map(profile_state)
+        pending.pop(owner_key, None)
+        facebook_timing.save_state(state, state_path)
         return {
             "ok": True,
             "page_id": page_id,
@@ -568,6 +656,7 @@ class RelayHandler(BaseHTTPRequestHandler):
                     _shared_queue_page_id(payload.get("page_id")),
                     queue_secret=self._request_control_password(),
                     package_name=str(payload.get("package_name") or "").strip(),
+                    reservation_key=str(payload.get("reservation_key") or "").strip(),
                     requested_schedule_at=str(payload.get("requested_schedule_at") or "").strip(),
                 )
             except Exception as exc:
@@ -587,6 +676,7 @@ class RelayHandler(BaseHTTPRequestHandler):
                     _shared_queue_page_id(payload.get("page_id")),
                     queue_secret=self._request_control_password(),
                     package_name=str(payload.get("package_name") or "").strip(),
+                    reservation_key=str(payload.get("reservation_key") or "").strip(),
                     decision_payload=decision_payload,
                     interval_minutes=int(interval_minutes) if interval_minutes is not None else None,
                 )
@@ -602,6 +692,7 @@ class RelayHandler(BaseHTTPRequestHandler):
                 body = _shared_queue_release(
                     _shared_queue_page_id(payload.get("page_id")),
                     queue_secret=self._request_control_password(),
+                    reservation_key=str(payload.get("reservation_key") or "").strip(),
                     anchor_at=str(payload.get("anchor_at") or "").strip(),
                 )
             except Exception as exc:
@@ -617,6 +708,7 @@ class RelayHandler(BaseHTTPRequestHandler):
                     _shared_queue_page_id(payload.get("page_id")),
                     queue_secret=self._request_control_password(),
                     package_name=str(payload.get("package_name") or "").strip(),
+                    reservation_key=str(payload.get("reservation_key") or "").strip(),
                     result=str(payload.get("result") or "").strip(),
                     note=str(payload.get("note") or "").strip(),
                     action=str(payload.get("action") or "").strip(),
