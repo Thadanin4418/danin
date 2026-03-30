@@ -24,7 +24,7 @@ HOST = "0.0.0.0"
 PORT = 8788
 CLIENT_STALE_SECONDS = 20.0
 JOB_TIMEOUT_SECONDS = 180.0
-SHARED_QUEUE_LOCK_TIMEOUT_SECONDS = 2.0
+SHARED_QUEUE_LOCK_TIMEOUT_SECONDS = 8.0
 
 
 def _relay_store_path() -> Path:
@@ -672,14 +672,29 @@ class RelayHandler(BaseHTTPRequestHandler):
                 if not page_id:
                     continue
                 package_count = int(row.get("package_count") or 0)
-                try:
-                    queues[page_id] = _shared_queue_status(
-                        page_id,
-                        queue_secret=queue_secret,
-                        package_count=package_count,
-                    )
-                except Exception as exc:
-                    queues[page_id] = {"ok": False, "message": str(exc)}
+                last_error: Exception | None = None
+                response_payload: dict[str, object] | None = None
+                for attempt in range(4):
+                    try:
+                        response_payload = _shared_queue_status(
+                            page_id,
+                            queue_secret=queue_secret,
+                            package_count=package_count,
+                        )
+                        last_error = None
+                        break
+                    except Exception as exc:
+                        last_error = exc
+                        message = str(exc).strip().lower()
+                        retryable = "busy" in message or "timed out" in message
+                        if retryable and attempt < 3:
+                            time.sleep(0.35 * (attempt + 1))
+                            continue
+                        break
+                if response_payload is not None:
+                    queues[page_id] = response_payload
+                else:
+                    queues[page_id] = {"ok": False, "message": str(last_error or "Shared queue status failed.")}
             self._send_json({"ok": True, "queues": queues}, HTTPStatus.OK)
             return
 
