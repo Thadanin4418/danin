@@ -547,7 +547,8 @@ class RelayHandler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Soranin-Password, X-Soranin-File-Name")
         self.end_headers()
-        self.wfile.write(body)
+        if self.command != "HEAD":
+            self.wfile.write(body)
 
     def _read_json_body(self) -> dict:
         length = int(self.headers.get("Content-Length") or "0")
@@ -567,19 +568,94 @@ class RelayHandler(BaseHTTPRequestHandler):
         return self.rfile.read(length)
 
     def _request_control_password(self) -> str:
-        return str(self.headers.get("X-Soranin-Password") or "").strip()
+        header_value = str(self.headers.get("X-Soranin-Password") or "").strip()
+        if header_value:
+            return header_value
+        try:
+            parsed = urlparse(self.path)
+            return str((parse_qs(parsed.query).get("__control_password") or [""])[0]).strip()
+        except Exception:
+            return ""
 
     def _send_bytes(self, body: bytes, content_type: str, status: int = HTTPStatus.OK, file_name: str | None = None) -> None:
+        total_size = len(body)
+        range_header = str(self.headers.get("Range") or "").strip()
+        start = 0
+        end = max(total_size - 1, 0)
+
+        if range_header.startswith("bytes="):
+            try:
+                byte_range = range_header.split("=", 1)[1].split(",", 1)[0].strip()
+                start_text, end_text = byte_range.split("-", 1)
+                if not start_text:
+                    suffix_length = int(end_text)
+                    if suffix_length <= 0:
+                        raise ValueError("Invalid suffix length.")
+                    start = max(total_size - suffix_length, 0)
+                else:
+                    start = int(start_text)
+                if end_text:
+                    end = int(end_text)
+                if start < 0 or start >= total_size or end < start:
+                    raise ValueError("Invalid byte range.")
+                end = min(end, total_size - 1)
+                status = HTTPStatus.PARTIAL_CONTENT
+            except Exception:
+                self.send_response(HTTPStatus.REQUESTED_RANGE_NOT_SATISFIABLE)
+                self.send_header("Content-Range", f"bytes */{total_size}")
+                self.send_header("Content-Length", "0")
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+                self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Soranin-Password")
+                self.send_header("Accept-Ranges", "bytes")
+                self.end_headers()
+                return
+
+        payload = body[start : end + 1] if total_size else b""
         self.send_response(status)
         self.send_header("Content-Type", content_type or "application/octet-stream")
-        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Content-Length", str(len(payload)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Accept-Ranges", "bytes")
+        if status == HTTPStatus.PARTIAL_CONTENT:
+            self.send_header("Content-Range", f"bytes {start}-{end}/{total_size}")
         if file_name:
             self.send_header("Content-Disposition", f'inline; filename="{file_name}"')
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Soranin-Password")
         self.end_headers()
-        self.wfile.write(body)
+        if self.command != "HEAD":
+            self.wfile.write(payload)
+
+    def _send_proxied_binary(
+        self,
+        body: bytes,
+        *,
+        content_type: str,
+        status: int,
+        file_name: str | None = None,
+        content_length: str = "",
+        content_range: str = "",
+        accept_ranges: str = "",
+    ) -> None:
+        self.send_response(status)
+        self.send_header("Content-Type", content_type or "application/octet-stream")
+        effective_length = str(content_length or len(body))
+        self.send_header("Content-Length", effective_length)
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Soranin-Password")
+        self.send_header("Accept-Ranges", accept_ranges or "bytes")
+        if content_range:
+            self.send_header("Content-Range", content_range)
+        if file_name:
+            self.send_header("Content-Disposition", f'inline; filename="{file_name}"')
+        self.end_headers()
+        if self.command != "HEAD" and body:
+            self.wfile.write(body)
 
     def do_OPTIONS(self) -> None:
         self.send_response(HTTPStatus.NO_CONTENT)
@@ -624,6 +700,56 @@ class RelayHandler(BaseHTTPRequestHandler):
             self._send_json(body, status)
             return
 
+        if tail == "/facebook-feed-videos":
+            if not now_is_recent(client.get("last_seen_at"), CLIENT_STALE_SECONDS):
+                self._send_json(
+                    {"ok": False, "message": "This Mac is offline. Open Soranin on the Mac first."},
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                )
+                return
+            payload = {"__control_password": self._request_control_password()}
+            job_id = STORE.enqueue_job(token, "/facebook-feed-videos", payload, {})
+            status, body = wait_for_job_result(token, job_id, 30.0)
+            self._send_json(body, status)
+            return
+
+        if tail == "/facebook-feed-video":
+            if not now_is_recent(client.get("last_seen_at"), CLIENT_STALE_SECONDS):
+                self._send_json(
+                    {"ok": False, "message": "This Mac is offline. Open Soranin on the Mac first."},
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                )
+                return
+            query = extract_query_dict(self.path)
+            payload = {
+                "__control_password": self._request_control_password(),
+                "__relay_method": self.command,
+            }
+            range_header = str(self.headers.get("Range") or "").strip()
+            if range_header:
+                payload["__relay_range"] = range_header
+            job_id = STORE.enqueue_job(token, "/facebook-feed-video", payload, query)
+            status, body = wait_for_job_result(token, job_id, 180.0)
+            if (200 <= status < 300) and isinstance(body, dict):
+                encoded = str(body.get("data_base64") or "")
+                try:
+                    raw = base64.b64decode(encoded, validate=True) if encoded else b""
+                except Exception:
+                    self._send_json({"ok": False, "message": "Invalid video payload from Mac."}, HTTPStatus.BAD_GATEWAY)
+                    return
+                self._send_proxied_binary(
+                    raw,
+                    content_type=str(body.get("mime_type") or "application/octet-stream"),
+                    status=status,
+                    file_name=str(body.get("file_name") or "").strip() or None,
+                    content_length=str(body.get("content_length") or ""),
+                    content_range=str(body.get("content_range") or "").strip(),
+                    accept_ranges=str(body.get("accept_ranges") or "").strip(),
+                )
+                return
+            self._send_json(body, status)
+            return
+
         if tail == "/facebook-packages":
             if not now_is_recent(client.get("last_seen_at"), CLIENT_STALE_SECONDS):
                 self._send_json(
@@ -664,7 +790,47 @@ class RelayHandler(BaseHTTPRequestHandler):
             self._send_json(body, status)
             return
 
+        if tail == "/facebook-package-video":
+            if not now_is_recent(client.get("last_seen_at"), CLIENT_STALE_SECONDS):
+                self._send_json(
+                    {"ok": False, "message": "This Mac is offline. Open Soranin on the Mac first."},
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                )
+                return
+            query = extract_query_dict(self.path)
+            payload = {
+                "__control_password": self._request_control_password(),
+                "__relay_method": self.command,
+            }
+            range_header = str(self.headers.get("Range") or "").strip()
+            if range_header:
+                payload["__relay_range"] = range_header
+            job_id = STORE.enqueue_job(token, "/facebook-package-video", payload, query)
+            status, body = wait_for_job_result(token, job_id, 180.0)
+            if (200 <= status < 300) and isinstance(body, dict):
+                encoded = str(body.get("data_base64") or "")
+                try:
+                    raw = base64.b64decode(encoded, validate=True) if encoded else b""
+                except Exception:
+                    self._send_json({"ok": False, "message": "Invalid video payload from Mac."}, HTTPStatus.BAD_GATEWAY)
+                    return
+                self._send_proxied_binary(
+                    raw,
+                    content_type=str(body.get("mime_type") or "application/octet-stream"),
+                    status=status,
+                    file_name=str(body.get("file_name") or "").strip() or None,
+                    content_length=str(body.get("content_length") or ""),
+                    content_range=str(body.get("content_range") or "").strip(),
+                    accept_ranges=str(body.get("accept_ranges") or "").strip(),
+                )
+                return
+            self._send_json(body, status)
+            return
+
         self._send_json({"ok": False, "message": "Not found."}, HTTPStatus.NOT_FOUND)
+
+    def do_HEAD(self) -> None:
+        self.do_GET()
 
     def do_POST(self) -> None:
         parsed_path = urlparse(self.path).path
