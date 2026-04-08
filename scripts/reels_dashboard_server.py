@@ -206,12 +206,11 @@ class WebSessionStore:
             if float(session.get("expires_at") or 0.0) <= now:
                 self.sessions.pop(trimmed_token, None)
                 return None
-            expected_ip = str(session.get("client_ip") or "").strip()
             expected_ua = str(session.get("user_agent") or "").strip()
-            if expected_ip and expected_ip != str(client_ip or "").strip():
-                return None
             if expected_ua and expected_ua != str(user_agent or "").strip():
                 return None
+            session["client_ip"] = str(client_ip or "").strip()
+            session["last_seen_at"] = now
             return dict(session.get("data") or {})
 
     def delete(self, token: str) -> None:
@@ -4066,6 +4065,27 @@ def execute_relay_job(job: dict[str, object]) -> tuple[int, dict[str, object]]:
     if not isinstance(query, dict):
         query = {}
     provided_password = relay_provided_control_password(job)
+
+    if request_path == "/auth/verify":
+        relay_password = str(payload.get("password") or "").strip()
+        expected_password = str(control_password() or "").strip()
+        if not expected_password:
+            return HTTPStatus.OK, {
+                "ok": True,
+                "message": "Password not required.",
+                "password_required": False,
+            }
+        if relay_password and hmac.compare_digest(relay_password, expected_password):
+            return HTTPStatus.OK, {
+                "ok": True,
+                "message": "Password verified.",
+                "password_required": True,
+            }
+        return HTTPStatus.UNAUTHORIZED, {
+            "ok": False,
+            "message": "Enter the Mac control password to continue.",
+            "password_required": True,
+        }
 
     protected_paths = {
         "/facebook-post-bootstrap",

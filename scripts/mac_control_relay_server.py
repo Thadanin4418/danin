@@ -147,12 +147,11 @@ class WebSessionStore:
             if float(session.get("expires_at") or 0.0) <= now:
                 self.sessions.pop(trimmed_token, None)
                 return None
-            expected_ip = str(session.get("client_ip") or "").strip()
             expected_ua = str(session.get("user_agent") or "").strip()
-            if expected_ip and expected_ip != str(client_ip or "").strip():
-                return None
             if expected_ua and expected_ua != str(user_agent or "").strip():
                 return None
+            session["client_ip"] = str(client_ip or "").strip()
+            session["last_seen_at"] = now
             return dict(session.get("data") or {})
 
     def delete(self, token: str) -> None:

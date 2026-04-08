@@ -476,6 +476,32 @@
       animation: none;
     }
 
+    .package-thumb-button {
+      position: absolute;
+      right: 12px;
+      bottom: 12px;
+      z-index: 2;
+      width: 46px;
+      height: 46px;
+      border-radius: 999px;
+      border: 1px solid rgba(103, 232, 249, 0.28);
+      background: rgba(6, 13, 25, 0.74);
+      color: var(--text);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 16px;
+      font-weight: 800;
+      cursor: pointer;
+      box-shadow: 0 14px 24px rgba(0, 0, 0, 0.28);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+    }
+
+    .package-thumb-button:active {
+      transform: scale(0.97);
+    }
+
     @keyframes thumbShimmer {
       from { background-position: 200% 0; }
       to { background-position: -200% 0; }
@@ -574,6 +600,107 @@
     .toast.show {
       opacity: 1;
       transform: translateX(-50%) translateY(-6px);
+    }
+
+    .video-modal {
+      position: fixed;
+      inset: 0;
+      z-index: 80;
+      display: grid;
+      place-items: center;
+      padding: 18px 12px calc(20px + env(safe-area-inset-bottom));
+    }
+
+    .video-backdrop {
+      position: absolute;
+      inset: 0;
+      background: rgba(2, 6, 14, 0.76);
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
+    }
+
+    .video-dialog {
+      position: relative;
+      z-index: 1;
+      width: min(760px, 100%);
+      max-height: min(90vh, 980px);
+      display: grid;
+      gap: 12px;
+      padding: 16px;
+      border-radius: 26px;
+      border: 1px solid var(--line-strong);
+      background: linear-gradient(180deg, rgba(18, 29, 54, 0.96) 0%, rgba(6, 12, 24, 0.98) 100%);
+      box-shadow: var(--shadow);
+    }
+
+    .video-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: start;
+      gap: 12px;
+    }
+
+    .video-title {
+      font-size: clamp(20px, 4vw, 28px);
+      line-height: 1.05;
+      letter-spacing: -0.04em;
+    }
+
+    .video-meta,
+    .video-status {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.45;
+      overflow-wrap: anywhere;
+    }
+
+    .video-close {
+      width: 42px;
+      height: 42px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.05);
+      color: var(--text);
+      font-size: 18px;
+      font-weight: 800;
+      cursor: pointer;
+      flex: 0 0 auto;
+    }
+
+    .video-frame {
+      position: relative;
+      width: 100%;
+      aspect-ratio: 9 / 16;
+      max-height: min(70vh, 80svh);
+      border-radius: 22px;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      background:
+        radial-gradient(circle at top, rgba(103, 232, 249, 0.18), transparent 34%),
+        linear-gradient(180deg, rgba(7, 13, 24, 0.98) 0%, rgba(3, 8, 15, 0.98) 100%);
+    }
+
+    .video-player {
+      display: block;
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      background: #030811;
+    }
+
+    .video-loading {
+      position: absolute;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      padding: 20px;
+      text-align: center;
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      background: rgba(3, 8, 15, 0.58);
     }
 
     @media (max-width: 1080px) {
@@ -826,6 +953,25 @@
     </section>
   </main>
 
+  <div class="video-modal hidden" id="videoModal" aria-hidden="true">
+    <div class="video-backdrop" data-video-close></div>
+    <div class="video-dialog">
+      <div class="video-header">
+        <div class="stack" style="gap:6px;">
+          <div class="eyebrow">Reel Preview</div>
+          <h2 class="video-title" id="videoTitle">Loading…</h2>
+          <div class="video-meta" id="videoMeta">Preparing video…</div>
+          <div class="video-status" id="videoStatus">Loading reel…</div>
+        </div>
+        <button class="video-close" id="videoCloseBtn" type="button" aria-label="Close preview">×</button>
+      </div>
+      <div class="video-frame">
+        <video class="video-player" id="videoPlayer" controls playsinline preload="metadata"></video>
+        <div class="video-loading" id="videoLoading">Loading reel…</div>
+      </div>
+    </div>
+  </div>
+
   <div class="toast" id="toast"></div>
 
   <script>
@@ -892,6 +1038,13 @@
     const selectedPackagesBox = document.getElementById("selectedPackagesBox");
     const alertGrid = document.getElementById("alertGrid");
     const logsBox = document.getElementById("logsBox");
+    const videoModal = document.getElementById("videoModal");
+    const videoCloseBtn = document.getElementById("videoCloseBtn");
+    const videoTitle = document.getElementById("videoTitle");
+    const videoMeta = document.getElementById("videoMeta");
+    const videoStatus = document.getElementById("videoStatus");
+    const videoPlayer = document.getElementById("videoPlayer");
+    const videoLoading = document.getElementById("videoLoading");
 
     function deriveApiBase(pathname) {
       let path = pathname || "/";
@@ -919,6 +1072,9 @@
       thumbnailURLs: new Map(),
       thumbnailLoads: new Map(),
       thumbnailObserver: null,
+      previewBlobURL: "",
+      previewAbortController: null,
+      previewPackageName: "",
       activeFilter: "no_page",
       selectedProfileDirectory: localStorage.getItem(PROFILE_KEY) || "",
       selectedPageId: localStorage.getItem(PAGE_KEY) || "",
@@ -1124,6 +1280,12 @@
       return apiUrl(`/facebook-package-thumbnail?${params.toString()}`);
     }
 
+    function packageVideoEndpointURL(packageName) {
+      const params = new URLSearchParams();
+      params.set("package_name", packageName);
+      return apiUrl(`/facebook-package-video?${params.toString()}`);
+    }
+
     async function loadThumbnailURL(packageName) {
       const name = trim(packageName);
       if (!name) {
@@ -1172,6 +1334,114 @@
 
       state.thumbnailLoads.set(name, request);
       return request;
+    }
+
+    function clearPreviewPlayer() {
+      if (state.previewAbortController) {
+        state.previewAbortController.abort();
+        state.previewAbortController = null;
+      }
+      videoPlayer.pause();
+      videoPlayer.removeAttribute("src");
+      videoPlayer.removeAttribute("poster");
+      videoPlayer.load();
+      if (state.previewBlobURL) {
+        URL.revokeObjectURL(state.previewBlobURL);
+        state.previewBlobURL = "";
+      }
+      state.previewPackageName = "";
+    }
+
+    function closePreviewModal() {
+      clearPreviewPlayer();
+      videoModal.classList.add("hidden");
+      videoModal.setAttribute("aria-hidden", "true");
+      videoLoading.classList.remove("hidden");
+      videoLoading.textContent = "Loading reel…";
+      videoStatus.textContent = "Loading reel…";
+    }
+
+    async function openPackagePreview(packageName, packageTitle = "") {
+      const name = trim(packageName);
+      if (!name) {
+        return;
+      }
+
+      clearPreviewPlayer();
+      state.previewPackageName = name;
+      videoTitle.textContent = trim(packageTitle) || name;
+      videoMeta.textContent = name;
+      videoStatus.textContent = "Loading reel…";
+      videoLoading.textContent = "Loading reel…";
+      videoLoading.classList.remove("hidden");
+      videoModal.classList.remove("hidden");
+      videoModal.setAttribute("aria-hidden", "false");
+
+      const cachedThumb = state.thumbnailURLs.get(name);
+      if (cachedThumb) {
+        videoPlayer.poster = cachedThumb;
+      } else {
+        loadThumbnailURL(name).then((src) => {
+          if (state.previewPackageName === name) {
+            videoPlayer.poster = src;
+          }
+        }).catch(() => {});
+      }
+
+      const controller = new AbortController();
+      state.previewAbortController = controller;
+      try {
+        const headers = {};
+        if (state.authSessionToken) {
+          headers["X-Soranin-Session"] = state.authSessionToken;
+        }
+        const response = await fetch(packageVideoEndpointURL(name), {
+          method: "GET",
+          headers,
+          cache: "no-store",
+          signal: controller.signal
+        });
+        if (response.status === 401) {
+          let message = "Login again to continue.";
+          try {
+            const errorPayload = await response.json();
+            message = trim(errorPayload.message) || message;
+          } catch (_error) {
+            // Ignore JSON parse failures for video responses.
+          }
+          closePreviewModal();
+          handleAuthExpired(message);
+          return;
+        }
+        if (!response.ok) {
+          throw new Error(`Video failed (${response.status})`);
+        }
+        const blob = await response.blob();
+        if (controller.signal.aborted || state.previewPackageName !== name) {
+          return;
+        }
+        state.previewBlobURL = URL.createObjectURL(blob);
+        state.previewAbortController = null;
+        videoPlayer.src = state.previewBlobURL;
+        videoPlayer.load();
+        videoLoading.classList.add("hidden");
+        videoStatus.textContent = "Tap play if Safari does not autoplay.";
+        const playPromise = videoPlayer.play();
+        if (playPromise && typeof playPromise.catch === "function") {
+          playPromise.catch(() => {
+            if (state.previewPackageName === name) {
+              videoStatus.textContent = "Tap play to start this reel.";
+            }
+          });
+        }
+      } catch (error) {
+        if (controller.signal.aborted) {
+          return;
+        }
+        state.previewAbortController = null;
+        videoLoading.textContent = "Preview failed";
+        videoStatus.textContent = error.message || "Could not load this reel.";
+      }
     }
 
     function observePackageThumbnails() {
@@ -1412,6 +1682,7 @@
           <article class="package-card ${selected ? "selected" : ""}" data-package="${escapeHtml(pkg.package_name)}">
             <div class="package-thumb ${thumbStateClass}">
               ${pkg.has_thumbnail ? `<img alt="${escapeHtml(pkg.package_name)} thumbnail" data-thumb-package="${escapeHtml(pkg.package_name)}">` : ""}
+              <button class="package-thumb-button" type="button" data-action="preview" data-package="${escapeHtml(pkg.package_name)}" data-title="${escapeHtml(trim(pkg.title) || pkg.package_name)}" aria-label="Play ${escapeHtml(pkg.package_name)}">▶</button>
               <div class="package-thumb-placeholder">${escapeHtml(thumbLabel)}</div>
             </div>
 
@@ -1434,6 +1705,7 @@
             </div>
 
             <div class="package-actions">
+              <button class="mini-btn" type="button" data-action="preview" data-package="${escapeHtml(pkg.package_name)}" data-title="${escapeHtml(trim(pkg.title) || pkg.package_name)}">Play</button>
               <button class="mini-btn" type="button" data-action="toggle" data-package="${escapeHtml(pkg.package_name)}">${selected ? "Remove" : "Select"}</button>
               <button class="mini-btn danger" type="button" data-action="delete" data-package="${escapeHtml(pkg.package_name)}">Delete</button>
             </div>
@@ -1445,6 +1717,15 @@
         button.addEventListener("click", (event) => {
           event.stopPropagation();
           togglePackageSelection(button.getAttribute("data-package") || "");
+        });
+      });
+      packageGrid.querySelectorAll("[data-action='preview']").forEach((button) => {
+        button.addEventListener("click", async (event) => {
+          event.stopPropagation();
+          await openPackagePreview(
+            button.getAttribute("data-package") || "",
+            button.getAttribute("data-title") || ""
+          );
         });
       });
       packageGrid.querySelectorAll("[data-action='delete']").forEach((button) => {
@@ -1528,6 +1809,7 @@
     }
 
     function handleAuthExpired(message) {
+      closePreviewModal();
       state.authSessionToken = "";
       clearStoredAuth();
       setAuthMode(false);
@@ -1798,6 +2080,46 @@
       passwordInput.value = "";
       authError.textContent = "";
       authHint.textContent = "Login again to continue.";
+    });
+
+    videoCloseBtn.addEventListener("click", () => {
+      closePreviewModal();
+    });
+
+    videoModal.addEventListener("click", (event) => {
+      if (event.target instanceof HTMLElement && event.target.hasAttribute("data-video-close")) {
+        closePreviewModal();
+      }
+    });
+
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && !videoModal.classList.contains("hidden")) {
+        closePreviewModal();
+      }
+    });
+
+    videoPlayer.addEventListener("playing", () => {
+      videoStatus.textContent = "Playing reel.";
+      videoLoading.classList.add("hidden");
+    });
+
+    videoPlayer.addEventListener("pause", () => {
+      if (videoPlayer.ended) {
+        return;
+      }
+      if (videoPlayer.currentTime > 0) {
+        videoStatus.textContent = "Paused.";
+      }
+    });
+
+    videoPlayer.addEventListener("ended", () => {
+      videoStatus.textContent = "Finished.";
+    });
+
+    videoPlayer.addEventListener("error", () => {
+      videoLoading.textContent = "Preview failed";
+      videoLoading.classList.remove("hidden");
+      videoStatus.textContent = "Could not play this reel.";
     });
 
     searchInput.addEventListener("input", () => {
