@@ -56,6 +56,17 @@ Health check:
 
 - `/status`
 
+Relay home:
+
+- `/`
+- `/control`
+
+Client control page:
+
+- `/client/<token>/control`
+
+The relay home page is an all-in-one portal that lists every connected Mac, so iPad Safari can open one URL first and then choose `Mac mini`, `NIN`, or any other connected Mac.
+
 ## Save relay settings on Mac
 
 In [Soranin.app](/Users/nin/Desktop/Soranin.app):
@@ -98,6 +109,12 @@ The config is saved in:
 - `facebook-package-thumbnail`
 - `facebook-package-delete`
 - `source-video-upload`
+
+Relay web UI:
+
+- one public relay home page for all Macs
+- one password-first control page per Mac
+- package loading, assign, queue, and Facebook Runner actions from Safari
 
 ## Security
 

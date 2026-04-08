@@ -121,6 +121,23 @@ class RelayStore:
                 "jobs": list(client.get("jobs") or []),
             }
 
+    def list_clients(self) -> list[dict]:
+        with self.lock:
+            clients = self.data.setdefault("clients", {})
+            rows: list[dict] = []
+            for token, client in clients.items():
+                snapshot = client.get("snapshot")
+                jobs = client.get("jobs")
+                rows.append(
+                    {
+                        "token": str(token or "").strip(),
+                        "last_seen_at": client.get("last_seen_at"),
+                        "snapshot": dict(snapshot) if isinstance(snapshot, dict) else {},
+                        "jobs": list(jobs) if isinstance(jobs, list) else [],
+                    }
+                )
+            return rows
+
     def enqueue_job(self, token: str, request_path: str, payload: dict | None = None, query: dict | None = None) -> str:
         with self.lock:
             client = self._client(token)
@@ -543,6 +560,399 @@ def wait_for_job_result(token: str, job_id: str, timeout_seconds: float) -> tupl
     return int(HTTPStatus.GATEWAY_TIMEOUT), {"ok": False, "message": "Mac relay job timed out."}
 
 
+def _safe_int(value: object) -> int:
+    try:
+        return int(value or 0)
+    except Exception:
+        return 0
+
+
+def relay_portal_clients_payload() -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    for client in STORE.list_clients():
+        token = str(client.get("token") or "").strip()
+        if not token:
+            continue
+        snapshot = client.get("snapshot")
+        snapshot = snapshot if isinstance(snapshot, dict) else {}
+        last_seen_at = client.get("last_seen_at")
+        online = now_is_recent(last_seen_at, CLIENT_STALE_SECONDS)
+        pending_jobs = sum(1 for job in client.get("jobs") or [] if isinstance(job, dict) and job.get("status") == "queued")
+        relay_user_name = str(snapshot.get("relay_user_name") or "").strip()
+        relay_mac_name = str(snapshot.get("relay_mac_name") or "").strip()
+        mac_display_name = str(snapshot.get("mac_display_name") or "").strip()
+        mac_device_name = str(snapshot.get("mac_device_name") or "").strip()
+        mac_user_name = str(snapshot.get("mac_user_name") or "").strip()
+        title = mac_display_name or relay_mac_name or mac_device_name or token
+        subtitle_parts = [part for part in [relay_user_name or mac_user_name, relay_mac_name or mac_device_name] if part]
+        subtitle = " / ".join(subtitle_parts) if subtitle_parts else token
+        rows.append(
+            {
+                "token": token,
+                "title": title,
+                "subtitle": subtitle,
+                "online": online,
+                "last_seen_at": last_seen_at,
+                "running": bool(snapshot.get("running")),
+                "status": str(snapshot.get("status") or "").strip(),
+                "detail": str(snapshot.get("detail") or "").strip(),
+                "package_count": _safe_int(snapshot.get("package_count")),
+                "source_count": _safe_int(snapshot.get("source_count")),
+                "pending_jobs": pending_jobs,
+                "control_url": f"/client/{token}/control",
+                "status_url": f"/client/{token}/status",
+                "relay_client_url": str(snapshot.get("relay_client_url") or f"/client/{token}").strip(),
+            }
+        )
+    rows.sort(key=lambda row: (not bool(row.get("online")), str(row.get("title") or "").lower(), str(row.get("token") or "").lower()))
+    return rows
+
+
+def relay_portal_html() -> str:
+    bootstrap_json = json.dumps(
+        {
+            "service": "mac-control-relay",
+            "clients": relay_portal_clients_payload(),
+        },
+        separators=(",", ":"),
+    ).replace("</", "<\\/")
+    return """<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Soranin Relay</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg0: #07101d;
+      --bg1: #0f1b33;
+      --card: rgba(13, 20, 38, 0.88);
+      --line: rgba(170, 193, 255, 0.18);
+      --text: #f7faff;
+      --muted: #9baed2;
+      --accent: #67e8f9;
+      --accent2: #8b5cf6;
+      --success: #34d399;
+      --warn: #f59e0b;
+      --shadow: 0 24px 60px rgba(0, 0, 0, 0.38);
+      --radius: 24px;
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      min-height: 100%;
+      background:
+        radial-gradient(circle at top left, rgba(103, 232, 249, 0.12), transparent 28%),
+        radial-gradient(circle at top right, rgba(139, 92, 246, 0.12), transparent 32%),
+        linear-gradient(180deg, var(--bg1) 0%, var(--bg0) 100%);
+      color: var(--text);
+      font-family: ui-rounded, -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+    }
+    body {
+      padding: env(safe-area-inset-top) 14px calc(env(safe-area-inset-bottom) + 24px);
+    }
+    .shell {
+      width: min(1120px, 100%);
+      margin: 0 auto;
+      padding: 10px 0 24px;
+    }
+    .hero, .card {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: linear-gradient(180deg, rgba(24, 36, 67, 0.92) 0%, rgba(10, 17, 31, 0.9) 100%);
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+    }
+    .hero {
+      padding: 22px;
+      margin-bottom: 16px;
+    }
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      border-radius: 999px;
+      background: rgba(103, 232, 249, 0.12);
+      border: 1px solid rgba(103, 232, 249, 0.2);
+      color: var(--accent);
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    h1, h2, h3, p { margin: 0; }
+    h1 {
+      margin-top: 16px;
+      font-size: clamp(30px, 6vw, 46px);
+      line-height: 1;
+      letter-spacing: -0.04em;
+    }
+    .copy {
+      margin-top: 10px;
+      color: var(--muted);
+      line-height: 1.55;
+      max-width: 760px;
+    }
+    .meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 16px;
+    }
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 12px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .grid {
+      display: grid;
+      gap: 14px;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    }
+    .card {
+      padding: 18px;
+      display: grid;
+      gap: 14px;
+    }
+    .row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+    .title {
+      font-size: 22px;
+      font-weight: 750;
+      letter-spacing: -0.03em;
+    }
+    .subtitle {
+      margin-top: 6px;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.45;
+    }
+    .status {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      border: 1px solid var(--line);
+      white-space: nowrap;
+    }
+    .status.online {
+      color: var(--success);
+      background: rgba(52, 211, 153, 0.12);
+      border-color: rgba(52, 211, 153, 0.22);
+    }
+    .status.offline {
+      color: var(--warn);
+      background: rgba(245, 158, 11, 0.12);
+      border-color: rgba(245, 158, 11, 0.22);
+    }
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+    }
+    .stat {
+      padding: 12px;
+      border-radius: 16px;
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid rgba(170, 193, 255, 0.12);
+    }
+    .stat-label {
+      color: var(--muted);
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    .stat-value {
+      margin-top: 8px;
+      font-size: 22px;
+      font-weight: 780;
+      letter-spacing: -0.03em;
+    }
+    .detail {
+      min-height: 42px;
+      color: var(--muted);
+      line-height: 1.45;
+      font-size: 14px;
+    }
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+    a.button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 44px;
+      padding: 0 16px;
+      border-radius: 14px;
+      text-decoration: none;
+      color: var(--text);
+      background: linear-gradient(135deg, rgba(103, 232, 249, 0.18), rgba(139, 92, 246, 0.24));
+      border: 1px solid rgba(103, 232, 249, 0.18);
+      font-weight: 700;
+    }
+    a.secondary {
+      background: rgba(255, 255, 255, 0.04);
+      border-color: var(--line);
+      color: var(--muted);
+    }
+    .empty {
+      padding: 26px;
+      text-align: center;
+      color: var(--muted);
+      border: 1px dashed var(--line);
+      border-radius: var(--radius);
+    }
+    @media (max-width: 680px) {
+      .stats {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+      .stats .stat:last-child {
+        grid-column: 1 / -1;
+      }
+      .row {
+        align-items: flex-start;
+        flex-direction: column;
+      }
+      .status {
+        align-self: flex-start;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <section class="hero">
+      <div class="eyebrow">Soranin Relay</div>
+      <h1>All Macs in one relay page</h1>
+      <p class="copy">Open one public relay URL, choose the Mac you want, then the control page will ask for that Mac's password first. This keeps Mac mini and NIN in one place for iPad Safari.</p>
+      <div class="meta">
+        <div class="pill" id="clientCount">0 Macs</div>
+        <div class="pill" id="onlineCount">0 online</div>
+        <div class="pill" id="updatedAt">Updating...</div>
+      </div>
+    </section>
+    <section id="cards" class="grid"></section>
+  </div>
+  <script>
+    const bootstrap = __BOOTSTRAP__;
+
+    function trim(value) {
+      return String(value || "").trim();
+    }
+
+    function escapeHtml(value) {
+      return String(value || "")
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#39;");
+    }
+
+    function formatLastSeen(timestamp) {
+      const value = Number(timestamp || 0);
+      if (!value) return "No heartbeat yet";
+      const seconds = Math.max(0, Math.round(Date.now() / 1000 - value));
+      if (seconds < 10) return "Seen just now";
+      if (seconds < 60) return `Seen ${seconds}s ago`;
+      const minutes = Math.round(seconds / 60);
+      if (minutes < 60) return `Seen ${minutes}m ago`;
+      const hours = Math.round(minutes / 60);
+      if (hours < 24) return `Seen ${hours}h ago`;
+      const days = Math.round(hours / 24);
+      return `Seen ${days}d ago`;
+    }
+
+    function renderCards(clients) {
+      const cards = document.getElementById("cards");
+      const onlineCount = clients.filter((item) => item.online).length;
+      document.getElementById("clientCount").textContent = `${clients.length} Mac${clients.length === 1 ? "" : "s"}`;
+      document.getElementById("onlineCount").textContent = `${onlineCount} online`;
+      document.getElementById("updatedAt").textContent = `Updated ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
+
+      if (!clients.length) {
+        cards.innerHTML = '<div class="empty">No relay clients yet. Open Soranin on each Mac and keep Remote Relay enabled first.</div>';
+        return;
+      }
+
+      cards.innerHTML = clients.map((client) => {
+        const statusClass = client.online ? "online" : "offline";
+        const statusText = client.online ? "Online" : "Offline";
+        const detail = trim(client.detail || client.status) || (client.online ? "Ready for remote control." : "Open Soranin on this Mac first.");
+        const running = client.running ? "Running" : "Idle";
+        return `
+          <article class="card">
+            <div class="row">
+              <div>
+                <div class="title">${escapeHtml(client.title)}</div>
+                <div class="subtitle">${escapeHtml(client.subtitle)}</div>
+              </div>
+              <div class="status ${statusClass}">${statusText}</div>
+            </div>
+            <div class="stats">
+              <div class="stat">
+                <div class="stat-label">Packages</div>
+                <div class="stat-value">${Number(client.package_count || 0)}</div>
+              </div>
+              <div class="stat">
+                <div class="stat-label">Jobs</div>
+                <div class="stat-value">${Number(client.pending_jobs || 0)}</div>
+              </div>
+              <div class="stat">
+                <div class="stat-label">Runner</div>
+                <div class="stat-value">${escapeHtml(running)}</div>
+              </div>
+            </div>
+            <div class="detail">${escapeHtml(detail)}<br>${escapeHtml(formatLastSeen(client.last_seen_at))}</div>
+            <div class="actions">
+              <a class="button" href="${escapeHtml(client.control_url)}">Open Control</a>
+              <a class="button secondary" href="${escapeHtml(client.status_url)}">Status JSON</a>
+            </div>
+          </article>
+        `;
+      }).join("");
+    }
+
+    async function refresh() {
+      try {
+        const response = await fetch("/clients", { cache: "no-store" });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const payload = await response.json();
+        renderCards(Array.isArray(payload.clients) ? payload.clients : []);
+      } catch (error) {
+        renderCards(Array.isArray(bootstrap.clients) ? bootstrap.clients : []);
+      }
+    }
+
+    renderCards(Array.isArray(bootstrap.clients) ? bootstrap.clients : []);
+    refresh();
+    setInterval(refresh, 5000);
+  </script>
+</body>
+</html>
+""".replace("__BOOTSTRAP__", bootstrap_json)
+
+
 class RelayHandler(BaseHTTPRequestHandler):
     server_version = "SoraninMacRelay/0.1"
 
@@ -686,9 +1096,23 @@ class RelayHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         parsed_path = urlparse(self.path).path
+        if parsed_path in {"/", "/index.html", "/control", "/control/", "/control/index.html"}:
+            self._send_html(relay_portal_html(), HTTPStatus.OK)
+            return
+        if parsed_path == "/clients":
+            self._send_json({"ok": True, "clients": relay_portal_clients_payload()}, HTTPStatus.OK)
+            return
         token, tail = parse_client_path(self.path)
         if parsed_path == "/status":
-            self._send_json({"ok": True, "service": "mac-control-relay", "port": PORT}, HTTPStatus.OK)
+            self._send_json(
+                {
+                    "ok": True,
+                    "service": "mac-control-relay",
+                    "port": PORT,
+                    "clients": relay_portal_clients_payload(),
+                },
+                HTTPStatus.OK,
+            )
             return
         if not token:
             self._send_json({"ok": False, "message": "Client token is required."}, HTTPStatus.NOT_FOUND)
