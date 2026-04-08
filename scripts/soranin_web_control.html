@@ -1,0 +1,1648 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Soranin Control</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg-0: #08111f;
+      --bg-1: #0e1730;
+      --bg-2: #172446;
+      --card: rgba(12, 20, 39, 0.84);
+      --card-strong: rgba(9, 16, 32, 0.94);
+      --line: rgba(170, 193, 255, 0.18);
+      --line-strong: rgba(170, 193, 255, 0.3);
+      --text: #f5f8ff;
+      --muted: #97a8d2;
+      --accent: #67e8f9;
+      --accent-2: #8b5cf6;
+      --success: #34d399;
+      --warn: #f59e0b;
+      --danger: #fb7185;
+      --shadow: 0 24px 60px rgba(0, 0, 0, 0.36);
+      --radius: 24px;
+      --radius-sm: 16px;
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body {
+      margin: 0;
+      min-height: 100%;
+      background:
+        radial-gradient(circle at top left, rgba(103, 232, 249, 0.12), transparent 28%),
+        radial-gradient(circle at top right, rgba(139, 92, 246, 0.12), transparent 32%),
+        linear-gradient(180deg, var(--bg-1) 0%, var(--bg-0) 100%);
+      color: var(--text);
+      font-family: ui-rounded, -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+    }
+
+    body {
+      padding: env(safe-area-inset-top) 0 env(safe-area-inset-bottom);
+    }
+
+    button, input, select, textarea {
+      font: inherit;
+    }
+
+    .hidden { display: none !important; }
+
+    .screen {
+      width: min(1180px, calc(100vw - 24px));
+      margin: 0 auto;
+      padding: 16px 0 36px;
+    }
+
+    .auth-shell {
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      padding: 20px;
+    }
+
+    .auth-card, .panel {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: linear-gradient(180deg, rgba(24, 36, 67, 0.92) 0%, rgba(10, 17, 31, 0.9) 100%);
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+    }
+
+    .auth-card {
+      width: min(480px, 100%);
+      padding: 28px;
+    }
+
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      border-radius: 999px;
+      background: rgba(103, 232, 249, 0.12);
+      border: 1px solid rgba(103, 232, 249, 0.2);
+      color: var(--accent);
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
+    h1, h2, h3, p {
+      margin: 0;
+    }
+
+    .auth-title {
+      margin-top: 18px;
+      font-size: clamp(28px, 7vw, 40px);
+      line-height: 1.02;
+      letter-spacing: -0.04em;
+    }
+
+    .auth-note {
+      margin-top: 12px;
+      color: var(--muted);
+      line-height: 1.5;
+    }
+
+    .stack {
+      display: grid;
+      gap: 14px;
+    }
+
+    .field {
+      display: grid;
+      gap: 8px;
+    }
+
+    .field label {
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .input, .select, .textarea {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: rgba(7, 13, 24, 0.88);
+      color: var(--text);
+      padding: 14px 16px;
+      outline: none;
+    }
+
+    .textarea {
+      min-height: 96px;
+      resize: vertical;
+    }
+
+    .input:focus, .select:focus, .textarea:focus {
+      border-color: rgba(103, 232, 249, 0.56);
+      box-shadow: 0 0 0 3px rgba(103, 232, 249, 0.14);
+    }
+
+    .check-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .btn-row, .toolbar-row, .pill-row {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .btn {
+      border: 0;
+      border-radius: 999px;
+      padding: 12px 18px;
+      font-weight: 700;
+      cursor: pointer;
+      transition: transform 0.14s ease, opacity 0.14s ease, background 0.14s ease;
+    }
+
+    .btn:active { transform: scale(0.985); }
+    .btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+    .btn-primary {
+      background: linear-gradient(135deg, var(--accent) 0%, #4ade80 100%);
+      color: #04111d;
+    }
+
+    .btn-secondary {
+      background: rgba(255, 255, 255, 0.05);
+      color: var(--text);
+      border: 1px solid var(--line);
+    }
+
+    .btn-danger {
+      background: rgba(251, 113, 133, 0.16);
+      color: #ffd7df;
+      border: 1px solid rgba(251, 113, 133, 0.25);
+    }
+
+    .auth-error, .muted {
+      color: var(--muted);
+    }
+
+    .auth-error {
+      color: #ffd2da;
+      min-height: 20px;
+      font-size: 14px;
+    }
+
+    .hero {
+      display: grid;
+      grid-template-columns: minmax(0, 1.35fr) minmax(300px, 0.95fr);
+      gap: 14px;
+      margin-bottom: 14px;
+    }
+
+    .panel {
+      padding: 18px;
+    }
+
+    .panel-title {
+      display: flex;
+      justify-content: space-between;
+      align-items: start;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+
+    .panel-title h2,
+    .panel-title h3 {
+      font-size: 20px;
+      letter-spacing: -0.03em;
+    }
+
+    .panel-copy {
+      color: var(--muted);
+      line-height: 1.45;
+      font-size: 14px;
+    }
+
+    .status-pill, .chip, .tiny-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 9px 12px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.05);
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--text);
+    }
+
+    .chip { cursor: pointer; }
+    .chip.active {
+      background: rgba(103, 232, 249, 0.16);
+      border-color: rgba(103, 232, 249, 0.36);
+      color: var(--accent);
+    }
+
+    .tiny-chip {
+      padding: 6px 10px;
+      font-size: 11px;
+      font-weight: 800;
+    }
+
+    .dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 999px;
+      background: var(--muted);
+      box-shadow: 0 0 0 6px rgba(151, 168, 210, 0.08);
+      flex: 0 0 auto;
+    }
+
+    .dot.success { background: var(--success); box-shadow: 0 0 0 6px rgba(52, 211, 153, 0.12); }
+    .dot.warn { background: var(--warn); box-shadow: 0 0 0 6px rgba(245, 158, 11, 0.12); }
+    .dot.danger { background: var(--danger); box-shadow: 0 0 0 6px rgba(251, 113, 133, 0.12); }
+
+    .hero-title {
+      display: flex;
+      justify-content: space-between;
+      gap: 14px;
+      align-items: start;
+      margin-bottom: 16px;
+    }
+
+    .hero-title h1 {
+      font-size: clamp(28px, 5vw, 40px);
+      line-height: 1;
+      letter-spacing: -0.05em;
+    }
+
+    .hero-sub {
+      margin-top: 8px;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.5;
+    }
+
+    .stat-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .stat-card {
+      border-radius: 20px;
+      padding: 16px;
+      border: 1px solid var(--line);
+      background: rgba(5, 10, 20, 0.42);
+    }
+
+    .stat-label {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .stat-value {
+      margin-top: 8px;
+      font-size: clamp(22px, 4vw, 30px);
+      font-weight: 800;
+      letter-spacing: -0.04em;
+    }
+
+    .stat-detail {
+      margin-top: 4px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .layout {
+      display: grid;
+      grid-template-columns: minmax(0, 1.2fr) minmax(320px, 0.8fr);
+      gap: 14px;
+      align-items: start;
+    }
+
+    .section-grid {
+      display: grid;
+      gap: 14px;
+    }
+
+    .split-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .package-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .package-card {
+      border-radius: 20px;
+      border: 1px solid var(--line);
+      background: linear-gradient(180deg, rgba(12, 20, 38, 0.96) 0%, rgba(8, 14, 27, 0.96) 100%);
+      padding: 14px;
+      display: grid;
+      gap: 12px;
+      cursor: pointer;
+      transition: border-color 0.15s ease, transform 0.15s ease, background 0.15s ease;
+    }
+
+    .package-card.selected {
+      border-color: rgba(103, 232, 249, 0.5);
+      background: linear-gradient(180deg, rgba(17, 30, 55, 0.98) 0%, rgba(10, 20, 39, 0.98) 100%);
+      transform: translateY(-1px);
+    }
+
+    .package-top, .meta-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: start;
+      gap: 10px;
+    }
+
+    .package-name {
+      font-size: 15px;
+      font-weight: 800;
+      letter-spacing: -0.03em;
+      line-break: anywhere;
+    }
+
+    .package-title {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.45;
+      display: -webkit-box;
+      -webkit-box-orient: vertical;
+      -webkit-line-clamp: 3;
+      overflow: hidden;
+    }
+
+    .package-source {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .package-actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .mini-btn {
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      padding: 8px 10px;
+      background: rgba(255, 255, 255, 0.04);
+      color: var(--text);
+      font-size: 12px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    .mini-btn.danger {
+      color: #ffd8df;
+      border-color: rgba(251, 113, 133, 0.24);
+      background: rgba(251, 113, 133, 0.12);
+    }
+
+    .meta-grid {
+      display: grid;
+      gap: 10px;
+    }
+
+    .meta-item {
+      padding: 12px 14px;
+      border-radius: 18px;
+      border: 1px solid var(--line);
+      background: rgba(5, 10, 20, 0.36);
+    }
+
+    .meta-label {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    .meta-value {
+      margin-top: 6px;
+      font-size: 15px;
+      font-weight: 700;
+      line-height: 1.35;
+      word-break: break-word;
+    }
+
+    .logs {
+      min-height: 180px;
+      max-height: 320px;
+      overflow: auto;
+      border-radius: 18px;
+      border: 1px solid var(--line);
+      background: rgba(4, 8, 15, 0.82);
+      padding: 14px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 12px;
+      line-height: 1.55;
+      white-space: pre-wrap;
+      color: #d6e4ff;
+    }
+
+    .empty {
+      padding: 24px;
+      border-radius: 18px;
+      border: 1px dashed var(--line-strong);
+      color: var(--muted);
+      text-align: center;
+      background: rgba(255, 255, 255, 0.03);
+    }
+
+    .toast {
+      position: fixed;
+      left: 50%;
+      bottom: calc(18px + env(safe-area-inset-bottom));
+      transform: translateX(-50%);
+      padding: 12px 16px;
+      border-radius: 999px;
+      background: rgba(8, 16, 29, 0.96);
+      border: 1px solid rgba(103, 232, 249, 0.24);
+      color: var(--text);
+      font-weight: 700;
+      box-shadow: var(--shadow);
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.16s ease, transform 0.16s ease;
+      z-index: 50;
+    }
+
+    .toast.show {
+      opacity: 1;
+      transform: translateX(-50%) translateY(-6px);
+    }
+
+    @media (max-width: 1080px) {
+      .hero, .layout, .split-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .stat-grid,
+      .package-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+    }
+
+    @media (max-width: 720px) {
+      .screen {
+        width: min(100vw - 16px, 100%);
+      }
+
+      .panel {
+        padding: 16px;
+      }
+
+      .hero-title {
+        display: grid;
+      }
+
+      .stat-grid,
+      .package-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="auth-shell" id="authShell">
+    <div class="auth-card stack">
+      <div>
+        <div class="eyebrow">Soranin Safari Control</div>
+        <h1 class="auth-title">Password login first</h1>
+        <p class="auth-note">
+          Open this on iPad Safari, enter the same Mac Control password, then use Facebook Runner and page tools without installing a new iPad app.
+        </p>
+      </div>
+
+      <div class="field">
+        <label for="passwordInput">Control Password</label>
+        <input class="input" id="passwordInput" type="password" autocomplete="current-password" placeholder="Enter Mac control password">
+      </div>
+
+      <label class="check-row">
+        <input id="rememberPassword" type="checkbox">
+        <span>Remember this password on this iPad</span>
+      </label>
+
+      <div class="btn-row">
+        <button class="btn btn-primary" id="loginBtn" type="button">Login</button>
+        <button class="btn btn-secondary hidden" id="continueWithoutPasswordBtn" type="button">Continue</button>
+      </div>
+
+      <div class="auth-error" id="authError"></div>
+      <div class="muted" id="authHint">Checking server…</div>
+    </div>
+  </div>
+
+  <main class="screen hidden" id="appShell">
+    <section class="hero">
+      <div class="panel">
+        <div class="hero-title">
+          <div>
+            <div class="eyebrow" id="eyebrowLabel">Connected</div>
+            <h1>Soranin Control</h1>
+            <div class="hero-sub" id="heroSub">Preparing connection…</div>
+          </div>
+          <div class="toolbar-row">
+            <div class="status-pill" id="statusPill">
+              <span class="dot" id="statusDot"></span>
+              <span id="statusLabel">Idle</span>
+            </div>
+            <button class="btn btn-secondary" id="refreshBtn" type="button">Refresh</button>
+            <button class="btn btn-secondary" id="logoutBtn" type="button">Logout</button>
+          </div>
+        </div>
+
+        <div class="stat-grid">
+          <div class="stat-card">
+            <div class="stat-label">Packages</div>
+            <div class="stat-value" id="packageCount">0</div>
+            <div class="stat-detail" id="selectedCountDetail">0 selected</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">Source Videos</div>
+            <div class="stat-value" id="sourceCount">0</div>
+            <div class="stat-detail">Mac root feed</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">Latest Package</div>
+            <div class="stat-value" id="latestPackage">-</div>
+            <div class="stat-detail" id="taskKindDetail">Task: idle</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">Progress</div>
+            <div class="stat-value" id="progressValue">0%</div>
+            <div class="stat-detail" id="progressLabel">Ready.</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel stack">
+        <div class="panel-title">
+          <div>
+            <h2>Connection</h2>
+            <p class="panel-copy">Use direct Wi-Fi, Tailscale, or relay. This page works from Safari after password login.</p>
+          </div>
+        </div>
+        <div class="meta-grid" id="connectionGrid"></div>
+      </div>
+    </section>
+
+    <section class="layout">
+      <div class="section-grid">
+        <div class="panel stack">
+          <div class="panel-title">
+            <div>
+              <h2>Runner</h2>
+              <p class="panel-copy">Current-account Facebook Runner plus page assignment controls.</p>
+            </div>
+          </div>
+
+          <div class="split-grid">
+            <div class="field">
+              <label for="profileSelect">Chrome Profile</label>
+              <select class="select" id="profileSelect"></select>
+            </div>
+            <div class="field">
+              <label for="pageSelect">Saved Upload Page</label>
+              <select class="select" id="pageSelect"></select>
+            </div>
+          </div>
+
+          <div class="split-grid">
+            <div class="field">
+              <label for="intervalInput">Interval Minutes</label>
+              <input class="input" id="intervalInput" type="number" min="1" max="720" step="30" value="30">
+            </div>
+            <div class="field">
+              <label for="searchInput">Search Packages</label>
+              <input class="input" id="searchInput" type="search" placeholder="Package, title, source, or page">
+            </div>
+          </div>
+
+          <div class="pill-row">
+            <label class="check-row"><input id="restartProfileCheckbox" type="checkbox" checked> <span>Restart selected Chrome first</span></label>
+            <label class="check-row"><input id="closeAfterEachCheckbox" type="checkbox"> <span>Close Chrome after each</span></label>
+            <label class="check-row"><input id="closeAfterFinishCheckbox" type="checkbox" checked> <span>Close Chrome after finish</span></label>
+            <label class="check-row"><input id="postNowAdvanceCheckbox" type="checkbox"> <span>Post now but keep queue moving</span></label>
+            <label class="check-row"><input id="deleteAfterSuccessCheckbox" type="checkbox" checked> <span>Delete folder after success</span></label>
+          </div>
+
+          <div class="btn-row">
+            <button class="btn btn-primary" id="runRunnerBtn" type="button">Run Facebook Runner</button>
+            <button class="btn btn-secondary" id="stopRunnerBtn" type="button">Stop Runner</button>
+            <button class="btn btn-secondary" id="apiPublishBtn" type="button">API Publish</button>
+            <button class="btn btn-secondary" id="apiScheduleBtn" type="button">API Schedule</button>
+          </div>
+        </div>
+
+        <div class="panel stack">
+          <div class="panel-title">
+            <div>
+              <h2>Queue</h2>
+              <p class="panel-copy">Profile queue memory and shared slot status.</p>
+            </div>
+          </div>
+
+          <div class="meta-grid" id="queueGrid"></div>
+
+          <div class="pill-row">
+            <label class="check-row"><input id="morningOnlyCheckbox" type="checkbox"> <span>Morning Only</span></label>
+          </div>
+
+          <div class="btn-row">
+            <button class="btn btn-secondary" id="queueResetBtn" type="button">Reset Times</button>
+            <button class="btn btn-secondary" id="queueClearBtn" type="button">Clear Queue</button>
+          </div>
+        </div>
+
+        <div class="panel stack">
+          <div class="panel-title">
+            <div>
+              <h2>Packages</h2>
+              <p class="panel-copy">Default view shows <strong>No Page</strong> first so old cards are easier to manage on iPad.</p>
+            </div>
+            <div class="status-pill">
+              <span class="dot success"></span>
+              <span id="visibleCountLabel">0 visible</span>
+            </div>
+          </div>
+
+          <div class="pill-row" id="filterRow"></div>
+
+          <div class="btn-row">
+            <button class="btn btn-secondary" id="selectVisibleBtn" type="button">Select Visible</button>
+            <button class="btn btn-secondary" id="clearSelectionBtn" type="button">Clear Selection</button>
+            <button class="btn btn-secondary" id="assignQueueBtn" type="button">Assign + Queue</button>
+            <button class="btn btn-secondary" id="setPageOnlyBtn" type="button">Set Page Only</button>
+            <button class="btn btn-secondary" id="backToOldBtn" type="button">Back To Old</button>
+          </div>
+
+          <div class="package-grid" id="packageGrid"></div>
+          <div class="empty hidden" id="packageEmpty">No packages match the current filter.</div>
+        </div>
+      </div>
+
+      <div class="section-grid">
+        <div class="panel stack">
+          <div class="panel-title">
+            <div>
+              <h2>Selected Folders</h2>
+              <p class="panel-copy">Runner and page actions use these package names.</p>
+            </div>
+          </div>
+          <textarea class="textarea" id="selectedPackagesBox" readonly></textarea>
+        </div>
+
+        <div class="panel stack">
+          <div class="panel-title">
+            <div>
+              <h2>Latest Alert</h2>
+              <p class="panel-copy">Most recent Mac-side notification from Soranin.</p>
+            </div>
+          </div>
+          <div class="meta-grid" id="alertGrid"></div>
+        </div>
+
+        <div class="panel stack">
+          <div class="panel-title">
+            <div>
+              <h2>Logs</h2>
+              <p class="panel-copy">Live output from the current task.</p>
+            </div>
+          </div>
+          <div class="logs" id="logsBox">Waiting for logs…</div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <div class="toast" id="toast"></div>
+
+  <script>
+    const FILTERS = [
+      { key: "no_page", label: "No Page" },
+      { key: "selected", label: "Selected" },
+      { key: "all", label: "All" },
+      { key: "assigned", label: "Assigned" },
+      { key: "in_queue", label: "In Queue" },
+      { key: "scheduled", label: "Scheduled" },
+      { key: "published", label: "Published" },
+      { key: "failed", label: "Failed" }
+    ];
+
+    const authShell = document.getElementById("authShell");
+    const appShell = document.getElementById("appShell");
+    const authError = document.getElementById("authError");
+    const authHint = document.getElementById("authHint");
+    const passwordInput = document.getElementById("passwordInput");
+    const rememberPassword = document.getElementById("rememberPassword");
+    const continueWithoutPasswordBtn = document.getElementById("continueWithoutPasswordBtn");
+    const loginBtn = document.getElementById("loginBtn");
+    const refreshBtn = document.getElementById("refreshBtn");
+    const logoutBtn = document.getElementById("logoutBtn");
+    const toast = document.getElementById("toast");
+    const eyebrowLabel = document.getElementById("eyebrowLabel");
+    const heroSub = document.getElementById("heroSub");
+    const statusLabel = document.getElementById("statusLabel");
+    const statusDot = document.getElementById("statusDot");
+    const packageCount = document.getElementById("packageCount");
+    const sourceCount = document.getElementById("sourceCount");
+    const latestPackage = document.getElementById("latestPackage");
+    const progressValue = document.getElementById("progressValue");
+    const progressLabel = document.getElementById("progressLabel");
+    const selectedCountDetail = document.getElementById("selectedCountDetail");
+    const taskKindDetail = document.getElementById("taskKindDetail");
+    const connectionGrid = document.getElementById("connectionGrid");
+    const profileSelect = document.getElementById("profileSelect");
+    const pageSelect = document.getElementById("pageSelect");
+    const intervalInput = document.getElementById("intervalInput");
+    const searchInput = document.getElementById("searchInput");
+    const restartProfileCheckbox = document.getElementById("restartProfileCheckbox");
+    const closeAfterEachCheckbox = document.getElementById("closeAfterEachCheckbox");
+    const closeAfterFinishCheckbox = document.getElementById("closeAfterFinishCheckbox");
+    const postNowAdvanceCheckbox = document.getElementById("postNowAdvanceCheckbox");
+    const deleteAfterSuccessCheckbox = document.getElementById("deleteAfterSuccessCheckbox");
+    const runRunnerBtn = document.getElementById("runRunnerBtn");
+    const stopRunnerBtn = document.getElementById("stopRunnerBtn");
+    const apiPublishBtn = document.getElementById("apiPublishBtn");
+    const apiScheduleBtn = document.getElementById("apiScheduleBtn");
+    const queueGrid = document.getElementById("queueGrid");
+    const morningOnlyCheckbox = document.getElementById("morningOnlyCheckbox");
+    const queueResetBtn = document.getElementById("queueResetBtn");
+    const queueClearBtn = document.getElementById("queueClearBtn");
+    const filterRow = document.getElementById("filterRow");
+    const visibleCountLabel = document.getElementById("visibleCountLabel");
+    const packageGrid = document.getElementById("packageGrid");
+    const packageEmpty = document.getElementById("packageEmpty");
+    const selectVisibleBtn = document.getElementById("selectVisibleBtn");
+    const clearSelectionBtn = document.getElementById("clearSelectionBtn");
+    const assignQueueBtn = document.getElementById("assignQueueBtn");
+    const setPageOnlyBtn = document.getElementById("setPageOnlyBtn");
+    const backToOldBtn = document.getElementById("backToOldBtn");
+    const selectedPackagesBox = document.getElementById("selectedPackagesBox");
+    const alertGrid = document.getElementById("alertGrid");
+    const logsBox = document.getElementById("logsBox");
+
+    function deriveApiBase(pathname) {
+      let path = pathname || "/";
+      path = path.replace(/\/index\.html$/i, "");
+      path = path.replace(/\/control\/?$/i, "");
+      path = path.replace(/\/$/, "");
+      return path;
+    }
+
+    const API_BASE = deriveApiBase(window.location.pathname);
+    const STORAGE_SCOPE = `${window.location.origin}${API_BASE || "/"}`;
+    const LOCAL_PASSWORD_KEY = `soranin.web.password.local:${STORAGE_SCOPE}`;
+    const SESSION_PASSWORD_KEY = `soranin.web.password.session:${STORAGE_SCOPE}`;
+    const PROFILE_KEY = `soranin.web.profile:${STORAGE_SCOPE}`;
+    const PAGE_KEY = `soranin.web.page:${STORAGE_SCOPE}`;
+
+    const state = {
+      authPassword: "",
+      bootstrap: null,
+      status: null,
+      publicStatus: null,
+      selectedPackages: new Set(),
+      activeFilter: "no_page",
+      selectedProfileDirectory: localStorage.getItem(PROFILE_KEY) || "",
+      selectedPageId: localStorage.getItem(PAGE_KEY) || "",
+      refreshStatusTimer: null,
+      refreshBootstrapTimer: null,
+      toastTimer: null,
+      refreshStatusBusy: false,
+      refreshBootstrapBusy: false
+    };
+
+    function apiUrl(path) {
+      return `${API_BASE}${path}`;
+    }
+
+    function trim(value) {
+      return String(value || "").trim();
+    }
+
+    function escapeHtml(value) {
+      return String(value || "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+    }
+
+    function showToast(message) {
+      toast.textContent = message;
+      toast.classList.add("show");
+      if (state.toastTimer) {
+        clearTimeout(state.toastTimer);
+      }
+      state.toastTimer = setTimeout(() => {
+        toast.classList.remove("show");
+      }, 2200);
+    }
+
+    function setAuthMode(isLoggedIn) {
+      authShell.classList.toggle("hidden", isLoggedIn);
+      appShell.classList.toggle("hidden", !isLoggedIn);
+    }
+
+    function rememberPasswordValue() {
+      return rememberPassword.checked;
+    }
+
+    function storePassword(password) {
+      localStorage.removeItem(LOCAL_PASSWORD_KEY);
+      sessionStorage.removeItem(SESSION_PASSWORD_KEY);
+      if (!password) {
+        return;
+      }
+      if (rememberPasswordValue()) {
+        localStorage.setItem(LOCAL_PASSWORD_KEY, password);
+      } else {
+        sessionStorage.setItem(SESSION_PASSWORD_KEY, password);
+      }
+    }
+
+    function loadStoredPassword() {
+      return localStorage.getItem(LOCAL_PASSWORD_KEY) || sessionStorage.getItem(SESSION_PASSWORD_KEY) || "";
+    }
+
+    async function requestJson(path, options = {}) {
+      const method = options.method || "GET";
+      const payload = options.payload;
+      const allowUnauthorized = options.allowUnauthorized === true;
+      const password = options.password !== undefined ? options.password : state.authPassword;
+      const headers = {};
+      if (password) {
+        headers["X-Soranin-Password"] = password;
+      }
+      if (payload !== undefined) {
+        headers["Content-Type"] = "application/json";
+      }
+      const response = await fetch(apiUrl(path), {
+        method,
+        headers,
+        body: payload !== undefined ? JSON.stringify(payload) : undefined
+      });
+      const rawText = await response.text();
+      let data = {};
+      if (rawText) {
+        try {
+          data = JSON.parse(rawText);
+        } catch (_error) {
+          data = { ok: false, message: rawText };
+        }
+      }
+      if (response.status === 401 && !allowUnauthorized) {
+        handleAuthExpired(data.message || "Password required.");
+      }
+      if (!response.ok) {
+        throw new Error(data.message || `Request failed (${response.status}).`);
+      }
+      return data;
+    }
+
+    function normalizedProfileItems() {
+      const items = (state.bootstrap && Array.isArray(state.bootstrap.profile_items)) ? state.bootstrap.profile_items : [];
+      return items.map((item) => ({
+        name: trim(item.name || item.display_name || item.profile_name || item.directory),
+        directory: trim(item.directory || item.directory_name || item.profile_directory),
+        isOnline: Boolean(item.is_online || item.isOnline)
+      })).filter((item) => item.name || item.directory);
+    }
+
+    function selectedProfileItem() {
+      return normalizedProfileItems().find((item) => item.directory === state.selectedProfileDirectory) || null;
+    }
+
+    function savedUploadPages() {
+      return (state.bootstrap && Array.isArray(state.bootstrap.saved_upload_pages)) ? state.bootstrap.saved_upload_pages : [];
+    }
+
+    function packageBadgeInfo(pkg) {
+      const statusState = trim(pkg.facebook_status_state).toLowerCase();
+      if (pkg.is_in_page_queue) {
+        return { title: "In Queue", tone: "accent" };
+      }
+      if (trim(pkg.assigned_facebook_page_id)) {
+        return { title: "Assigned", tone: "info" };
+      }
+      if (statusState === "published") {
+        return { title: "Published", tone: "success" };
+      }
+      if (statusState === "scheduled") {
+        return { title: "Scheduled", tone: "warn" };
+      }
+      if (statusState === "failed") {
+        return { title: "Failed", tone: "danger" };
+      }
+      return { title: "No Page", tone: "warn" };
+    }
+
+    function packageMatchesFilter(pkg) {
+      const statusState = trim(pkg.facebook_status_state).toLowerCase();
+      const hasAssignedPage = Boolean(trim(pkg.assigned_facebook_page_id));
+      const inQueue = Boolean(pkg.is_in_page_queue);
+      switch (state.activeFilter) {
+        case "selected":
+          return state.selectedPackages.has(pkg.package_name);
+        case "all":
+          return true;
+        case "assigned":
+          return hasAssignedPage && !inQueue;
+        case "in_queue":
+          return inQueue;
+        case "scheduled":
+          return statusState === "scheduled";
+        case "published":
+          return statusState === "published";
+        case "failed":
+          return statusState === "failed";
+        case "no_page":
+        default:
+          return !hasAssignedPage && !inQueue;
+      }
+    }
+
+    function filteredPackages() {
+      const packages = (state.bootstrap && Array.isArray(state.bootstrap.packages)) ? state.bootstrap.packages : [];
+      const query = trim(searchInput.value).toLowerCase();
+      return packages.filter((pkg) => {
+        if (!packageMatchesFilter(pkg)) {
+          return false;
+        }
+        if (!query) {
+          return true;
+        }
+        const haystack = [
+          pkg.package_name,
+          pkg.title,
+          pkg.source_name,
+          pkg.assigned_facebook_page_label,
+          pkg.assigned_facebook_page_id
+        ].map((value) => trim(value).toLowerCase()).join(" ");
+        return haystack.includes(query);
+      });
+    }
+
+    function selectedPackageNames() {
+      return Array.from(state.selectedPackages).sort();
+    }
+
+    function persistSelections() {
+      selectedPackagesBox.value = selectedPackageNames().join("\n");
+      selectedCountDetail.textContent = `${state.selectedPackages.size} selected`;
+    }
+
+    function setDefaultProfileAndPage() {
+      const profiles = normalizedProfileItems();
+      if (!profiles.some((item) => item.directory === state.selectedProfileDirectory)) {
+        state.selectedProfileDirectory = profiles[0] ? profiles[0].directory : "";
+      }
+      if (state.selectedProfileDirectory) {
+        localStorage.setItem(PROFILE_KEY, state.selectedProfileDirectory);
+      } else {
+        localStorage.removeItem(PROFILE_KEY);
+      }
+
+      const pages = savedUploadPages();
+      const preferredPageId = trim(state.bootstrap && state.bootstrap.active_upload_page_id);
+      const savedPageId = localStorage.getItem(PAGE_KEY) || state.selectedPageId;
+      const validPageIds = new Set(pages.map((item) => trim(item.page_id)).filter(Boolean));
+      if (savedPageId && validPageIds.has(savedPageId)) {
+        state.selectedPageId = savedPageId;
+      } else if (preferredPageId && validPageIds.has(preferredPageId)) {
+        state.selectedPageId = preferredPageId;
+      } else {
+        state.selectedPageId = pages[0] ? trim(pages[0].page_id) : "";
+      }
+      if (state.selectedPageId) {
+        localStorage.setItem(PAGE_KEY, state.selectedPageId);
+      } else {
+        localStorage.removeItem(PAGE_KEY);
+      }
+    }
+
+    function ensureSelectedPackagesStillExist() {
+      const names = new Set(((state.bootstrap && state.bootstrap.packages) || []).map((pkg) => trim(pkg.package_name)).filter(Boolean));
+      state.selectedPackages = new Set(selectedPackageNames().filter((name) => names.has(name)));
+      persistSelections();
+    }
+
+    function statusDotClass(payload) {
+      if (!payload) {
+        return "dot";
+      }
+      const running = Boolean(payload.running || payload.remote_running);
+      const status = trim(payload.status).toLowerCase();
+      if (status.includes("fail") || status.includes("error")) {
+        return "dot danger";
+      }
+      if (running || status.includes("running") || status.includes("stopping")) {
+        return "dot warn";
+      }
+      return "dot success";
+    }
+
+    function renderConnectionGrid() {
+      const status = state.status || {};
+      const bootstrap = state.bootstrap || {};
+      const rows = [
+        { label: "This URL", value: window.location.href },
+        { label: "Tailscale URL", value: trim(bootstrap.tailscale_url || status.tailscale_url) || "-" },
+        { label: "Relay Client URL", value: trim(bootstrap.relay_client_url || status.relay_client_url) || "-" },
+        { label: "Display Name", value: trim(bootstrap.mac_display_name || status.mac_display_name) || "-" }
+      ];
+      connectionGrid.innerHTML = rows.map((row) => `
+        <div class="meta-item">
+          <div class="meta-label">${escapeHtml(row.label)}</div>
+          <div class="meta-value">${escapeHtml(row.value)}</div>
+        </div>
+      `).join("");
+    }
+
+    function renderQueueGrid() {
+      const queue = (state.bootstrap && state.bootstrap.facebook_queue) || (state.status && state.status.facebook_queue) || {};
+      const rows = [
+        { label: "Today Remaining Slots", value: String(queue.today_remaining_slots ?? 0) },
+        { label: "Next Queue Time", value: trim(queue.next_queue_label_ampm) || "-" },
+        { label: "Reserved Until", value: trim(queue.reserved_until_label_ampm) || "-" },
+        { label: "Current Edited End", value: trim(queue.current_edited_end_label_ampm) || "-" },
+        { label: "40 Videos End", value: trim(queue.videos40_end_label_ampm) || "-" },
+        { label: "80 Videos End", value: trim(queue.videos80_end_label_ampm) || "-" }
+      ];
+      queueGrid.innerHTML = rows.map((row) => `
+        <div class="meta-item">
+          <div class="meta-label">${escapeHtml(row.label)}</div>
+          <div class="meta-value">${escapeHtml(row.value)}</div>
+        </div>
+      `).join("");
+      morningOnlyCheckbox.checked = Boolean(queue.morning_only);
+    }
+
+    function renderAlerts() {
+      const latestAlert = state.status && state.status.latest_alert;
+      if (!latestAlert) {
+        alertGrid.innerHTML = `<div class="empty">No alert yet.</div>`;
+        return;
+      }
+      alertGrid.innerHTML = `
+        <div class="meta-item">
+          <div class="meta-label">${escapeHtml(trim(latestAlert.level) || "info")}</div>
+          <div class="meta-value">${escapeHtml(trim(latestAlert.title) || "Soranin")}</div>
+          <div class="panel-copy" style="margin-top:8px;">${escapeHtml(trim(latestAlert.message) || "-")}</div>
+        </div>
+      `;
+    }
+
+    function renderLogs() {
+      const logs = (state.status && Array.isArray(state.status.logs)) ? state.status.logs : [];
+      logsBox.textContent = logs.length ? logs.slice(-120).join("\n") : "Waiting for logs…";
+      logsBox.scrollTop = logsBox.scrollHeight;
+    }
+
+    function renderFilterRow() {
+      filterRow.innerHTML = FILTERS.map((filter) => {
+        const total = ((state.bootstrap && state.bootstrap.packages) || []).filter((pkg) => {
+          const current = state.activeFilter;
+          state.activeFilter = filter.key;
+          const matched = packageMatchesFilter(pkg);
+          state.activeFilter = current;
+          return matched;
+        }).length;
+        return `<button class="chip ${state.activeFilter === filter.key ? "active" : ""}" type="button" data-filter="${filter.key}">${escapeHtml(filter.label)} <span class="tiny-chip">${total}</span></button>`;
+      }).join("");
+      filterRow.querySelectorAll("[data-filter]").forEach((button) => {
+        button.addEventListener("click", () => {
+          state.activeFilter = button.getAttribute("data-filter") || "no_page";
+          renderPackages();
+          renderFilterRow();
+        });
+      });
+    }
+
+    function renderProfileSelect() {
+      const profiles = normalizedProfileItems();
+      profileSelect.innerHTML = profiles.length
+        ? profiles.map((item) => {
+            const label = `${item.name || item.directory}${item.isOnline ? " • Online" : ""}`;
+            return `<option value="${escapeHtml(item.directory)}"${item.directory === state.selectedProfileDirectory ? " selected" : ""}>${escapeHtml(label)}</option>`;
+          }).join("")
+        : `<option value="">No Chrome profiles found</option>`;
+      profileSelect.disabled = profiles.length === 0;
+    }
+
+    function renderPageSelect() {
+      const pages = savedUploadPages();
+      pageSelect.innerHTML = pages.length
+        ? pages.map((item) => {
+            const label = trim(item.label) || trim(item.page_id);
+            const queueText = trim(item.next_queue_label_ampm) || "-";
+            const text = `${label} • ${trim(item.token_countdown_label) || trim(item.token_status) || "Saved"} • Next ${queueText}`;
+            return `<option value="${escapeHtml(trim(item.page_id))}"${trim(item.page_id) === state.selectedPageId ? " selected" : ""}>${escapeHtml(text)}</option>`;
+          }).join("")
+        : `<option value="">No saved upload page</option>`;
+      pageSelect.disabled = pages.length === 0;
+    }
+
+    function renderPackages() {
+      ensureSelectedPackagesStillExist();
+      const visible = filteredPackages();
+      visibleCountLabel.textContent = `${visible.length} visible`;
+      packageGrid.innerHTML = "";
+
+      if (!visible.length) {
+        packageEmpty.classList.remove("hidden");
+        return;
+      }
+
+      packageEmpty.classList.add("hidden");
+      packageGrid.innerHTML = visible.map((pkg) => {
+        const badge = packageBadgeInfo(pkg);
+        const selected = state.selectedPackages.has(pkg.package_name);
+        const statusState = trim(pkg.facebook_status_state);
+        const pageLabel = trim(pkg.assigned_facebook_page_label) || trim(pkg.assigned_facebook_page_id) || "No page";
+        return `
+          <article class="package-card ${selected ? "selected" : ""}" data-package="${escapeHtml(pkg.package_name)}">
+            <div class="package-top">
+              <div>
+                <div class="package-name">${escapeHtml(pkg.package_name)}</div>
+                <div class="package-source">${escapeHtml(trim(pkg.source_name) || "-")}</div>
+              </div>
+              <div class="pill-row">
+                <span class="tiny-chip">${escapeHtml(badge.title)}</span>
+                ${statusState ? `<span class="tiny-chip">${escapeHtml(statusState)}</span>` : ""}
+              </div>
+            </div>
+
+            <div class="package-title">${escapeHtml(trim(pkg.title) || "No title.")}</div>
+
+            <div class="meta-row">
+              <div class="package-source">Page: ${escapeHtml(pageLabel)}</div>
+              <div class="package-source">Schedule: ${escapeHtml(trim(pkg.schedule_text) || "-")}</div>
+            </div>
+
+            <div class="package-actions">
+              <button class="mini-btn" type="button" data-action="toggle" data-package="${escapeHtml(pkg.package_name)}">${selected ? "Remove" : "Select"}</button>
+              <button class="mini-btn danger" type="button" data-action="delete" data-package="${escapeHtml(pkg.package_name)}">Delete</button>
+            </div>
+          </article>
+        `;
+      }).join("");
+
+      packageGrid.querySelectorAll("[data-action='toggle']").forEach((button) => {
+        button.addEventListener("click", (event) => {
+          event.stopPropagation();
+          togglePackageSelection(button.getAttribute("data-package") || "");
+        });
+      });
+      packageGrid.querySelectorAll("[data-action='delete']").forEach((button) => {
+        button.addEventListener("click", async (event) => {
+          event.stopPropagation();
+          const packageName = button.getAttribute("data-package") || "";
+          if (!packageName) {
+            return;
+          }
+          if (!window.confirm(`Delete ${packageName}?`)) {
+            return;
+          }
+          await runAction(() => requestJson("/facebook-package-delete", {
+            method: "POST",
+            payload: { package_name: packageName }
+          }), true);
+          state.selectedPackages.delete(packageName);
+          persistSelections();
+        });
+      });
+      packageGrid.querySelectorAll(".package-card").forEach((card) => {
+        card.addEventListener("click", () => {
+          togglePackageSelection(card.getAttribute("data-package") || "");
+        });
+      });
+    }
+
+    function togglePackageSelection(packageName) {
+      const name = trim(packageName);
+      if (!name) {
+        return;
+      }
+      if (state.selectedPackages.has(name)) {
+        state.selectedPackages.delete(name);
+      } else {
+        state.selectedPackages.add(name);
+      }
+      persistSelections();
+      renderPackages();
+    }
+
+    function renderTopSection() {
+      const status = state.status || {};
+      const bootstrap = state.bootstrap || {};
+      const isRunning = Boolean(status.running || status.remote_running);
+      const detail = trim(status.detail) || trim(bootstrap.memory_summary) || "Ready.";
+      const displayName = trim(bootstrap.mac_display_name || status.mac_display_name) || "Soranin";
+      const userName = trim(bootstrap.mac_user_name || status.mac_user_name);
+      const deviceName = trim(bootstrap.mac_device_name || status.mac_device_name);
+      eyebrowLabel.textContent = API_BASE ? "Relay / Remote Control" : "Direct Mac Control";
+      heroSub.textContent = [displayName, userName, deviceName].filter(Boolean).join(" • ") || "Connected to Soranin";
+      statusLabel.textContent = trim(status.status) || "Idle";
+      statusDot.className = statusDotClass(status);
+      packageCount.textContent = String(status.package_count ?? ((bootstrap.packages || []).length) ?? 0);
+      sourceCount.textContent = String(status.source_count ?? 0);
+      latestPackage.textContent = trim(status.latest_package) || "-";
+      progressValue.textContent = `${Number(status.progress_percent || 0)}%`;
+      progressLabel.textContent = trim(status.progress_label) || detail;
+      taskKindDetail.textContent = `Task: ${trim(status.task_kind) || "idle"}`;
+      stopRunnerBtn.disabled = !(isRunning && trim(status.task_kind) === "facebook_post");
+      runRunnerBtn.disabled = !selectedProfileItem() || selectedPackageNames().length === 0;
+      apiPublishBtn.disabled = !state.selectedPageId || selectedPackageNames().length === 0;
+      apiScheduleBtn.disabled = !state.selectedPageId || selectedPackageNames().length === 0;
+      assignQueueBtn.disabled = !state.selectedPageId || selectedPackageNames().length === 0;
+      setPageOnlyBtn.disabled = !state.selectedPageId || selectedPackageNames().length === 0;
+      backToOldBtn.disabled = selectedPackageNames().length === 0;
+    }
+
+    function renderAll() {
+      renderTopSection();
+      renderConnectionGrid();
+      renderProfileSelect();
+      renderPageSelect();
+      renderQueueGrid();
+      renderAlerts();
+      renderLogs();
+      renderFilterRow();
+      renderPackages();
+      persistSelections();
+    }
+
+    function handleAuthExpired(message) {
+      state.authPassword = "";
+      localStorage.removeItem(LOCAL_PASSWORD_KEY);
+      sessionStorage.removeItem(SESSION_PASSWORD_KEY);
+      setAuthMode(false);
+      authError.textContent = message || "Password required.";
+      authHint.textContent = "Login again to continue.";
+      stopPolling();
+    }
+
+    async function loadPublicStatus() {
+      try {
+        state.publicStatus = await requestJson("/status", { allowUnauthorized: true, password: state.authPassword || "" });
+        const required = Boolean(state.publicStatus.password_required);
+        continueWithoutPasswordBtn.classList.toggle("hidden", required);
+        authHint.textContent = required
+          ? "This Mac requires the Control Password before Safari can connect."
+          : "No password is required on this Mac. You can continue directly.";
+      } catch (error) {
+        authHint.textContent = error.message || "Could not reach Soranin.";
+      }
+    }
+
+    async function refreshStatus() {
+      if (state.refreshStatusBusy) {
+        return;
+      }
+      state.refreshStatusBusy = true;
+      try {
+        state.status = await requestJson("/status");
+        renderTopSection();
+        renderConnectionGrid();
+        renderAlerts();
+        renderLogs();
+      } catch (error) {
+        showToast(error.message || "Status refresh failed.");
+      } finally {
+        state.refreshStatusBusy = false;
+      }
+    }
+
+    function bootstrapQueryString() {
+      const profile = selectedProfileItem();
+      const params = new URLSearchParams();
+      if (profile && profile.name) {
+        params.set("chrome_name", profile.name);
+      }
+      if (profile && profile.directory) {
+        params.set("profile_directory", profile.directory);
+      }
+      const query = params.toString();
+      return query ? `?${query}` : "";
+    }
+
+    async function refreshBootstrap() {
+      if (state.refreshBootstrapBusy) {
+        return;
+      }
+      state.refreshBootstrapBusy = true;
+      try {
+        state.bootstrap = await requestJson(`/facebook-post-bootstrap${bootstrapQueryString()}`);
+        setDefaultProfileAndPage();
+        ensureSelectedPackagesStillExist();
+        renderAll();
+      } catch (error) {
+        showToast(error.message || "Bootstrap refresh failed.");
+      } finally {
+        state.refreshBootstrapBusy = false;
+      }
+    }
+
+    function startPolling() {
+      stopPolling();
+      state.refreshStatusTimer = window.setInterval(refreshStatus, 3000);
+      state.refreshBootstrapTimer = window.setInterval(refreshBootstrap, 12000);
+    }
+
+    function stopPolling() {
+      if (state.refreshStatusTimer) {
+        clearInterval(state.refreshStatusTimer);
+        state.refreshStatusTimer = null;
+      }
+      if (state.refreshBootstrapTimer) {
+        clearInterval(state.refreshBootstrapTimer);
+        state.refreshBootstrapTimer = null;
+      }
+    }
+
+    async function loginWithPassword(password) {
+      authError.textContent = "";
+      const trimmed = trim(password);
+      state.authPassword = trimmed;
+      try {
+        state.bootstrap = await requestJson("/facebook-post-bootstrap", {
+          password: trimmed,
+          allowUnauthorized: true
+        });
+        state.status = await requestJson("/status", {
+          password: trimmed,
+          allowUnauthorized: true
+        });
+      } catch (error) {
+        state.authPassword = "";
+        localStorage.removeItem(LOCAL_PASSWORD_KEY);
+        sessionStorage.removeItem(SESSION_PASSWORD_KEY);
+        authError.textContent = error.message || "Login failed.";
+        return;
+      }
+
+      storePassword(trimmed);
+      setDefaultProfileAndPage();
+      ensureSelectedPackagesStillExist();
+      setAuthMode(true);
+      renderAll();
+      startPolling();
+      showToast("Connected to Soranin.");
+    }
+
+    async function runAction(action, refreshBootstrapAfter = false) {
+      try {
+        const result = await action();
+        if (result && result.message) {
+          showToast(result.message);
+        }
+        await refreshStatus();
+        if (refreshBootstrapAfter) {
+          await refreshBootstrap();
+        }
+      } catch (error) {
+        showToast(error.message || "Action failed.");
+      }
+    }
+
+    function selectedProfilePayload() {
+      const profile = selectedProfileItem();
+      if (!profile) {
+        throw new Error("Choose a Chrome profile first.");
+      }
+      return {
+        chrome_name: profile.name,
+        profile_directory: profile.directory
+      };
+    }
+
+    async function runRunner() {
+      const packages = selectedPackageNames();
+      if (!packages.length) {
+        throw new Error("Choose at least one package.");
+      }
+      const profilePayload = selectedProfilePayload();
+      return requestJson("/facebook-post-run", {
+        method: "POST",
+        payload: {
+          ...profilePayload,
+          folders: packages.join("\n"),
+          interval_minutes: Number(intervalInput.value || 30),
+          close_after_finish: closeAfterFinishCheckbox.checked,
+          close_after_each: closeAfterEachCheckbox.checked,
+          post_now_advance_slot: postNowAdvanceCheckbox.checked,
+          delete_after_each_success: deleteAfterSuccessCheckbox.checked,
+          open_chrome_first: restartProfileCheckbox.checked
+        }
+      });
+    }
+
+    async function runApiUpload(mode) {
+      const packages = selectedPackageNames();
+      if (!packages.length) {
+        throw new Error("Choose at least one package.");
+      }
+      const pageId = trim(state.selectedPageId);
+      if (!pageId) {
+        throw new Error("Choose a saved upload page first.");
+      }
+      return requestJson("/facebook-upload-run", {
+        method: "POST",
+        payload: {
+          page_id: pageId,
+          packages,
+          mode,
+          delete_after_success: deleteAfterSuccessCheckbox.checked
+        }
+      });
+    }
+
+    async function assignSelected(moveToQueue) {
+      const packages = selectedPackageNames();
+      if (!packages.length) {
+        throw new Error("Choose at least one package.");
+      }
+      const pageId = trim(state.selectedPageId);
+      if (!pageId) {
+        throw new Error("Choose a saved upload page first.");
+      }
+      return requestJson("/facebook-package-assign-page", {
+        method: "POST",
+        payload: {
+          package_names: packages,
+          page_id: pageId,
+          move_to_queue: moveToQueue
+        }
+      });
+    }
+
+    async function backToOld() {
+      const packages = selectedPackageNames();
+      if (!packages.length) {
+        throw new Error("Choose at least one package.");
+      }
+      return requestJson("/facebook-package-back-to-old", {
+        method: "POST",
+        payload: { package_names: packages }
+      });
+    }
+
+    async function updateQueue(path, extraPayload = {}) {
+      const profilePayload = selectedProfilePayload();
+      return requestJson(path, {
+        method: "POST",
+        payload: {
+          ...profilePayload,
+          ...extraPayload
+        }
+      });
+    }
+
+    loginBtn.addEventListener("click", () => {
+      loginWithPassword(passwordInput.value);
+    });
+
+    passwordInput.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        loginWithPassword(passwordInput.value);
+      }
+    });
+
+    continueWithoutPasswordBtn.addEventListener("click", () => {
+      loginWithPassword("");
+    });
+
+    refreshBtn.addEventListener("click", async () => {
+      await refreshStatus();
+      await refreshBootstrap();
+      showToast("Refreshed.");
+    });
+
+    logoutBtn.addEventListener("click", () => {
+      handleAuthExpired("Logged out.");
+      passwordInput.value = "";
+      authError.textContent = "";
+      authHint.textContent = "Login again to continue.";
+    });
+
+    searchInput.addEventListener("input", () => {
+      renderPackages();
+    });
+
+    profileSelect.addEventListener("change", async () => {
+      state.selectedProfileDirectory = trim(profileSelect.value);
+      if (state.selectedProfileDirectory) {
+        localStorage.setItem(PROFILE_KEY, state.selectedProfileDirectory);
+      } else {
+        localStorage.removeItem(PROFILE_KEY);
+      }
+      await refreshBootstrap();
+    });
+
+    pageSelect.addEventListener("change", () => {
+      state.selectedPageId = trim(pageSelect.value);
+      if (state.selectedPageId) {
+        localStorage.setItem(PAGE_KEY, state.selectedPageId);
+      } else {
+        localStorage.removeItem(PAGE_KEY);
+      }
+      renderAll();
+    });
+
+    selectVisibleBtn.addEventListener("click", () => {
+      filteredPackages().forEach((pkg) => state.selectedPackages.add(pkg.package_name));
+      persistSelections();
+      renderPackages();
+    });
+
+    clearSelectionBtn.addEventListener("click", () => {
+      state.selectedPackages.clear();
+      persistSelections();
+      renderPackages();
+    });
+
+    assignQueueBtn.addEventListener("click", async () => {
+      await runAction(() => assignSelected(true), true);
+    });
+
+    setPageOnlyBtn.addEventListener("click", async () => {
+      await runAction(() => assignSelected(false), true);
+    });
+
+    backToOldBtn.addEventListener("click", async () => {
+      await runAction(() => backToOld(), true);
+    });
+
+    runRunnerBtn.addEventListener("click", async () => {
+      await runAction(() => runRunner(), true);
+    });
+
+    stopRunnerBtn.addEventListener("click", async () => {
+      await runAction(() => requestJson("/facebook-post-stop", { method: "POST", payload: {} }), true);
+    });
+
+    apiPublishBtn.addEventListener("click", async () => {
+      await runAction(() => runApiUpload("publish"), true);
+    });
+
+    apiScheduleBtn.addEventListener("click", async () => {
+      await runAction(() => runApiUpload("schedule"), true);
+    });
+
+    queueResetBtn.addEventListener("click", async () => {
+      await runAction(() => updateQueue("/facebook-queue-reset"), true);
+    });
+
+    queueClearBtn.addEventListener("click", async () => {
+      await runAction(() => updateQueue("/facebook-queue-clear"), true);
+    });
+
+    morningOnlyCheckbox.addEventListener("change", async () => {
+      await runAction(() => updateQueue("/facebook-queue-morning-only", {
+        morning_only: morningOnlyCheckbox.checked
+      }), true);
+    });
+
+    async function initialize() {
+      await loadPublicStatus();
+      const storedPassword = loadStoredPassword();
+      if (storedPassword) {
+        rememberPassword.checked = Boolean(localStorage.getItem(LOCAL_PASSWORD_KEY));
+        passwordInput.value = storedPassword;
+        await loginWithPassword(storedPassword);
+        return;
+      }
+      if (state.publicStatus && !state.publicStatus.password_required) {
+        await loginWithPassword("");
+        return;
+      }
+      setAuthMode(false);
+    }
+
+    initialize();
+  </script>
+</body>
+</html>

@@ -48,6 +48,14 @@ STORE_PATH = _relay_store_path()
 SHARED_QUEUE_DIR = STORE_PATH.parent / "facebook_shared_queues"
 SHARED_QUEUE_LOCKS: dict[str, threading.Lock] = {}
 SHARED_QUEUE_LOCKS_GUARD = threading.Lock()
+CONTROL_WEB_HTML_PATH = Path(__file__).resolve().with_name("soranin_web_control.html")
+
+
+def load_control_web_html() -> str:
+    try:
+        return CONTROL_WEB_HTML_PATH.read_text(encoding="utf-8")
+    except Exception:
+        return """<!doctype html><html><body><h1>Soranin Control</h1><p>Web control page is missing.</p></body></html>"""
 
 
 @contextmanager
@@ -550,6 +558,17 @@ class RelayHandler(BaseHTTPRequestHandler):
         if self.command != "HEAD":
             self.wfile.write(body)
 
+    def _send_html(self, html: str, status: int = HTTPStatus.OK) -> None:
+        body = html.encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Soranin-Password, X-Soranin-File-Name")
+        self.end_headers()
+        self.wfile.write(body)
+
     def _read_json_body(self) -> dict:
         length = int(self.headers.get("Content-Length") or "0")
         if length <= 0:
@@ -673,6 +692,10 @@ class RelayHandler(BaseHTTPRequestHandler):
             return
         if not token:
             self._send_json({"ok": False, "message": "Client token is required."}, HTTPStatus.NOT_FOUND)
+            return
+
+        if tail in {"/", "/index.html", "/control", "/control/", "/control/index.html"}:
+            self._send_html(load_control_web_html(), HTTPStatus.OK)
             return
 
         client = STORE.client_status(token)
@@ -1007,12 +1030,18 @@ class RelayHandler(BaseHTTPRequestHandler):
             return
 
         if tail in {
+            "/facebook-queue-clear",
+            "/facebook-queue-reset",
+            "/facebook-queue-morning-only",
             "/facebook-post-preflight",
             "/facebook-post-run",
+            "/facebook-post-stop",
             "/facebook-post-save-page",
             "/facebook-upload-run",
             "/quit-chrome",
             "/remote-run",
+            "/facebook-package-assign-page",
+            "/facebook-package-back-to-old",
         }:
             client = STORE.client_status(token)
             if not now_is_recent(client.get("last_seen_at"), CLIENT_STALE_SECONDS):
@@ -1028,6 +1057,10 @@ class RelayHandler(BaseHTTPRequestHandler):
                 if tail == "/facebook-post-preflight"
                 else 30.0
                 if tail == "/facebook-post-save-page"
+                else 30.0
+                if tail in {"/facebook-queue-clear", "/facebook-queue-reset", "/facebook-queue-morning-only", "/facebook-post-stop"}
+                else 60.0
+                if tail in {"/facebook-package-assign-page", "/facebook-package-back-to-old"}
                 else JOB_TIMEOUT_SECONDS
             )
             job_id = STORE.enqueue_job(token, tail, payload, {})
