@@ -31,6 +31,9 @@
     html, body {
       margin: 0;
       min-height: 100%;
+      width: 100%;
+      max-width: 100%;
+      overflow-x: hidden;
       background:
         radial-gradient(circle at top left, rgba(103, 232, 249, 0.12), transparent 28%),
         radial-gradient(circle at top right, rgba(139, 92, 246, 0.12), transparent 32%),
@@ -50,9 +53,11 @@
     .hidden { display: none !important; }
 
     .screen {
-      width: min(1180px, calc(100vw - 24px));
+      width: min(1180px, 100%);
+      max-width: 100%;
       margin: 0 auto;
-      padding: 16px 0 36px;
+      padding: 16px 12px 36px;
+      overflow-x: clip;
     }
 
     .auth-shell {
@@ -206,6 +211,7 @@
 
     .panel {
       padding: 18px;
+      min-width: 0;
     }
 
     .panel-title {
@@ -286,12 +292,14 @@
       color: var(--muted);
       font-size: 14px;
       line-height: 1.5;
+      overflow-wrap: anywhere;
     }
 
     .stat-grid {
       display: grid;
       grid-template-columns: repeat(4, minmax(0, 1fr));
       gap: 12px;
+      min-width: 0;
     }
 
     .stat-card {
@@ -299,6 +307,7 @@
       padding: 16px;
       border: 1px solid var(--line);
       background: rgba(5, 10, 20, 0.42);
+      min-width: 0;
     }
 
     .stat-label {
@@ -320,6 +329,7 @@
       margin-top: 4px;
       color: var(--muted);
       font-size: 13px;
+      overflow-wrap: anywhere;
     }
 
     .layout {
@@ -327,23 +337,27 @@
       grid-template-columns: minmax(0, 1.2fr) minmax(320px, 0.8fr);
       gap: 14px;
       align-items: start;
+      min-width: 0;
     }
 
     .section-grid {
       display: grid;
       gap: 14px;
+      min-width: 0;
     }
 
     .split-grid {
       display: grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));
       gap: 12px;
+      min-width: 0;
     }
 
     .package-grid {
       display: grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));
       gap: 12px;
+      min-width: 0;
     }
 
     .package-card {
@@ -355,6 +369,7 @@
       gap: 12px;
       cursor: pointer;
       transition: border-color 0.15s ease, transform 0.15s ease, background 0.15s ease;
+      min-width: 0;
     }
 
     .package-card.selected {
@@ -368,6 +383,12 @@
       justify-content: space-between;
       align-items: start;
       gap: 10px;
+      min-width: 0;
+    }
+
+    .package-top > div,
+    .meta-row > div {
+      min-width: 0;
     }
 
     .package-name {
@@ -375,6 +396,7 @@
       font-weight: 800;
       letter-spacing: -0.03em;
       line-break: anywhere;
+      overflow-wrap: anywhere;
     }
 
     .package-title {
@@ -385,17 +407,78 @@
       -webkit-box-orient: vertical;
       -webkit-line-clamp: 3;
       overflow: hidden;
+      overflow-wrap: anywhere;
     }
 
     .package-source {
       color: var(--muted);
       font-size: 12px;
+      overflow-wrap: anywhere;
     }
 
     .package-actions {
       display: flex;
       gap: 8px;
       flex-wrap: wrap;
+    }
+
+    .package-thumb {
+      position: relative;
+      width: 100%;
+      aspect-ratio: 9 / 16;
+      border-radius: 18px;
+      overflow: hidden;
+      border: 1px solid rgba(170, 193, 255, 0.14);
+      background:
+        radial-gradient(circle at top, rgba(103, 232, 249, 0.18), transparent 34%),
+        linear-gradient(180deg, rgba(10, 18, 34, 0.98) 0%, rgba(5, 10, 20, 0.98) 100%);
+    }
+
+    .package-thumb img {
+      display: block;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      background: rgba(4, 8, 16, 0.9);
+    }
+
+    .package-thumb-placeholder {
+      position: absolute;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      padding: 14px;
+      text-align: center;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      background:
+        linear-gradient(110deg, rgba(255, 255, 255, 0.02) 8%, rgba(103, 232, 249, 0.1) 18%, rgba(255, 255, 255, 0.02) 33%);
+      background-size: 200% 100%;
+      animation: thumbShimmer 1.8s linear infinite;
+    }
+
+    .package-thumb.ready .package-thumb-placeholder,
+    .package-thumb.empty .package-thumb-placeholder {
+      animation: none;
+      background: linear-gradient(180deg, rgba(10, 18, 34, 0.3) 0%, rgba(5, 10, 20, 0.3) 100%);
+    }
+
+    .package-thumb.ready .package-thumb-placeholder {
+      display: none;
+    }
+
+    .package-thumb.error .package-thumb-placeholder {
+      color: #ffd8df;
+      background: linear-gradient(180deg, rgba(60, 20, 31, 0.4) 0%, rgba(30, 8, 16, 0.5) 100%);
+      animation: none;
+    }
+
+    @keyframes thumbShimmer {
+      from { background-position: 200% 0; }
+      to { background-position: -200% 0; }
     }
 
     .mini-btn {
@@ -418,6 +501,7 @@
     .meta-grid {
       display: grid;
       gap: 10px;
+      min-width: 0;
     }
 
     .meta-item {
@@ -425,6 +509,7 @@
       border-radius: 18px;
       border: 1px solid var(--line);
       background: rgba(5, 10, 20, 0.36);
+      min-width: 0;
     }
 
     .meta-label {
@@ -440,6 +525,7 @@
       font-size: 15px;
       font-weight: 700;
       line-height: 1.35;
+      overflow-wrap: anywhere;
       word-break: break-word;
     }
 
@@ -503,7 +589,8 @@
 
     @media (max-width: 720px) {
       .screen {
-        width: min(100vw - 16px, 100%);
+        width: 100%;
+        padding: 12px 12px 32px;
       }
 
       .panel {
@@ -512,6 +599,10 @@
 
       .hero-title {
         display: grid;
+      }
+
+      .toolbar-row {
+        width: 100%;
       }
 
       .stat-grid,
@@ -823,6 +914,9 @@
       status: null,
       publicStatus: null,
       selectedPackages: new Set(),
+      thumbnailURLs: new Map(),
+      thumbnailLoads: new Map(),
+      thumbnailObserver: null,
       activeFilter: "no_page",
       selectedProfileDirectory: localStorage.getItem(PROFILE_KEY) || "",
       selectedPageId: localStorage.getItem(PAGE_KEY) || "",
@@ -1008,6 +1102,110 @@
       return Array.from(state.selectedPackages).sort();
     }
 
+    function packageThumbnailURL(packageName) {
+      const params = new URLSearchParams();
+      params.set("package_name", packageName);
+      return apiUrl(`/facebook-package-thumbnail?${params.toString()}`);
+    }
+
+    async function loadThumbnailURL(packageName) {
+      const name = trim(packageName);
+      if (!name) {
+        return "";
+      }
+      if (state.thumbnailURLs.has(name)) {
+        return state.thumbnailURLs.get(name) || "";
+      }
+      if (state.thumbnailLoads.has(name)) {
+        return state.thumbnailLoads.get(name);
+      }
+
+      const request = (async () => {
+        const headers = {};
+        if (state.authPassword) {
+          headers["X-Soranin-Password"] = state.authPassword;
+        }
+        const response = await fetch(packageThumbnailURL(name), {
+          method: "GET",
+          headers,
+          cache: "force-cache"
+        });
+        if (!response.ok) {
+          throw new Error(`Thumbnail failed (${response.status})`);
+        }
+        const blob = await response.blob();
+        const objectURL = URL.createObjectURL(blob);
+        state.thumbnailURLs.set(name, objectURL);
+        state.thumbnailLoads.delete(name);
+        return objectURL;
+      })().catch((error) => {
+        state.thumbnailLoads.delete(name);
+        throw error;
+      });
+
+      state.thumbnailLoads.set(name, request);
+      return request;
+    }
+
+    function observePackageThumbnails() {
+      const images = Array.from(packageGrid.querySelectorAll("[data-thumb-package]"));
+      if (!images.length) {
+        return;
+      }
+
+      if (!("IntersectionObserver" in window)) {
+        images.forEach((img) => {
+          hydrateThumbnailImage(img);
+        });
+        return;
+      }
+
+      if (state.thumbnailObserver) {
+        state.thumbnailObserver.disconnect();
+      }
+
+      state.thumbnailObserver = new IntersectionObserver((entries) => {
+        entries.forEach((entry) => {
+          if (!entry.isIntersecting) {
+            return;
+          }
+          const img = entry.target;
+          state.thumbnailObserver.unobserve(img);
+          hydrateThumbnailImage(img);
+        });
+      }, {
+        rootMargin: "180px 0px"
+      });
+
+      images.forEach((img) => {
+        state.thumbnailObserver.observe(img);
+      });
+    }
+
+    async function hydrateThumbnailImage(image) {
+      const packageName = trim(image.getAttribute("data-thumb-package"));
+      if (!packageName || image.dataset.thumbLoaded === "true") {
+        return;
+      }
+      const shell = image.closest(".package-thumb");
+      if (!shell) {
+        return;
+      }
+      shell.classList.remove("error", "ready");
+      try {
+        const src = await loadThumbnailURL(packageName);
+        image.src = src;
+        image.dataset.thumbLoaded = "true";
+        shell.classList.add("ready");
+      } catch (_error) {
+        shell.classList.add("error");
+        const placeholder = shell.querySelector(".package-thumb-placeholder");
+        if (placeholder) {
+          placeholder.textContent = "Thumbnail failed";
+        }
+      }
+    }
+
     function persistSelections() {
       selectedPackagesBox.value = selectedPackageNames().join("\n");
       selectedCountDetail.textContent = `${state.selectedPackages.size} selected`;
@@ -1181,8 +1379,15 @@
         const selected = state.selectedPackages.has(pkg.package_name);
         const statusState = trim(pkg.facebook_status_state);
         const pageLabel = trim(pkg.assigned_facebook_page_label) || trim(pkg.assigned_facebook_page_id) || "No page";
+        const thumbStateClass = pkg.has_thumbnail ? "" : "empty";
+        const thumbLabel = pkg.has_thumbnail ? "Loading thumbnail" : "No thumbnail";
         return `
           <article class="package-card ${selected ? "selected" : ""}" data-package="${escapeHtml(pkg.package_name)}">
+            <div class="package-thumb ${thumbStateClass}">
+              ${pkg.has_thumbnail ? `<img alt="${escapeHtml(pkg.package_name)} thumbnail" data-thumb-package="${escapeHtml(pkg.package_name)}">` : ""}
+              <div class="package-thumb-placeholder">${escapeHtml(thumbLabel)}</div>
+            </div>
+
             <div class="package-top">
               <div>
                 <div class="package-name">${escapeHtml(pkg.package_name)}</div>
@@ -1238,6 +1443,7 @@
           togglePackageSelection(card.getAttribute("data-package") || "");
         });
       });
+      observePackageThumbnails();
     }
 
     function togglePackageSelection(packageName) {
