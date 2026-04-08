@@ -630,7 +630,7 @@
 
       <label class="check-row">
         <input id="rememberPassword" type="checkbox">
-        <span>Remember this password on this iPad</span>
+        <span>Remember this login on this iPad</span>
       </label>
 
       <div class="btn-row">
@@ -903,13 +903,15 @@
 
     const API_BASE = deriveApiBase(window.location.pathname);
     const STORAGE_SCOPE = `${window.location.origin}${API_BASE || "/"}`;
-    const LOCAL_PASSWORD_KEY = `soranin.web.password.local:${STORAGE_SCOPE}`;
-    const SESSION_PASSWORD_KEY = `soranin.web.password.session:${STORAGE_SCOPE}`;
+    const LEGACY_LOCAL_PASSWORD_KEY = `soranin.web.password.local:${STORAGE_SCOPE}`;
+    const LEGACY_SESSION_PASSWORD_KEY = `soranin.web.password.session:${STORAGE_SCOPE}`;
+    const LOCAL_SESSION_KEY = `soranin.web.session.local:${STORAGE_SCOPE}`;
+    const SESSION_SESSION_KEY = `soranin.web.session.session:${STORAGE_SCOPE}`;
     const PROFILE_KEY = `soranin.web.profile:${STORAGE_SCOPE}`;
     const PAGE_KEY = `soranin.web.page:${STORAGE_SCOPE}`;
 
     const state = {
-      authPassword: "",
+      authSessionToken: "",
       bootstrap: null,
       status: null,
       publicStatus: null,
@@ -963,29 +965,43 @@
       return rememberPassword.checked;
     }
 
-    function storePassword(password) {
-      localStorage.removeItem(LOCAL_PASSWORD_KEY);
-      sessionStorage.removeItem(SESSION_PASSWORD_KEY);
-      if (!password) {
+    function clearLegacyStoredPasswords() {
+      localStorage.removeItem(LEGACY_LOCAL_PASSWORD_KEY);
+      sessionStorage.removeItem(LEGACY_SESSION_PASSWORD_KEY);
+    }
+
+    function clearStoredAuth() {
+      localStorage.removeItem(LOCAL_SESSION_KEY);
+      sessionStorage.removeItem(SESSION_SESSION_KEY);
+      clearLegacyStoredPasswords();
+    }
+
+    function storeSessionToken(sessionToken) {
+      clearStoredAuth();
+      if (!sessionToken) {
         return;
       }
       if (rememberPasswordValue()) {
-        localStorage.setItem(LOCAL_PASSWORD_KEY, password);
+        localStorage.setItem(LOCAL_SESSION_KEY, sessionToken);
       } else {
-        sessionStorage.setItem(SESSION_PASSWORD_KEY, password);
+        sessionStorage.setItem(SESSION_SESSION_KEY, sessionToken);
       }
     }
 
-    function loadStoredPassword() {
-      return localStorage.getItem(LOCAL_PASSWORD_KEY) || sessionStorage.getItem(SESSION_PASSWORD_KEY) || "";
+    function loadStoredSessionToken() {
+      return localStorage.getItem(LOCAL_SESSION_KEY) || sessionStorage.getItem(SESSION_SESSION_KEY) || "";
     }
 
     async function requestJson(path, options = {}) {
       const method = options.method || "GET";
       const payload = options.payload;
       const allowUnauthorized = options.allowUnauthorized === true;
-      const password = options.password !== undefined ? options.password : state.authPassword;
+      const password = options.password !== undefined ? trim(options.password) : "";
+      const sessionToken = options.sessionToken !== undefined ? trim(options.sessionToken) : state.authSessionToken;
       const headers = {};
+      if (sessionToken) {
+        headers["X-Soranin-Session"] = sessionToken;
+      }
       if (password) {
         headers["X-Soranin-Password"] = password;
       }
@@ -1122,14 +1138,25 @@
 
       const request = (async () => {
         const headers = {};
-        if (state.authPassword) {
-          headers["X-Soranin-Password"] = state.authPassword;
+        if (state.authSessionToken) {
+          headers["X-Soranin-Session"] = state.authSessionToken;
         }
         const response = await fetch(packageThumbnailURL(name), {
           method: "GET",
           headers,
           cache: "force-cache"
         });
+        if (response.status === 401) {
+          let message = "Login again to continue.";
+          try {
+            const errorPayload = await response.json();
+            message = trim(errorPayload.message) || message;
+          } catch (_error) {
+            // Ignore JSON parse failures for image responses.
+          }
+          handleAuthExpired(message);
+          throw new Error(message);
+        }
         if (!response.ok) {
           throw new Error(`Thumbnail failed (${response.status})`);
         }
@@ -1501,9 +1528,8 @@
     }
 
     function handleAuthExpired(message) {
-      state.authPassword = "";
-      localStorage.removeItem(LOCAL_PASSWORD_KEY);
-      sessionStorage.removeItem(SESSION_PASSWORD_KEY);
+      state.authSessionToken = "";
+      clearStoredAuth();
       setAuthMode(false);
       authError.textContent = message || "Password required.";
       authHint.textContent = "Login again to continue.";
@@ -1512,7 +1538,7 @@
 
     async function loadPublicStatus() {
       try {
-        state.publicStatus = await requestJson("/status", { allowUnauthorized: true, password: state.authPassword || "" });
+        state.publicStatus = await requestJson("/status", { allowUnauthorized: true });
         const required = Boolean(state.publicStatus.password_required);
         continueWithoutPasswordBtn.classList.toggle("hidden", required);
         authHint.textContent = required
@@ -1591,25 +1617,36 @@
     async function loginWithPassword(password) {
       authError.textContent = "";
       const trimmed = trim(password);
-      state.authPassword = trimmed;
+      state.authSessionToken = "";
       try {
+        const loginPayload = await requestJson("/auth/login", {
+          method: "POST",
+          payload: {
+            password: trimmed,
+            remember: rememberPasswordValue()
+          },
+          allowUnauthorized: true
+        });
+        const sessionToken = trim(loginPayload.session_token);
+        if (!sessionToken) {
+          throw new Error("Login failed.");
+        }
+        state.authSessionToken = sessionToken;
+        storeSessionToken(sessionToken);
         state.bootstrap = await requestJson("/facebook-post-bootstrap", {
-          password: trimmed,
           allowUnauthorized: true
         });
         state.status = await requestJson("/status", {
-          password: trimmed,
           allowUnauthorized: true
         });
       } catch (error) {
-        state.authPassword = "";
-        localStorage.removeItem(LOCAL_PASSWORD_KEY);
-        sessionStorage.removeItem(SESSION_PASSWORD_KEY);
+        state.authSessionToken = "";
+        clearStoredAuth();
         authError.textContent = error.message || "Login failed.";
         return;
       }
 
-      storePassword(trimmed);
+      passwordInput.value = "";
       setDefaultProfileAndPage();
       ensureSelectedPackagesStillExist();
       setAuthMode(true);
@@ -1747,7 +1784,16 @@
       showToast("Refreshed.");
     });
 
-    logoutBtn.addEventListener("click", () => {
+    logoutBtn.addEventListener("click", async () => {
+      try {
+        await requestJson("/auth/logout", {
+          method: "POST",
+          payload: {},
+          allowUnauthorized: true
+        });
+      } catch (_error) {
+        // Ignore logout transport failures and clear local session anyway.
+      }
       handleAuthExpired("Logged out.");
       passwordInput.value = "";
       authError.textContent = "";
@@ -1834,12 +1880,24 @@
 
     async function initialize() {
       await loadPublicStatus();
-      const storedPassword = loadStoredPassword();
-      if (storedPassword) {
-        rememberPassword.checked = Boolean(localStorage.getItem(LOCAL_PASSWORD_KEY));
-        passwordInput.value = storedPassword;
-        await loginWithPassword(storedPassword);
-        return;
+      rememberPassword.checked = Boolean(localStorage.getItem(LOCAL_SESSION_KEY));
+      clearLegacyStoredPasswords();
+      const storedSessionToken = loadStoredSessionToken();
+      if (storedSessionToken) {
+        state.authSessionToken = storedSessionToken;
+        try {
+          state.bootstrap = await requestJson("/facebook-post-bootstrap", { allowUnauthorized: true });
+          state.status = await requestJson("/status", { allowUnauthorized: true });
+          setDefaultProfileAndPage();
+          ensureSelectedPackagesStillExist();
+          setAuthMode(true);
+          renderAll();
+          startPolling();
+          return;
+        } catch (_error) {
+          state.authSessionToken = "";
+          clearStoredAuth();
+        }
       }
       if (state.publicStatus && !state.publicStatus.password_required) {
         await loginWithPassword("");

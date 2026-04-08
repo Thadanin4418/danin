@@ -2,22 +2,27 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import html
 import hmac
+import importlib.util
 import mimetypes
 import os
 import re
+import secrets
 import shlex
 import shutil
 import signal
 import subprocess
+import tempfile
 import threading
 import time
 import getpass
 import socket
 import sys
 import traceback
+import zipfile
 from collections import deque
 from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
@@ -31,6 +36,7 @@ from facebook_video_downloader import (
     QUALITY_AUTO as FACEBOOK_QUALITY_AUTO,
     VALID_QUALITIES as FACEBOOK_VALID_QUALITIES,
     resolve_facebook_download_payload,
+    stable_download_key_for_url,
 )
 from post_links_downloader import DownloadEntry, build_entries
 from soranin_paths import (
@@ -45,6 +51,7 @@ from soranin_paths import (
 )
 import fb_reels_publish_timing as facebook_timing
 import facebook_shared_queue
+import facebook_reels_api
 
 
 HOST = "0.0.0.0"
@@ -54,10 +61,11 @@ DOWNLOADER_SCRIPT = script_path("post_links_downloader.py")
 FACEBOOK_BATCH_SCRIPT = script_path("fb_reels_batch_upload.py")
 FACEBOOK_API_UPLOAD_SCRIPT = script_path("fb_reels_api_upload.py")
 FACEBOOK_PREFLIGHT_SCRIPT = script_path("fb_reels_preflight_check.py")
+FACEBOOK_STEP3_SCRIPT = script_path("fb_reels_step3_upload_video_and_next.py")
 FACEBOOK_TIMING_STATE_PATH = FACEBOOK_STATE_PATH
 CHROME_LOCAL_STATE = Path.home() / "Library/Application Support/Google/Chrome/Local State"
 CHROME_APP = "Google Chrome"
-FACEBOOK_CONTENT_LIBRARY_URL = "https://web.facebook.com/professional_dashboard/content/content_library/"
+FACEBOOK_CONTENT_LIBRARY_URL = "https://www.facebook.com/"
 AI_PROVIDER_DEFAULT = "openai"
 AI_PROVIDER_OPENAI = "openai"
 AI_PROVIDER_GEMINI = "gemini"
@@ -65,6 +73,10 @@ VIDEO_ID_PATTERN = re.compile(r"\b(?:s_|gen_)[A-Za-z0-9_-]{8,}\b", re.IGNORECASE
 DEFAULT_CONTROL_RELAY_POLL_SECONDS = 3.0
 CONTROL_RELAY_CLIENT_SCRIPT = script_path("control_relay_client.py")
 REMOTE_USED_IDS_FILE = API_KEYS_FILE.parent / "remote_used_ids.json"
+REMOTE_FACEBOOK_KEY_CACHE_FILE = API_KEYS_FILE.parent / "remote_facebook_download_keys.json"
+FACEBOOK_PAGE_ASSIGNMENTS_FILE = API_KEYS_FILE.parent / ".soranin_facebook_page_links.json"
+FACEBOOK_PAGE_QUEUE_ORDER_FILE = API_KEYS_FILE.parent / ".soranin_facebook_page_queue_order.json"
+REMOTE_FACEBOOK_KEY_CACHE_LOCK = threading.Lock()
 TAILSCALE_CACHE_TTL_SECONDS = 60.0
 BOOTSTRAP_CACHE_TTL_SECONDS = 4.0
 ALLOWED_SOURCE_VIDEO_EXTENSIONS = {".mp4", ".mov", ".m4v", ".avi", ".mkv"}
@@ -86,10 +98,145 @@ OPENAI_RESPONSES_API_URL = "https://api.openai.com/v1/responses"
 REMOTE_USED_IDS_LOCK = threading.Lock()
 TAILSCALE_CACHE_LOCK = threading.Lock()
 BOOTSTRAP_CACHE_LOCK = threading.Lock()
+FACEBOOK_PAGE_METRICS_CACHE_LOCK = threading.Lock()
+FACEBOOK_PAGE_METRICS_CACHE_TTL_SECONDS = 1200.0
+FACEBOOK_PAGE_METRICS_REFRESH_TIMEOUT_SECONDS = 8
+FACEBOOK_PAGE_METRICS_BACKGROUND_POLL_SECONDS = 60.0
 PYTHON_EXECUTABLE = sys.executable or "python3"
 _TAILSCALE_URL_CACHE: list[str] = []
 _TAILSCALE_URL_CACHE_AT = 0.0
 _FACEBOOK_BOOTSTRAP_CACHE: dict[tuple[str, str], tuple[float, dict[str, object]]] = {}
+_FACEBOOK_PAGE_METRICS_CACHE: dict[str, tuple[float, dict[str, object]]] = {}
+_FACEBOOK_PAGE_METRICS_REFRESHING: set[str] = set()
+CONTROL_WEB_HTML_PATH = Path(__file__).resolve().with_name("soranin_web_control.html")
+CONTROL_AUTH_WINDOW_SECONDS = 600.0
+CONTROL_AUTH_LOCKOUT_SECONDS = 900.0
+CONTROL_AUTH_MAX_FAILURES = 8
+CONTROL_SESSION_TTL_SECONDS = 12 * 60 * 60.0
+CONTROL_SESSION_REMEMBER_TTL_SECONDS = 30 * 24 * 60 * 60.0
+
+
+def load_control_web_html() -> str:
+    try:
+        return CONTROL_WEB_HTML_PATH.read_text(encoding="utf-8")
+    except Exception:
+        return """<!doctype html><html><body><h1>Soranin Control</h1><p>Web control page is missing.</p></body></html>"""
+
+
+class AuthAttemptTracker:
+    def __init__(self, *, window_seconds: float, lockout_seconds: float, max_failures: int) -> None:
+        self.window_seconds = max(60.0, float(window_seconds))
+        self.lockout_seconds = max(60.0, float(lockout_seconds))
+        self.max_failures = max(3, int(max_failures))
+        self.lock = threading.Lock()
+        self.state: dict[str, dict[str, object]] = {}
+
+    def _prune(self, record: dict[str, object], now: float) -> list[float]:
+        raw_failures = record.get("failures")
+        failures = raw_failures if isinstance(raw_failures, list) else []
+        kept = [float(value) for value in failures if now - float(value) <= self.window_seconds]
+        record["failures"] = kept
+        return kept
+
+    def remaining_lockout(self, key: str) -> int:
+        now = time.time()
+        with self.lock:
+            record = self.state.get(key)
+            if not isinstance(record, dict):
+                return 0
+            locked_until = float(record.get("locked_until") or 0.0)
+            if locked_until <= now:
+                self._prune(record, now)
+                if not record.get("failures"):
+                    self.state.pop(key, None)
+                else:
+                    record["locked_until"] = 0.0
+                return 0
+            return max(1, int(locked_until - now + 0.999))
+
+    def record_failure(self, key: str) -> int:
+        now = time.time()
+        with self.lock:
+            record = self.state.setdefault(key, {"failures": [], "locked_until": 0.0})
+            locked_until = float(record.get("locked_until") or 0.0)
+            if locked_until > now:
+                return max(1, int(locked_until - now + 0.999))
+            failures = self._prune(record, now)
+            failures.append(now)
+            record["failures"] = failures
+            if len(failures) >= self.max_failures:
+                record["failures"] = []
+                record["locked_until"] = now + self.lockout_seconds
+                return max(1, int(self.lockout_seconds + 0.999))
+            return 0
+
+    def record_success(self, key: str) -> None:
+        with self.lock:
+            self.state.pop(key, None)
+
+
+class WebSessionStore:
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.sessions: dict[str, dict[str, object]] = {}
+
+    def create(self, *, client_ip: str, user_agent: str, ttl_seconds: float, data: dict[str, object] | None = None) -> tuple[str, float]:
+        token = secrets.token_urlsafe(32)
+        expires_at = time.time() + max(300.0, float(ttl_seconds))
+        session = {
+            "token": token,
+            "client_ip": str(client_ip or "").strip(),
+            "user_agent": str(user_agent or "").strip(),
+            "expires_at": expires_at,
+            "data": dict(data or {}),
+        }
+        with self.lock:
+            self.sessions[token] = session
+        return token, expires_at
+
+    def get(self, token: str, *, client_ip: str, user_agent: str) -> dict[str, object] | None:
+        now = time.time()
+        trimmed_token = str(token or "").strip()
+        if not trimmed_token:
+            return None
+        with self.lock:
+            session = self.sessions.get(trimmed_token)
+            if not isinstance(session, dict):
+                return None
+            if float(session.get("expires_at") or 0.0) <= now:
+                self.sessions.pop(trimmed_token, None)
+                return None
+            expected_ip = str(session.get("client_ip") or "").strip()
+            expected_ua = str(session.get("user_agent") or "").strip()
+            if expected_ip and expected_ip != str(client_ip or "").strip():
+                return None
+            if expected_ua and expected_ua != str(user_agent or "").strip():
+                return None
+            return dict(session.get("data") or {})
+
+    def delete(self, token: str) -> None:
+        trimmed_token = str(token or "").strip()
+        if not trimmed_token:
+            return
+        with self.lock:
+            self.sessions.pop(trimmed_token, None)
+
+
+CONTROL_AUTH_ATTEMPTS = AuthAttemptTracker(
+    window_seconds=CONTROL_AUTH_WINDOW_SECONDS,
+    lockout_seconds=CONTROL_AUTH_LOCKOUT_SECONDS,
+    max_failures=CONTROL_AUTH_MAX_FAILURES,
+)
+CONTROL_WEB_SESSIONS = WebSessionStore()
+
+
+def load_module(path: Path, name: str):
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
 
 
 def unique_ordered_strings(values: list[str]) -> list[str]:
@@ -135,7 +282,63 @@ def save_remote_used_ids(values: set[str]) -> None:
         pass
 
 
+def load_remote_facebook_key_cache() -> dict[str, str]:
+    if not REMOTE_FACEBOOK_KEY_CACHE_FILE.exists():
+        return {}
+    try:
+        payload = json.loads(REMOTE_FACEBOOK_KEY_CACHE_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    normalized: dict[str, str] = {}
+    for key, value in payload.items():
+        normalized_key = str(key).strip().lower()
+        normalized_value = str(value).strip().lower()
+        if normalized_key and normalized_value:
+            normalized[normalized_key] = normalized_value
+    return normalized
+
+
+def save_remote_facebook_key_cache(values: dict[str, str]) -> None:
+    REMOTE_FACEBOOK_KEY_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    REMOTE_FACEBOOK_KEY_CACHE_FILE.write_text(
+        json.dumps(values, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    try:
+        REMOTE_FACEBOOK_KEY_CACHE_FILE.chmod(0o600)
+    except Exception:
+        pass
+
+
+def cached_facebook_remote_key(value: str) -> str | None:
+    normalized = str(value).strip().lower()
+    if not normalized:
+        return None
+    with REMOTE_FACEBOOK_KEY_CACHE_LOCK:
+        cache = load_remote_facebook_key_cache()
+        cached = cache.get(normalized)
+        if cached:
+            return cached
+    resolved = stable_download_key_for_url(value)
+    if not resolved:
+        return None
+    normalized_resolved = resolved.strip().lower()
+    if not normalized_resolved:
+        return None
+    with REMOTE_FACEBOOK_KEY_CACHE_LOCK:
+        cache = load_remote_facebook_key_cache()
+        cache[normalized] = normalized_resolved
+        save_remote_facebook_key_cache(cache)
+    return normalized_resolved
+
+
 def remote_entry_key(entry: DownloadEntry) -> str:
+    if entry.kind == "facebook":
+        resolved = cached_facebook_remote_key(entry.value)
+        if resolved:
+            return f"{entry.kind}:{resolved}"
     return f"{entry.kind}:{entry.value.strip().lower()}"
 
 
@@ -492,6 +695,25 @@ def relay_password_error_response() -> tuple[int, dict[str, object]]:
     }
 
 
+def public_control_status_payload(snapshot: dict[str, object] | None = None) -> dict[str, object]:
+    payload = snapshot if isinstance(snapshot, dict) else STATE.snapshot()
+    return {
+        "ok": True,
+        "status": str(payload.get("status") or "").strip(),
+        "detail": str(payload.get("detail") or "").strip(),
+        "running": bool(payload.get("running")),
+        "remote_running": bool(payload.get("remote_running")),
+        "task_kind": str(payload.get("task_kind") or "").strip(),
+        "mac_user_name": str(payload.get("mac_user_name") or "").strip(),
+        "mac_device_name": str(payload.get("mac_device_name") or "").strip(),
+        "mac_display_name": str(payload.get("mac_display_name") or "").strip(),
+        "relay_enabled": bool(payload.get("relay_enabled")),
+        "relay_client_url": str(payload.get("relay_client_url") or "").strip(),
+        "tailscale_url": str(payload.get("tailscale_url") or "").strip(),
+        "password_required": bool(payload.get("password_required")),
+    }
+
+
 def relay_request_json(method: str, url: str, payload: dict[str, object] | None = None, timeout: float = 15.0) -> dict[str, object]:
     data: bytes | None = None
     headers = {"Accept": "application/json"}
@@ -525,6 +747,16 @@ def relay_request_json(method: str, url: str, payload: dict[str, object] | None 
 
 
 def source_videos(root: Path) -> list[Path]:
+    for path in list(root.iterdir()):
+        if (
+            path.is_file()
+            and path.suffix.lower() in ALLOWED_SOURCE_VIDEO_EXTENSIONS
+            and path.name.lower().startswith("codex-alert-")
+        ):
+            try:
+                path.unlink()
+            except Exception:
+                pass
     return sorted(
         path
         for path in root.iterdir()
@@ -532,6 +764,297 @@ def source_videos(root: Path) -> list[Path]:
         and path.suffix.lower() in ALLOWED_SOURCE_VIDEO_EXTENSIONS
         and not path.name.startswith(".")
         and not path.name.lower().startswith("codex-alert-")
+    )
+
+
+def sha256_digest_for_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def duplicate_source_video_path_for_bytes(body: bytes) -> Path | None:
+    if not body:
+        return None
+    if not ROOT_DIR.exists():
+        return None
+
+    body_size = len(body)
+    body_digest = hashlib.sha256(body).hexdigest()
+    for candidate in source_videos(ROOT_DIR):
+        try:
+            if candidate.stat().st_size != body_size:
+                continue
+        except OSError:
+            continue
+        try:
+            if sha256_digest_for_file(candidate) == body_digest:
+                return candidate
+        except Exception:
+            continue
+    return None
+
+
+def handle_source_video_saved(target_path: Path) -> dict[str, object]:
+    STATE.emit_alert(
+        "New video on Mac",
+        f"{target_path.name} was added to Drop Videos.",
+    )
+
+    auto_started = False
+    auto_message = ""
+    started, message = STATE.start()
+    if started:
+        auto_started = True
+        STATE.append_log("[upload] Auto starting AI edit for uploaded video.")
+    else:
+        auto_message = str(message or "").strip()
+        lowered = auto_message.lower()
+        if "batch is already running" in lowered:
+            with STATE.lock:
+                STATE.remote_batch_autostart_pending = True
+            STATE.append_log(f"[upload] Saved {target_path.name}. Auto start deferred: {auto_message}")
+        elif "remote flow is already running" in lowered:
+            STATE.append_log(f"[upload] Saved {target_path.name}. Auto start waiting for current remote flow: {auto_message}")
+        else:
+            STATE.append_log(f"[upload] Saved {target_path.name}. Auto start skipped: {auto_message}")
+
+    return {
+        "ok": True,
+        "message": f"Saved {target_path.name} to Drop Videos on Mac.",
+        "file_name": target_path.name,
+        "saved_path": str(target_path),
+        "source_count": len(source_videos(ROOT_DIR)),
+        "auto_edit_started": auto_started,
+        "auto_edit_message": auto_message,
+    }
+
+
+def handle_duplicate_source_video(existing_path: Path) -> dict[str, object]:
+    STATE.append_log(f"[upload] Skipped duplicate source video: {existing_path.name}")
+    return {
+        "ok": True,
+        "duplicate": True,
+        "message": f"Video already exists in Drop Videos on Mac as {existing_path.name}.",
+        "file_name": existing_path.name,
+        "saved_path": str(existing_path),
+        "source_count": len(source_videos(ROOT_DIR)),
+        "auto_edit_started": False,
+        "auto_edit_message": "Skipped duplicate source video.",
+    }
+
+
+def next_imported_package_target(preferred_package_name: str = "") -> Path:
+    raw = str(preferred_package_name or "").strip()
+    if raw and re.match(r"^\d+_Reels_Package$", raw):
+        preferred = ROOT_DIR / raw
+        if not preferred.exists():
+            return preferred
+
+    highest = 0
+    for package_dir in package_dirs(ROOT_DIR):
+        try:
+            highest = max(highest, int(package_dir.name.split("_", 1)[0]))
+        except Exception:
+            continue
+    return ROOT_DIR / f"{highest + 1}_Reels_Package"
+
+
+def imported_package_source_dir(extract_root: Path) -> Path | None:
+    direct = [
+        candidate
+        for candidate in extract_root.iterdir()
+        if candidate.is_dir() and re.match(r"^\d+_Reels_Package$", candidate.name)
+    ]
+    if len(direct) == 1:
+        return direct[0]
+
+    nested = [
+        candidate
+        for candidate in extract_root.rglob("*")
+        if candidate.is_dir() and re.match(r"^\d+_Reels_Package$", candidate.name)
+    ]
+    if len(nested) == 1:
+        return nested[0]
+    return None
+
+
+def package_transfer_staging_root() -> Path:
+    return ROOT_DIR / ".incoming_package_transfers"
+
+
+def sanitize_package_relative_path(raw_relative_path: str) -> Path:
+    candidate = Path(str(raw_relative_path or "").strip())
+    if not candidate.parts:
+        raise ValueError("Package file path is missing.")
+    if candidate.is_absolute():
+        raise ValueError("Package file path must be relative.")
+    cleaned_parts: list[str] = []
+    for part in candidate.parts:
+        piece = str(part).strip()
+        if not piece or piece in {".", ".."}:
+            raise ValueError("Package file path is invalid.")
+        cleaned_parts.append(piece)
+    return Path(*cleaned_parts)
+
+
+def package_transfer_stage_dir(session_id: str, target_package_name: str) -> Path:
+    safe_session_id = re.sub(r"[^A-Za-z0-9._-]+", "_", str(session_id or "").strip()).strip("._-")
+    safe_target = re.sub(r"[^A-Za-z0-9._-]+", "_", str(target_package_name or "").strip()).strip("._-")
+    if not safe_session_id:
+        raise ValueError("Transfer session ID is missing.")
+    if not safe_target:
+        raise ValueError("Target package name is missing.")
+    return package_transfer_staging_root() / safe_session_id / safe_target
+
+
+def stage_imported_package_file(
+    body: bytes,
+    *,
+    session_id: str,
+    source_package_name: str = "",
+    relative_path: str = "",
+    target_package_name: str = "",
+    assigned_page_id: str = "",
+) -> dict[str, object]:
+    if not body:
+        raise ValueError("Package file is empty.")
+    safe_relative_path = sanitize_package_relative_path(relative_path)
+    preferred_name = str(target_package_name or source_package_name).strip()
+    if target_package_name:
+        final_package_name = str(target_package_name).strip()
+    else:
+        final_package_name = next_imported_package_target(preferred_name).name
+    stage_dir = package_transfer_stage_dir(session_id, final_package_name)
+    stage_dir.mkdir(parents=True, exist_ok=True)
+    target_path = (stage_dir / safe_relative_path).resolve()
+    try:
+        target_path.relative_to(stage_dir.resolve())
+    except Exception as exc:
+        raise ValueError("Package file path is outside the staging folder.") from exc
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    target_path.write_bytes(body)
+
+    metadata = {
+        "source_package_name": str(source_package_name or "").strip(),
+        "assigned_page_id": str(assigned_page_id or "").strip(),
+        "target_package_name": final_package_name,
+        "session_id": str(session_id or "").strip(),
+    }
+    (stage_dir / ".transfer_meta.json").write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    return {
+        "ok": True,
+        "target_package_name": final_package_name,
+        "relative_path": safe_relative_path.as_posix(),
+        "saved_path": str(target_path),
+    }
+
+
+def finalize_staged_package_transfer(
+    *,
+    session_id: str,
+    target_package_name: str,
+    source_package_name: str = "",
+    assigned_page_id: str = "",
+) -> dict[str, object]:
+    stage_dir = package_transfer_stage_dir(session_id, target_package_name)
+    if not stage_dir.exists() or not stage_dir.is_dir():
+        raise ValueError("Package transfer staging folder was not found.")
+
+    final_target = ROOT_DIR / str(target_package_name).strip()
+    if final_target.exists():
+        final_target = next_imported_package_target(str(target_package_name).strip())
+    final_target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(stage_dir), str(final_target))
+
+    try:
+        session_root = stage_dir.parent
+        if session_root.exists():
+            shutil.rmtree(session_root, ignore_errors=True)
+    except Exception:
+        pass
+
+    return handle_imported_package_saved(
+        final_target,
+        source_package_name=str(source_package_name or target_package_name).strip(),
+        assigned_page_id=assigned_page_id,
+    )
+
+
+def maybe_preserve_imported_page_assignment(package_name: str, assigned_page_id: str) -> bool:
+    page_id = str(assigned_page_id or "").strip()
+    if not page_id:
+        return False
+    saved_pages_by_id = {
+        str(item.get("page_id") or "").strip(): item
+        for item in load_saved_facebook_upload_pages()
+        if str(item.get("page_id") or "").strip()
+    }
+    if page_id not in saved_pages_by_id:
+        return False
+    assignments = load_facebook_page_assignments()
+    assignments[str(package_name).strip()] = page_id
+    persist_facebook_page_assignments(assignments)
+    return True
+
+
+def handle_imported_package_saved(
+    target_path: Path,
+    *,
+    source_package_name: str,
+    assigned_page_id: str = "",
+) -> dict[str, object]:
+    assignment_preserved = maybe_preserve_imported_page_assignment(target_path.name, assigned_page_id)
+    STATE.emit_alert(
+        "Package transferred to Mac",
+        f"{source_package_name or target_path.name} was imported as {target_path.name}.",
+    )
+    STATE.append_log(
+        f"[package-transfer] Imported {source_package_name or target_path.name} into {target_path.name}."
+    )
+    return {
+        "ok": True,
+        "message": f"Imported package {target_path.name} on Mac.",
+        "package_name": target_path.name,
+        "source_package_name": source_package_name or target_path.name,
+        "saved_path": str(target_path),
+        "package_count": len(package_dirs(ROOT_DIR)),
+        "assigned_page_preserved": assignment_preserved,
+    }
+
+
+def import_package_archive_bytes(
+    body: bytes,
+    *,
+    source_package_name: str = "",
+    assigned_page_id: str = "",
+) -> dict[str, object]:
+    ROOT_DIR.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="soranin_package_import_") as temp_dir:
+        temp_root = Path(temp_dir)
+        archive_path = temp_root / "package.zip"
+        extract_root = temp_root / "extract"
+        archive_path.write_bytes(body)
+        extract_root.mkdir(parents=True, exist_ok=True)
+
+        with zipfile.ZipFile(archive_path) as zip_file:
+            zip_file.extractall(extract_root)
+
+        source_dir = imported_package_source_dir(extract_root)
+        if source_dir is None:
+            raise ValueError("Imported archive does not contain a valid package folder.")
+
+        preferred_name = str(source_package_name or source_dir.name).strip()
+        target_path = next_imported_package_target(preferred_name)
+        shutil.copytree(source_dir, target_path)
+
+    return handle_imported_package_saved(
+        target_path,
+        source_package_name=str(source_package_name or source_dir.name).strip(),
+        assigned_page_id=assigned_page_id,
     )
 
 
@@ -566,6 +1089,113 @@ def unique_source_video_target(file_name: str) -> Path:
         if not candidate.exists():
             return candidate
         counter += 1
+
+
+def facebook_video_roots() -> list[Path]:
+    candidates = [
+        ROOT_DIR.parent / "facebook",
+        Path.home() / "Downloads" / "facebook",
+        Path.home() / ".soranin" / "facebook",
+    ]
+    ordered: list[Path] = []
+    seen: set[Path] = set()
+    for candidate in candidates:
+        try:
+            resolved = candidate.expanduser().resolve()
+        except Exception:
+            resolved = candidate.expanduser()
+        if resolved in seen or not resolved.exists() or not resolved.is_dir():
+            continue
+        seen.add(resolved)
+        ordered.append(resolved)
+    return ordered
+
+
+def source_video_path_for_name(file_name: str) -> Path:
+    raw = unquote(str(file_name or "").strip())
+    candidate = Path(raw).name
+    if not candidate or candidate != raw:
+        raise ValueError("Invalid file name.")
+    suffix = Path(candidate).suffix.lower()
+    if suffix not in ALLOWED_SOURCE_VIDEO_EXTENSIONS:
+        raise ValueError("Invalid file name.")
+
+    for root in facebook_video_roots():
+        path = (root / candidate).resolve()
+        try:
+            path.relative_to(root.resolve())
+        except Exception as exc:
+            raise ValueError("File path is outside the Facebook folder.") from exc
+        if path.exists() and path.is_file():
+            return path
+
+    raise ValueError("Video not found.")
+
+
+def load_facebook_feed_videos() -> list[dict[str, object]]:
+    ordered_roots = facebook_video_roots()
+    if not ordered_roots:
+        return []
+
+    def sort_key(path: Path) -> tuple[float, str]:
+        try:
+            modified_at = float(path.stat().st_mtime)
+        except Exception:
+            modified_at = 0.0
+        return (modified_at, path.name.lower())
+
+    unique_paths: list[Path] = []
+    seen_names: set[str] = set()
+    for root in ordered_roots:
+        for path in source_videos(root):
+            key = path.name.casefold()
+            if key in seen_names:
+                continue
+            seen_names.add(key)
+            unique_paths.append(path)
+
+    ordered_paths = sorted(unique_paths, key=sort_key, reverse=True)
+    rows: list[dict[str, object]] = []
+    for path in ordered_paths:
+        mime_type, _encoding = mimetypes.guess_type(path.name)
+        title = re.sub(r"[_-]+", " ", path.stem).strip() or path.name
+        rows.append(
+            {
+                "file_name": path.name,
+                "title": title,
+                "source_name": path.name,
+                "mime_type": mime_type or "application/octet-stream",
+            }
+        )
+    return rows
+
+
+def delete_facebook_feed_video_mirrors(file_name: str) -> tuple[bool, str | None]:
+    raw = unquote(str(file_name or "").strip())
+    candidate = Path(raw).name
+    if not candidate or candidate != raw:
+        raise ValueError("Invalid file name.")
+    suffix = Path(candidate).suffix.lower()
+    if suffix not in ALLOWED_SOURCE_VIDEO_EXTENSIONS:
+        raise ValueError("Invalid file name.")
+
+    deleted_any = False
+    last_error: str | None = None
+    for root in facebook_video_roots():
+        try:
+            path = (root / candidate).resolve()
+            path.relative_to(root.resolve())
+        except Exception as exc:
+            last_error = str(exc)
+            continue
+        if not path.exists() or not path.is_file():
+            continue
+        try:
+            path.unlink()
+            deleted_any = True
+        except Exception as exc:
+            last_error = str(exc)
+    return deleted_any, last_error
 
 
 def package_dirs(root: Path) -> list[Path]:
@@ -631,7 +1261,295 @@ def preferred_package_media_path(package_dir: Path, extensions: set[str], prefer
     return sorted(candidates)[0]
 
 
-def load_package_card(package_dir: Path) -> dict[str, object] | None:
+def load_package_schedule_text(html_text: str) -> str:
+    if not html_text.strip():
+        return ""
+    field_match = re.search(
+        r'<input[^>]+id=["\']scheduleField["\'][^>]*value=["\'](.*?)["\']',
+        html_text,
+        re.IGNORECASE | re.DOTALL,
+    )
+    if field_match:
+        return html.unescape(field_match.group(1)).strip()
+    script_match = re.search(
+        r"""(?:const|let|var)\s+SCHEDULE_TEXT\s*=\s*["'](.*?)["'];""",
+        html_text,
+        re.IGNORECASE | re.DOTALL,
+    )
+    if script_match:
+        return html.unescape(script_match.group(1)).strip()
+    return ""
+
+
+def load_facebook_page_assignments() -> dict[str, str]:
+    return _load_string_mapping_from_candidates(FACEBOOK_PAGE_ASSIGNMENTS_FILE)
+
+
+def persist_facebook_page_assignments(mapping: dict[str, str]) -> None:
+    FACEBOOK_PAGE_ASSIGNMENTS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    FACEBOOK_PAGE_ASSIGNMENTS_FILE.write_text(
+        json.dumps(mapping, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    try:
+        FACEBOOK_PAGE_ASSIGNMENTS_FILE.chmod(0o600)
+    except Exception:
+        pass
+
+
+def load_facebook_page_queue_orders() -> dict[str, list[str]]:
+    for candidate in _runtime_fallback_paths(FACEBOOK_PAGE_QUEUE_ORDER_FILE):
+        if not candidate.exists():
+            continue
+        try:
+            payload = json.loads(candidate.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        sanitized: dict[str, list[str]] = {}
+        for key, value in payload.items():
+            page_id = str(key).strip()
+            if not page_id or not isinstance(value, list):
+                continue
+            sanitized[page_id] = [
+                str(item).strip()
+                for item in value
+                if str(item).strip()
+            ]
+        if candidate != FACEBOOK_PAGE_QUEUE_ORDER_FILE:
+            try:
+                persist_facebook_page_queue_orders(sanitized)
+            except Exception:
+                pass
+        return sanitized
+    return {}
+
+
+def persist_facebook_page_queue_orders(mapping: dict[str, list[str]]) -> None:
+    FACEBOOK_PAGE_QUEUE_ORDER_FILE.parent.mkdir(parents=True, exist_ok=True)
+    FACEBOOK_PAGE_QUEUE_ORDER_FILE.write_text(
+        json.dumps(mapping, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    try:
+        FACEBOOK_PAGE_QUEUE_ORDER_FILE.chmod(0o600)
+    except Exception:
+        pass
+
+
+def remove_packages_from_facebook_page_queue_orders(
+    queue_orders: dict[str, list[str]],
+    package_names: list[str],
+) -> dict[str, list[str]]:
+    removal = {str(name).strip() for name in package_names if str(name).strip()}
+    if not removal:
+        return {
+            str(page_id): [str(item).strip() for item in values if str(item).strip()]
+            for page_id, values in queue_orders.items()
+            if str(page_id).strip()
+        }
+
+    cleaned: dict[str, list[str]] = {}
+    for page_id, values in queue_orders.items():
+        trimmed_page_id = str(page_id).strip()
+        if not trimmed_page_id:
+            continue
+        remaining: list[str] = []
+        seen: set[str] = set()
+        for value in values:
+            package_name = str(value).strip()
+            if not package_name or package_name in removal or package_name in seen:
+                continue
+            seen.add(package_name)
+            remaining.append(package_name)
+        cleaned[trimmed_page_id] = remaining
+    return cleaned
+
+
+def append_packages_to_facebook_page_queue_order(
+    queue_orders: dict[str, list[str]],
+    package_names: list[str],
+    page_id: str,
+) -> dict[str, list[str]]:
+    trimmed_page_id = str(page_id).strip()
+    updated = remove_packages_from_facebook_page_queue_orders(queue_orders, package_names)
+    if not trimmed_page_id:
+        return updated
+    ordered = list(updated.get(trimmed_page_id) or [])
+    seen = {str(item).strip() for item in ordered if str(item).strip()}
+    for value in package_names:
+        package_name = str(value).strip()
+        if not package_name or package_name in seen:
+            continue
+        seen.add(package_name)
+        ordered.append(package_name)
+    updated[trimmed_page_id] = ordered
+    return updated
+
+
+def snapshot_facebook_page_queue_state(
+    package_names: list[str],
+    *,
+    assignments: dict[str, str] | None = None,
+    queue_orders: dict[str, list[str]] | None = None,
+) -> dict[str, object]:
+    normalized_packages = [
+        str(name).strip()
+        for name in package_names
+        if str(name).strip()
+    ]
+    if not normalized_packages:
+        return {"assignments": {}, "queue_orders": {}}
+
+    package_set = set(normalized_packages)
+    effective_assignments = assignments if assignments is not None else load_facebook_page_assignments()
+    effective_queue_orders = queue_orders if queue_orders is not None else load_facebook_page_queue_orders()
+
+    assignment_snapshot: dict[str, str] = {}
+    for package_name in normalized_packages:
+        page_id = str(effective_assignments.get(package_name) or "").strip()
+        if page_id:
+            assignment_snapshot[package_name] = page_id
+
+    queue_snapshot: dict[str, list[str]] = {}
+    for raw_page_id, raw_values in effective_queue_orders.items():
+        page_id = str(raw_page_id).strip()
+        if not page_id:
+            continue
+        kept = [
+            str(item).strip()
+            for item in raw_values
+            if str(item).strip() in package_set
+        ]
+        if kept:
+            queue_snapshot[page_id] = kept
+
+    return {
+        "assignments": assignment_snapshot,
+        "queue_orders": queue_snapshot,
+    }
+
+
+def remove_packages_from_facebook_page_queue_state(package_names: list[str]) -> dict[str, object]:
+    normalized_packages = [
+        str(name).strip()
+        for name in package_names
+        if str(name).strip()
+    ]
+    if not normalized_packages:
+        return {"assignments": {}, "queue_orders": {}}
+
+    assignments = load_facebook_page_assignments()
+    queue_orders = load_facebook_page_queue_orders()
+    snapshot = snapshot_facebook_page_queue_state(
+        normalized_packages,
+        assignments=assignments,
+        queue_orders=queue_orders,
+    )
+
+    for package_name in normalized_packages:
+        assignments.pop(package_name, None)
+    queue_orders = remove_packages_from_facebook_page_queue_orders(queue_orders, normalized_packages)
+
+    persist_facebook_page_assignments(assignments)
+    persist_facebook_page_queue_orders(queue_orders)
+    return snapshot
+
+
+def load_package_facebook_status_payload(package_dir: Path) -> dict[str, object]:
+    status_path = package_dir / "facebook_reel_status.json"
+    if not status_path.exists():
+        return {}
+    try:
+        payload = json.loads(status_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def package_needs_facebook_queue_restore(package_name: str) -> bool:
+    try:
+        package_path = package_path_for_name(package_name)
+    except Exception:
+        return False
+    if not package_path.exists() or not package_path.is_dir():
+        return False
+    status_payload = load_package_facebook_status_payload(package_path)
+    state = str(status_payload.get("state") or "").strip().lower()
+    return state not in {"published", "scheduled"}
+
+
+def restore_packages_to_facebook_page_queue_state(snapshot: dict[str, object]) -> int:
+    assignment_snapshot = snapshot.get("assignments")
+    queue_snapshot = snapshot.get("queue_orders")
+    if not isinstance(assignment_snapshot, dict) and not isinstance(queue_snapshot, dict):
+        return 0
+
+    candidate_packages: set[str] = set()
+    if isinstance(assignment_snapshot, dict):
+        candidate_packages.update(
+            str(package_name).strip()
+            for package_name in assignment_snapshot.keys()
+            if str(package_name).strip()
+        )
+    if isinstance(queue_snapshot, dict):
+        for values in queue_snapshot.values():
+            if not isinstance(values, list):
+                continue
+            candidate_packages.update(
+                str(package_name).strip()
+                for package_name in values
+                if str(package_name).strip()
+            )
+
+    restorable_packages = [
+        package_name
+        for package_name in sorted(candidate_packages)
+        if package_needs_facebook_queue_restore(package_name)
+    ]
+    if not restorable_packages:
+        return 0
+
+    assignments = load_facebook_page_assignments()
+    queue_orders = load_facebook_page_queue_orders()
+    queue_orders = remove_packages_from_facebook_page_queue_orders(queue_orders, restorable_packages)
+
+    restored_count = 0
+    if isinstance(assignment_snapshot, dict):
+        for package_name in restorable_packages:
+            page_id = str(assignment_snapshot.get(package_name) or "").strip()
+            if not page_id:
+                continue
+            assignments[package_name] = page_id
+            restored_count += 1
+
+    if isinstance(queue_snapshot, dict):
+        for raw_page_id, raw_values in queue_snapshot.items():
+            page_id = str(raw_page_id).strip()
+            if not page_id or not isinstance(raw_values, list):
+                continue
+            ordered = [
+                str(package_name).strip()
+                for package_name in raw_values
+                if str(package_name).strip() in restorable_packages
+            ]
+            if not ordered:
+                continue
+            queue_orders = append_packages_to_facebook_page_queue_order(queue_orders, ordered, page_id)
+
+    persist_facebook_page_assignments(assignments)
+    persist_facebook_page_queue_orders(queue_orders)
+    return restored_count
+
+
+def load_package_card(
+    package_dir: Path,
+    *,
+    page_assignments: dict[str, str] | None = None,
+    queued_page_ids_by_package: dict[str, str] | None = None,
+    saved_pages_by_id: dict[str, dict[str, str]] | None = None,
+) -> dict[str, object] | None:
     if not package_dir.exists() or not package_dir.is_dir():
         return None
 
@@ -658,22 +1576,61 @@ def load_package_card(package_dir: Path) -> dict[str, object] | None:
     title_match = re.search(r'<textarea id="titleField" readonly>(.*?)</textarea>', html_text, re.IGNORECASE | re.DOTALL)
     source_name = html.unescape((source_match.group(1) if source_match else "").strip()) or (video_path.name if video_path else package_dir.name)
     title = html.unescape((title_match.group(1) if title_match else "").strip()) or "No title found."
+    package_name = package_dir.name
+    assigned_page_id = str((page_assignments or {}).get(package_name) or "").strip()
+    queued_page_id = str((queued_page_ids_by_package or {}).get(package_name) or "").strip()
+    effective_page_id = assigned_page_id or queued_page_id
+    assigned_page = (saved_pages_by_id or {}).get(effective_page_id) or {}
+    status_payload = load_package_facebook_status_payload(package_dir)
+    status_state = str(status_payload.get("state") or "").strip().lower()
+    if status_state not in {"scheduled", "published", "failed"}:
+        status_state = ""
 
     return {
-        "id": package_dir.name,
-        "package_name": package_dir.name,
+        "id": package_name,
+        "package_name": package_name,
         "source_name": source_name,
         "video_name": video_path.name if video_path else "",
         "title": re.sub(r"\s+", " ", title).strip(),
         "has_thumbnail": bool(thumb_path and thumb_path.exists()),
         "thumbnail_name": thumb_path.name if thumb_path else "",
+        "schedule_text": load_package_schedule_text(html_text),
+        "assigned_facebook_page_id": effective_page_id,
+        "assigned_facebook_page_label": str(assigned_page.get("label") or "").strip(),
+        "assigned_facebook_page_token_status": str(assigned_page.get("token_status") or "").strip(),
+        "is_in_page_queue": bool(queued_page_id),
+        "facebook_status_state": status_state,
+        "facebook_status_recorded_at": str(status_payload.get("recorded_at") or "").strip(),
+        "facebook_status_scheduled_publish_time": str(status_payload.get("scheduled_publish_time") or "").strip(),
+        "facebook_status_published_at": str(status_payload.get("published_at") or "").strip(),
     }
 
 
 def load_package_cards() -> list[dict[str, object]]:
+    page_assignments = load_facebook_page_assignments()
+    queue_orders = load_facebook_page_queue_orders()
+    queued_page_ids_by_package: dict[str, str] = {}
+    for page_id, package_names in queue_orders.items():
+        trimmed_page_id = str(page_id).strip()
+        if not trimmed_page_id:
+            continue
+        for package_name in package_names:
+            trimmed_package = str(package_name).strip()
+            if trimmed_package:
+                queued_page_ids_by_package[trimmed_package] = trimmed_page_id
+    saved_pages_by_id = {
+        str(item.get("page_id") or "").strip(): item
+        for item in load_saved_facebook_upload_pages()
+        if str(item.get("page_id") or "").strip()
+    }
     cards: list[dict[str, object]] = []
     for package_dir in reversed(package_dirs(ROOT_DIR)):
-        card = load_package_card(package_dir)
+        card = load_package_card(
+            package_dir,
+            page_assignments=page_assignments,
+            queued_page_ids_by_package=queued_page_ids_by_package,
+            saved_pages_by_id=saved_pages_by_id,
+        )
         if card:
             cards.append(card)
     return cards
@@ -688,6 +1645,18 @@ def thumbnail_path_for_package(package_name: str) -> Path | None:
         package_dir,
         {"jpg", "jpeg", "png"},
         [f"{base_name}.jpg", "thumbnail_1080x1920.jpg"],
+    )
+
+
+def video_path_for_package(package_name: str) -> Path | None:
+    package_dir = package_path_for_name(package_name)
+    if not package_dir.exists() or not package_dir.is_dir():
+        return None
+    base_name = preferred_reels_base_name(package_dir)
+    return preferred_package_media_path(
+        package_dir,
+        {"mp4", "mov", "m4v"},
+        [f"{base_name}.mp4", "edited_reel_9x16_hd_0.90x_15s.mp4"],
     )
 
 
@@ -943,12 +1912,29 @@ def load_chrome_profiles() -> list[dict[str, str]]:
     return profiles
 
 
-def find_profile_directory(profile_name: str) -> str | None:
-    target = normalize_name(profile_name)
+def find_profile_item(
+    profile_name: str = "",
+    profile_directory: str = "",
+) -> dict[str, str] | None:
+    trimmed_directory = str(profile_directory or "").strip()
+    trimmed_name = str(profile_name or "").strip()
+    normalized_directory = normalize_name(trimmed_directory)
+    normalized_name = normalize_name(trimmed_name)
     for item in load_chrome_profiles():
-        if normalize_name(item["name"]) == target:
-            return item["directory"]
+        item_directory = str(item.get("directory") or "").strip()
+        item_name = str(item.get("name") or "").strip()
+        if normalized_directory and normalize_name(item_directory) == normalized_directory:
+            return {"name": item_name, "directory": item_directory}
+        if normalized_name and normalize_name(item_name) == normalized_name:
+            return {"name": item_name, "directory": item_directory}
     return None
+
+
+def find_profile_directory(profile_name: str = "", profile_directory: str = "") -> str | None:
+    item = find_profile_item(profile_name=profile_name, profile_directory=profile_directory)
+    if item is None:
+        return None
+    return str(item.get("directory") or "").strip() or None
 
 
 def load_state_snapshot(state_path: Path) -> dict:
@@ -992,14 +1978,6 @@ def normalized_saved_page_kind(value: str | None) -> str:
     return "account" if lowered == "account" else "page"
 
 
-def find_profile_item(profile_name: str) -> dict[str, str] | None:
-    target = normalize_name(profile_name)
-    for item in load_chrome_profiles():
-        if normalize_name(item.get("name")) == target:
-            return item
-    return None
-
-
 def persist_saved_page_records_snapshot(records: list[dict[str, str]]) -> None:
     payload: list[dict[str, str]] = []
     for record in records:
@@ -1029,20 +2007,25 @@ def save_saved_page_record(
     page_name: str,
     page_url: str,
     page_kind: str,
+    profile_directory: str = "",
 ) -> dict[str, str]:
     trimmed_chrome_name = str(chrome_name or "").strip()
+    trimmed_profile_directory = str(profile_directory or "").strip()
     trimmed_page_name = str(page_name or "").strip()
     trimmed_page_url = str(page_url or "").strip()
     normalized_kind = normalized_saved_page_kind(page_kind)
 
-    if not trimmed_chrome_name:
+    if not trimmed_chrome_name and not trimmed_profile_directory:
         raise ValueError("Chrome Name is required.")
     if not trimmed_page_name:
         raise ValueError("Page or Account Name is required.")
 
-    profile_item = find_profile_item(trimmed_chrome_name)
-    profile_directory_name = str((profile_item or {}).get("directory") or "").strip()
-    profile_display_name = str((profile_item or {}).get("name") or trimmed_chrome_name).strip()
+    profile_item = find_profile_item(
+        profile_name=trimmed_chrome_name,
+        profile_directory=trimmed_profile_directory,
+    )
+    profile_directory_name = str((profile_item or {}).get("directory") or trimmed_profile_directory).strip()
+    profile_display_name = str((profile_item or {}).get("name") or trimmed_chrome_name or trimmed_profile_directory).strip()
 
     record = {
         "profile_directory_name": profile_directory_name,
@@ -1071,7 +2054,12 @@ def save_saved_page_record(
     return record
 
 
-def find_profile_state(state_path: Path, profile_name: str, page_name: str) -> dict | None:
+def find_profile_state(
+    state_path: Path,
+    profile_name: str,
+    page_name: str,
+    profile_directory: str = "",
+) -> dict | None:
     state = load_state_snapshot(state_path)
     profiles = state.get("profiles", {}) if isinstance(state, dict) else {}
     if not isinstance(profiles, dict):
@@ -1079,9 +2067,12 @@ def find_profile_state(state_path: Path, profile_name: str, page_name: str) -> d
 
     target_profile = normalize_name(profile_name)
     target_page = normalize_name(page_name)
+    target_profile_directory = normalize_name(profile_directory)
     matches: list[dict] = []
     for profile_state in profiles.values():
         if not isinstance(profile_state, dict):
+            continue
+        if target_profile_directory and normalize_name(profile_state.get("profile_directory")) != target_profile_directory:
             continue
         if target_profile and normalize_name(profile_state.get("profile_name")) != target_profile:
             continue
@@ -1277,6 +2268,108 @@ def persist_saved_api_settings(payload: dict[str, str]) -> None:
         pass
 
 
+def fetch_saved_facebook_page_metrics(
+    *,
+    page_id: str,
+    access_token: str,
+    graph_api_version: str = "",
+) -> dict[str, object]:
+    trimmed_page_id = str(page_id or "").strip()
+    trimmed_access_token = str(access_token or "").strip()
+    if not trimmed_page_id or not trimmed_access_token:
+        return {}
+
+    cache_key = f"{trimmed_page_id}|{graph_api_version.strip()}"
+    cache_now = time.monotonic()
+
+    def _refresh_worker() -> None:
+        try:
+            try:
+                payload = facebook_reels_api.fetch_page_video_metrics(
+                    page_id=trimmed_page_id,
+                    access_token=trimmed_access_token,
+                    graph_api_version=graph_api_version or facebook_reels_api.DEFAULT_GRAPH_API_VERSION,
+                    window_hours=24,
+                    limit=100,
+                    timeout=FACEBOOK_PAGE_METRICS_REFRESH_TIMEOUT_SECONDS,
+                )
+                result = {
+                    "video_total": int(payload.get("video_total") or 0),
+                    "videos_24h": int(payload.get("videos_24h") or 0),
+                    "views_24h": int(payload.get("views_24h") or 0),
+                    "metrics_status": "OK",
+                    "metrics_checked_at": str(payload.get("checked_at") or "").strip(),
+                }
+            except Exception as exc:
+                result = {
+                    "video_total": None,
+                    "videos_24h": None,
+                    "views_24h": None,
+                    "metrics_status": str(exc).strip() or "Facebook metrics unavailable",
+                    "metrics_checked_at": "",
+                }
+            with FACEBOOK_PAGE_METRICS_CACHE_LOCK:
+                _FACEBOOK_PAGE_METRICS_CACHE[cache_key] = (time.monotonic(), dict(result))
+        finally:
+            with FACEBOOK_PAGE_METRICS_CACHE_LOCK:
+                _FACEBOOK_PAGE_METRICS_REFRESHING.discard(cache_key)
+
+    with FACEBOOK_PAGE_METRICS_CACHE_LOCK:
+        cached = _FACEBOOK_PAGE_METRICS_CACHE.get(cache_key)
+        cached_payload = dict(cached[1]) if cached is not None else None
+        cache_is_fresh = cached is not None and (cache_now - cached[0]) <= FACEBOOK_PAGE_METRICS_CACHE_TTL_SECONDS
+        if cache_is_fresh:
+            return cached_payload or {}
+        if cache_key not in _FACEBOOK_PAGE_METRICS_REFRESHING:
+            _FACEBOOK_PAGE_METRICS_REFRESHING.add(cache_key)
+            thread = threading.Thread(target=_refresh_worker, name=f"fb-metrics-{trimmed_page_id}", daemon=True)
+            thread.start()
+        if cached_payload is not None:
+            return cached_payload
+    return {
+        "video_total": None,
+        "videos_24h": None,
+        "views_24h": None,
+        "metrics_status": "Refreshing in background…",
+        "metrics_checked_at": "",
+    }
+
+
+def _saved_facebook_metrics_graph_version(saved_api_settings: dict[str, str] | None = None) -> str:
+    payload = saved_api_settings or load_saved_api_settings_snapshot()
+    return str(
+        payload.get("FACEBOOK_GRAPH_API_VERSION")
+        or payload.get("FACEBOOK_GRAPH_VERSION")
+        or facebook_reels_api.DEFAULT_GRAPH_API_VERSION
+    ).strip()
+
+
+def refresh_saved_facebook_page_metrics_background_once() -> None:
+    saved_pages = load_saved_facebook_upload_pages()
+    if not saved_pages:
+        return
+    graph_api_version = _saved_facebook_metrics_graph_version()
+    for record in saved_pages:
+        page_id = str(record.get("page_id") or "").strip()
+        access_token = str(record.get("access_token") or "").strip()
+        if not page_id or not access_token:
+            continue
+        fetch_saved_facebook_page_metrics(
+            page_id=page_id,
+            access_token=access_token,
+            graph_api_version=graph_api_version,
+        )
+
+
+def facebook_page_metrics_worker_loop() -> None:
+    while True:
+        try:
+            refresh_saved_facebook_page_metrics_background_once()
+        except Exception:
+            traceback.print_exc()
+        time.sleep(FACEBOOK_PAGE_METRICS_BACKGROUND_POLL_SECONDS)
+
+
 def masked_facebook_token_status(value: str) -> str:
     trimmed = str(value or "").strip()
     if not trimmed:
@@ -1416,6 +2509,8 @@ def build_saved_facebook_upload_pages_response(*, package_count: int = 0) -> lis
     active_page_id, _active_label, _delete_after_success = active_facebook_upload_page_summary()
     state = load_state_snapshot(FACEBOOK_TIMING_STATE_PATH)
     saved_pages = load_saved_facebook_upload_pages()
+    saved_api_settings = load_saved_api_settings_snapshot()
+    graph_api_version = _saved_facebook_metrics_graph_version(saved_api_settings)
     relay_queue_map: dict[str, dict[str, object]] = {}
     relay_page_ids = [
         str(record.get("page_id") or "").strip()
@@ -1438,9 +2533,15 @@ def build_saved_facebook_upload_pages_response(*, package_count: int = 0) -> lis
     rows: list[dict[str, object]] = []
     for record in saved_pages:
         page_id = str(record.get("page_id") or "").strip()
+        access_token = str(record.get("access_token") or "").strip()
         token_saved_at = str(record.get("token_saved_at") or "").strip()
         token_expires_at = str(record.get("token_estimated_expiry_at") or "").strip()
         token_countdown_label, token_days_left = _facebook_token_countdown_label(token_saved_at, token_expires_at)
+        metrics_info = fetch_saved_facebook_page_metrics(
+            page_id=page_id,
+            access_token=access_token,
+            graph_api_version=graph_api_version,
+        ) if page_id and access_token else {}
         queue_info: dict[str, object] = relay_queue_map.get(page_id) or {}
         if page_id:
             if not queue_info:
@@ -1469,6 +2570,17 @@ def build_saved_facebook_upload_pages_response(*, package_count: int = 0) -> lis
                 "next_queue_label_ampm": str(queue_info.get("next_queue_label_ampm") or "-"),
                 "reserved_until_label_ampm": str(queue_info.get("reserved_until_label_ampm") or "-"),
                 "today_remaining_slots": int(queue_info.get("today_remaining_slots") or 0),
+                "reserved_slots": [
+                    str(value).strip()
+                    for value in (queue_info.get("reserved_slots") or [])
+                    if str(value).strip()
+                ],
+                "reserved_count": int(queue_info.get("reserved_count") or 0),
+                "video_total": metrics_info.get("video_total"),
+                "videos_24h": metrics_info.get("videos_24h"),
+                "views_24h": metrics_info.get("views_24h"),
+                "metrics_status": str(metrics_info.get("metrics_status") or "").strip(),
+                "metrics_checked_at": str(metrics_info.get("metrics_checked_at") or "").strip(),
             }
         )
     return rows
@@ -1505,6 +2617,74 @@ def quit_google_chrome() -> None:
         capture_output=True,
         check=False,
     )
+
+
+def run_osascript_lines(lines: list[str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(lines, text=True, capture_output=True, check=False)
+
+
+def chrome_profile_display_name(profile_directory: str) -> str:
+    item = find_profile_item(profile_directory=str(profile_directory or "").strip())
+    return str((item or {}).get("name") or profile_directory or "").strip()
+
+
+def chrome_window_count_for_profile_name(profile_name: str) -> int:
+    target_profile_name = str(profile_name or "").strip()
+    if not target_profile_name:
+        return 0
+    profile_suffix = f" - Google Chrome - {target_profile_name}"
+    script = f"""
+tell application "Google Chrome"
+    if not running then return "0"
+end tell
+tell application "System Events" to tell process "Google Chrome" to set fullTitles to name of every window
+set matchingCount to 0
+repeat with currentTitle in fullTitles
+    if (currentTitle as text) ends with {json.dumps(profile_suffix)} then
+        set matchingCount to matchingCount + 1
+    end if
+end repeat
+return matchingCount as text
+"""
+    result = run_osascript_lines(["osascript", "-e", script])
+    output = (result.stdout or "").strip() or (result.stderr or "").strip()
+    if result.returncode != 0:
+        return 0
+    try:
+        return int(output or "0")
+    except ValueError:
+        return 0
+
+
+def close_chrome_windows_for_profile_name(profile_name: str) -> int:
+    target_profile_name = str(profile_name or "").strip()
+    if not target_profile_name:
+        return 0
+    profile_suffix = f" - Google Chrome - {target_profile_name}"
+    script = f"""
+tell application "Google Chrome"
+    if not running then return "0"
+end tell
+tell application "System Events" to tell process "Google Chrome" to set fullTitles to name of every window
+tell application "Google Chrome"
+    set closedCount to 0
+    repeat with i from (count windows) to 1 by -1
+        if item i of fullTitles ends with {json.dumps(profile_suffix)} then
+            close window i
+            set closedCount to closedCount + 1
+        end if
+    end repeat
+    return closedCount as text
+end tell
+"""
+    result = run_osascript_lines(["osascript", "-e", script])
+    output = (result.stdout or "").strip() or (result.stderr or "").strip()
+    if result.returncode != 0:
+        return 0
+    try:
+        return int(output or "0")
+    except ValueError:
+        return 0
 
 
 def chrome_main_process_command_matches(command: str) -> bool:
@@ -1553,9 +2733,25 @@ def close_chrome_profile(profile_directory: str) -> int:
     if not target:
         return 0
 
+    profile_name = chrome_profile_display_name(target)
+    closed_windows = close_chrome_windows_for_profile_name(profile_name) if profile_name else 0
+    if profile_name:
+        deadline = time.time() + 2.0
+        saw_profile_window = False
+        while time.time() < deadline:
+            remaining_profile_windows = chrome_window_count_for_profile_name(profile_name)
+            if remaining_profile_windows <= 0:
+                if saw_profile_window:
+                    closed_windows = max(closed_windows, 1)
+                break
+            saw_profile_window = True
+            time.sleep(0.12)
+    if closed_windows:
+        time.sleep(0.28)
+
     matching_pids = [pid for pid, directory in running_chrome_profile_processes() if directory == target]
     if not matching_pids:
-        return 0
+        return closed_windows
 
     closed = 0
     for pid in matching_pids:
@@ -1581,7 +2777,7 @@ def close_chrome_profile(profile_directory: str) -> int:
             continue
     if remaining:
         time.sleep(0.22)
-    return closed
+    return max(closed, closed_windows)
 
 
 def open_chrome_profile(profile_directory: str, launch_url: str = "") -> None:
@@ -1603,9 +2799,10 @@ def open_chrome_profile(profile_directory: str, launch_url: str = "") -> None:
 
 def build_facebook_post_payload(
     payload: dict[str, object]
-) -> tuple[Path, str, str, str, str, list[str], int, bool, bool, bool, bool, bool]:
+) -> tuple[Path, str, str, str, str, str, list[str], int, bool, bool, bool, bool, bool]:
     root = Path(str(payload.get("root") or ROOT_DIR)).expanduser()
     chrome_name = str(payload.get("chrome_name") or "").strip()
+    profile_directory = str(payload.get("profile_directory") or "").strip()
     page_name = str(payload.get("page_name") or "").strip()
     page_url = str(payload.get("page_url") or "").strip()
     page_kind = str(payload.get("page_kind") or "").strip().lower()
@@ -1615,11 +2812,12 @@ def build_facebook_post_payload(
     close_after_finish = bool(payload.get("close_after_finish", True))
     close_after_each = bool(payload.get("close_after_each", False))
     post_now_advance_slot = bool(payload.get("post_now_advance_slot", False))
-    delete_after_each_success = bool(payload.get("delete_after_each_success", False))
+    delete_after_each_success = bool(payload.get("delete_after_each_success", True))
     restart_selected_profile_first = bool(payload.get("open_chrome_first", True))
     return (
         root,
         chrome_name,
+        profile_directory,
         page_name,
         page_url,
         page_kind,
@@ -1655,6 +2853,7 @@ def run_facebook_preflight(payload: dict[str, object]) -> dict[str, object]:
     (
         root,
         chrome_name,
+        profile_directory,
         page_name,
         page_url,
         page_kind,
@@ -1666,10 +2865,8 @@ def run_facebook_preflight(payload: dict[str, object]) -> dict[str, object]:
         _delete_after_each_success,
         _restart_selected_profile_first,
     ) = build_facebook_post_payload(payload)
-    if not chrome_name:
+    if not chrome_name and not profile_directory:
         raise RuntimeError("Chrome Name is required.")
-    if not page_name:
-        raise RuntimeError("Page is required.")
     if not packages:
         raise RuntimeError("Please enter at least one folder.")
 
@@ -1677,21 +2874,32 @@ def run_facebook_preflight(payload: dict[str, object]) -> dict[str, object]:
     if not first_package.exists():
         raise RuntimeError(f"Package folder not found: {first_package}")
 
+    profile_item = find_profile_item(
+        profile_name=chrome_name,
+        profile_directory=profile_directory,
+    )
+    effective_profile_name = str((profile_item or {}).get("name") or chrome_name or profile_directory).strip()
+    effective_profile_directory = str((profile_item or {}).get("directory") or profile_directory).strip()
+    if not effective_profile_name:
+        raise RuntimeError("Could not resolve Chrome profile.")
+
     command = [
         PYTHON_EXECUTABLE,
         str(FACEBOOK_PREFLIGHT_SCRIPT),
         str(first_package),
-        "--page-name",
-        page_name,
-        "--page-url",
-        page_url,
-        "--page-kind",
-        page_kind,
         "--interval-minutes",
         str(interval),
         "--profile-name",
-        chrome_name,
+        effective_profile_name,
     ]
+    if effective_profile_directory:
+        command.extend(["--profile-directory", effective_profile_directory])
+    if page_name:
+        command.extend(["--page-name", page_name])
+    if page_url:
+        command.extend(["--page-url", page_url])
+    if page_kind:
+        command.extend(["--page-kind", page_kind])
     result = subprocess.run(
         command,
         text=True,
@@ -1703,7 +2911,12 @@ def run_facebook_preflight(payload: dict[str, object]) -> dict[str, object]:
         raise RuntimeError(message)
 
     parsed = parse_json_from_output(result.stdout or "")
-    profile_state = find_profile_state(root / ".fb_reels_publish_state.json", chrome_name, page_name)
+    profile_state = find_profile_state(
+        root / ".fb_reels_publish_state.json",
+        effective_profile_name,
+        page_name,
+        effective_profile_directory,
+    )
     summary = format_state_summary(profile_state)
     decision_preview = parsed.get("decision_preview", {}) if isinstance(parsed, dict) else {}
     action = str(decision_preview.get("action") or "-").strip()
@@ -1721,10 +2934,15 @@ def run_facebook_preflight(payload: dict[str, object]) -> dict[str, object]:
     }
 
 
-def build_facebook_post_bootstrap_response(chrome_name: str = "", page_name: str = "") -> dict[str, object]:
+def build_facebook_post_bootstrap_response(
+    chrome_name: str = "",
+    page_name: str = "",
+    profile_directory: str = "",
+) -> dict[str, object]:
     cache_key = (
         str(chrome_name or "").strip().casefold(),
         str(page_name or "").strip().casefold(),
+        str(profile_directory or "").strip().casefold(),
     )
     cache_now = time.monotonic()
     with BOOTSTRAP_CACHE_LOCK:
@@ -1735,13 +2953,23 @@ def build_facebook_post_bootstrap_response(chrome_name: str = "", page_name: str
                 return dict(cached_payload)
 
     state_path = FACEBOOK_TIMING_STATE_PATH
-    profile_state = find_profile_state(state_path, chrome_name, page_name)
+    profile_item = find_profile_item(
+        profile_name=chrome_name,
+        profile_directory=profile_directory,
+    )
+    effective_profile_name = str((profile_item or {}).get("name") or chrome_name or profile_directory).strip()
+    effective_profile_directory = str((profile_item or {}).get("directory") or profile_directory).strip()
+    profile_state = find_profile_state(
+        state_path,
+        effective_profile_name,
+        page_name,
+        effective_profile_directory,
+    )
     package_cards = load_package_cards()
-    profile_item = find_profile_item(chrome_name) if chrome_name else None
     queue_info = queue_snapshot_for_profile(
         state_path,
-        profile_name=chrome_name,
-        profile_directory=str(profile_item.get("directory") or "") if profile_item else "",
+        profile_name=effective_profile_name,
+        profile_directory=effective_profile_directory,
         page_name=page_name,
         package_count=len(package_cards),
     )
@@ -1754,10 +2982,11 @@ def build_facebook_post_bootstrap_response(chrome_name: str = "", page_name: str
     payload = {
         "ok": True,
         "profiles": [item["name"] for item in load_chrome_profiles()],
+        "profile_items": load_chrome_profiles(),
         "page_suggestions_by_profile": page_suggestions_by_profile,
-        "page_suggestions": page_suggestions_by_profile.get(chrome_name, []),
+        "page_suggestions": page_suggestions_by_profile.get(effective_profile_name, []),
         "saved_page_records_by_profile": saved_page_records_by_profile,
-        "saved_page_records": saved_page_records_by_profile.get(chrome_name, []),
+        "saved_page_records": saved_page_records_by_profile.get(effective_profile_name, []),
         "saved_upload_pages": saved_upload_pages,
         "active_upload_page_id": active_upload_page_id,
         "active_upload_page_label": active_upload_page_label,
@@ -1875,6 +3104,39 @@ class ManagerState:
                 title,
                 message,
             )
+
+    def _remote_download_failure_message(self, lines: list[str], returncode: int) -> str:
+        for raw_line in reversed(lines):
+            line = str(raw_line or "").strip()
+            if not line:
+                continue
+            if line.startswith("[remote] "):
+                line = line[len("[remote] "):].strip()
+            if line.startswith("[post] FAILED:"):
+                detail = line.split("FAILED:", 1)[1].strip()
+                if detail:
+                    return detail
+            if line.startswith("[facebook] FAILED:"):
+                detail = line.split("FAILED:", 1)[1].strip()
+                if detail:
+                    return detail
+            if line.startswith("[post] Complete with failures:"):
+                continue
+            if "yt-dlp is required" in line:
+                return line
+            if "Could not resolve Facebook URL:" in line:
+                return line
+            if "No supported Facebook reel/video URL was found." in line:
+                return line
+            if "No valid Sora or Facebook links found." in line:
+                return line
+            if "Unexpected content-type" in line:
+                return line
+            if "Network error:" in line:
+                return line
+            if re.search(r"\bHTTP \d{3}\b", line):
+                return line
+        return f"Remote download failed with exit code {returncode}."
 
     def _update_status_from_line(self, line: str) -> None:
         progress_match = FACEBOOK_PROGRESS_PATTERN.match(line)
@@ -2032,6 +3294,7 @@ class ManagerState:
         (
             root,
             chrome_name,
+            profile_directory,
             page_name,
             page_url,
             page_kind,
@@ -2044,15 +3307,20 @@ class ManagerState:
             restart_selected_profile_first,
         ) = build_facebook_post_payload(payload)
 
-        if not chrome_name:
+        if not chrome_name and not profile_directory:
             return False, "Chrome Name is required."
-        if not page_name:
-            return False, "Page is required."
         if not packages:
             return False, "Please enter at least one folder."
 
-        profile_directory = find_profile_directory(chrome_name)
-        if not profile_directory:
+        profile_item = find_profile_item(
+            profile_name=chrome_name,
+            profile_directory=profile_directory,
+        )
+        effective_profile_name = str((profile_item or {}).get("name") or chrome_name or profile_directory).strip()
+        effective_profile_directory = str((profile_item or {}).get("directory") or profile_directory).strip()
+        if not effective_profile_name or not effective_profile_directory:
+            if profile_directory:
+                return False, f"Could not find Chrome profile directory for: {profile_directory}"
             return False, f"Could not find Chrome profile directory for: {chrome_name}"
 
         with self.lock:
@@ -2061,10 +3329,11 @@ class ManagerState:
             if self.proc is not None and self.proc.poll() is None:
                 return False, "A batch is already running."
 
+            target_label = page_name or "Current account"
             self.remote_running = True
             self.logs.clear()
-            self.logs.append(f"[facebook-post] Chrome: {chrome_name}")
-            self.logs.append(f"[facebook-post] Page: {page_name}")
+            self.logs.append(f"[facebook-post] Chrome: {effective_profile_name}")
+            self.logs.append(f"[facebook-post] Target: {target_label}")
             if page_kind:
                 self.logs.append(f"[facebook-post] Target Type: {page_kind}")
             if page_url:
@@ -2076,20 +3345,20 @@ class ManagerState:
             self.progress_label = self.detail
             self.task_kind = "facebook_post"
             self.facebook_post_stop_requested = False
-            self.facebook_profile_name = chrome_name
-            self.facebook_profile_directory = profile_directory
+            self.facebook_profile_name = effective_profile_name
+            self.facebook_profile_directory = effective_profile_directory
             self.facebook_page_name = page_name
         self.emit_alert(
             "Facebook post on Mac",
-            f"Preparing {len(packages)} folder(s) for page {page_name}.",
+            f"Preparing {len(packages)} folder(s) for {target_label}.",
         )
 
         thread = threading.Thread(
             target=self._run_facebook_post_flow,
             args=(
                 root,
-                chrome_name,
-                profile_directory,
+                effective_profile_name,
+                effective_profile_directory,
                 page_name,
                 page_url,
                 page_kind,
@@ -2118,6 +3387,9 @@ class ManagerState:
         mode = str(payload.get("mode") or "publish").strip().lower()
         page_id = str(payload.get("page_id") or "").strip()
         delete_after_success = bool(payload.get("delete_after_success"))
+        if mode == "publish":
+            # Control-Mac publish should always clear the finished package folder.
+            delete_after_success = True
 
         if mode not in {"publish", "schedule"}:
             return False, "Mode must be publish or schedule."
@@ -2130,16 +3402,6 @@ class ManagerState:
         if missing:
             return False, f"Package folder not found: {missing[0]}"
 
-        try:
-            record = apply_saved_facebook_upload_page(
-                page_id,
-                delete_after_success=delete_after_success,
-            )
-        except Exception as exc:
-            return False, str(exc)
-
-        label = str(record.get("label") or page_id).strip() or page_id
-
         with self.lock:
             if self.remote_running:
                 return False, "A remote flow is already running."
@@ -2147,6 +3409,54 @@ class ManagerState:
                 return False, "A batch is already running."
 
             self.remote_running = True
+            self.logs.clear()
+            self.status = "Running"
+            self.detail = f"Preparing Facebook {mode} ({len(packages)} package(s))..."
+            self.progress_percent = 0
+            self.progress_label = self.detail
+            self.task_kind = "facebook_api_upload"
+            self.facebook_post_stop_requested = False
+            self.facebook_profile_name = ""
+            self.facebook_profile_directory = ""
+            self.facebook_page_name = page_id
+
+        queue_restore_snapshot: dict[str, object] | None = None
+        if mode == "publish":
+            try:
+                queue_restore_snapshot = remove_packages_from_facebook_page_queue_state(packages)
+            except Exception as exc:
+                with self.lock:
+                    self.remote_running = False
+                    self.task_kind = ""
+                    self.facebook_page_name = ""
+                    self.status = "Failed"
+                    self.detail = f"Facebook publish failed: {exc}"
+                    self.progress_label = self.detail
+                return False, f"Could not update page queue before publish: {exc}"
+
+        try:
+            record = apply_saved_facebook_upload_page(
+                page_id,
+                delete_after_success=delete_after_success,
+            )
+        except Exception as exc:
+            if queue_restore_snapshot:
+                try:
+                    restore_packages_to_facebook_page_queue_state(queue_restore_snapshot)
+                except Exception:
+                    pass
+            with self.lock:
+                self.remote_running = False
+                self.task_kind = ""
+                self.facebook_page_name = ""
+                self.status = "Failed"
+                self.detail = f"Facebook {mode} failed: {exc}"
+                self.progress_label = self.detail
+            return False, str(exc)
+
+        label = str(record.get("label") or page_id).strip() or page_id
+
+        with self.lock:
             self.logs.clear()
             self.logs.append(f"[facebook-upload] Page: {label}")
             self.logs.append(f"[facebook-upload] Mode: {mode}")
@@ -2168,7 +3478,7 @@ class ManagerState:
 
         thread = threading.Thread(
             target=self._run_facebook_api_upload_flow,
-            args=(packages, mode, delete_after_success, page_id, label),
+            args=(packages, mode, delete_after_success, page_id, label, queue_restore_snapshot),
             daemon=True,
         )
         thread.start()
@@ -2240,7 +3550,6 @@ class ManagerState:
         restart_selected_profile_first: bool,
     ) -> None:
         close_selected_profile_when_done = close_after_finish or close_after_each
-        launch_url = FACEBOOK_CONTENT_LIBRARY_URL
         command = [
             PYTHON_EXECUTABLE,
             str(FACEBOOK_BATCH_SCRIPT),
@@ -2251,15 +3560,19 @@ class ManagerState:
             profile_directory,
             "--packages",
             *packages,
-            "--page-name",
-            page_name,
-            "--page-url",
-            page_url,
-            "--page-kind",
-            page_kind,
             "--interval-minutes",
             str(interval),
         ]
+        if page_name:
+            command.extend(["--page-name", page_name])
+        if page_url:
+            command.extend(["--page-url", page_url])
+        if page_kind:
+            command.extend(["--page-kind", page_kind])
+        if close_after_finish:
+            command.append("--close-after-finish")
+        if close_after_each:
+            command.append("--close-after-each")
         if post_now_advance_slot:
             command.append("--post-now-advance-slot")
         if delete_after_each_success:
@@ -2267,15 +3580,18 @@ class ManagerState:
 
         try:
             if restart_selected_profile_first:
-                closed_before_run = close_chrome_profile(profile_directory)
-                if closed_before_run:
-                    self.append_log(f"[facebook-post] Closed {closed_before_run} selected Chrome profile process(es) before run.")
-                self.append_log(f"[facebook-post] Opening Chrome profile: {chrome_name} -> {launch_url}")
-                open_chrome_profile(profile_directory, launch_url)
-                time.sleep(2.8)
+                self.append_log(
+                    f"[facebook-post] Batch will close only the selected Chrome profile before first folder, then reopen it on the upload step: {chrome_name}"
+                )
             else:
                 self.append_log(f"[facebook-post] Using existing Chrome profile session: {chrome_name}")
             if self._facebook_post_stop_requested_now():
+                if close_selected_profile_when_done:
+                    closed_after_stop = close_chrome_profile(profile_directory)
+                    if closed_after_stop:
+                        self.append_log(
+                            f"[facebook-post] Closed {closed_after_stop} selected Chrome profile window/process item(s) after stop."
+                        )
                 self._finish_facebook_post_stopped("Facebook post stopped.")
                 return
 
@@ -2309,8 +3625,14 @@ class ManagerState:
             stop_requested = self._facebook_post_stop_requested_now()
             if returncode == 0 and close_selected_profile_when_done:
                 closed_after_run = close_chrome_profile(profile_directory)
+            elif stop_requested and close_selected_profile_when_done:
+                closed_after_run = close_chrome_profile(profile_directory)
             with self.lock:
                 if stop_requested:
+                    if closed_after_run:
+                        self.logs.append(
+                            f"[facebook-post] Closed {closed_after_run} selected Chrome profile window/process item(s) after stop."
+                        )
                     self.logs.append("STOPPED")
                     self.status = "Stopped"
                     self.detail = "Facebook post stopped."
@@ -2320,7 +3642,7 @@ class ManagerState:
                 elif returncode == 0:
                     if closed_after_run:
                         self.logs.append(
-                            f"[facebook-post] Closed {closed_after_run} selected Chrome profile process(es) after run."
+                            f"[facebook-post] Closed {closed_after_run} selected Chrome profile window/process item(s) after run."
                         )
                     self.logs.append("DONE")
                     self.status = "Done"
@@ -2351,6 +3673,9 @@ class ManagerState:
             return
         except Exception as exc:
             stop_requested = self._facebook_post_stop_requested_now()
+            closed_after_stop = 0
+            if stop_requested and close_selected_profile_when_done:
+                closed_after_stop = close_chrome_profile(profile_directory)
             with self.lock:
                 self.remote_running = False
                 self.proc = None
@@ -2360,6 +3685,10 @@ class ManagerState:
                 self.facebook_profile_directory = profile_directory
                 self.facebook_page_name = page_name
                 if stop_requested:
+                    if closed_after_stop:
+                        self.logs.append(
+                            f"[facebook-post] Closed {closed_after_stop} selected Chrome profile window/process item(s) after stop."
+                        )
                     self.logs.append("STOPPED")
                     self.status = "Stopped"
                     self.detail = "Facebook post stopped."
@@ -2384,6 +3713,7 @@ class ManagerState:
         delete_after_success: bool,
         page_id: str,
         page_label: str,
+        queue_restore_snapshot: dict[str, object] | None = None,
     ) -> None:
         command = [
             PYTHON_EXECUTABLE,
@@ -2454,12 +3784,34 @@ class ManagerState:
                 if should_autostart_batch:
                     started, message = self.start()
                     if started:
-                        self.append_log("[facebook-upload] Auto starting AI edit for remaining source videos.")
+                            self.append_log("[facebook-upload] Auto starting AI edit for remaining source videos.")
                     else:
                         self.append_log(f"[facebook-upload] Remaining source videos found, but auto start was skipped: {message}")
             elif should_emit_failed:
+                if queue_restore_snapshot:
+                    try:
+                        restored_count = restore_packages_to_facebook_page_queue_state(queue_restore_snapshot)
+                        if restored_count > 0:
+                            self.append_log(
+                                f"[facebook-upload] Restored {restored_count} package(s) back to the page queue after failed publish."
+                            )
+                    except Exception as restore_exc:
+                        self.append_log(
+                            f"[facebook-upload] Queue restore warning after failed publish: {restore_exc}"
+                        )
                 self.emit_alert("Facebook upload failed", failed_message, "error")
         except Exception as exc:
+            if queue_restore_snapshot:
+                try:
+                    restored_count = restore_packages_to_facebook_page_queue_state(queue_restore_snapshot)
+                    if restored_count > 0:
+                        self.append_log(
+                            f"[facebook-upload] Restored {restored_count} package(s) back to the page queue after upload exception."
+                        )
+                except Exception as restore_exc:
+                    self.append_log(
+                        f"[facebook-upload] Queue restore warning after upload exception: {restore_exc}"
+                    )
             with self.lock:
                 self.remote_running = False
                 self.logs.append(f"[facebook-upload] FAILED: {exc}")
@@ -2506,6 +3858,7 @@ class ManagerState:
                     text=True,
                     bufsize=1,
                 )
+                run_lines: list[str] = []
 
                 if proc.stdout is not None:
                     for raw_line in proc.stdout:
@@ -2513,20 +3866,22 @@ class ManagerState:
                         if not line:
                             continue
                         prefixed_line = line if line.startswith("[remote]") else f"[remote] {line}"
+                        run_lines.append(prefixed_line)
                         self._maybe_emit_remote_download_progress_alert(prefixed_line)
                         self.append_log(prefixed_line)
 
                 returncode = proc.wait()
                 if returncode != 0:
+                    failure_message = self._remote_download_failure_message(run_lines, returncode)
                     with self.lock:
                         self.logs.append("FAILED")
                         self.status = "Failed"
-                        self.detail = f"Remote download failed (exit {returncode})."
+                        self.detail = failure_message
                         self.progress_label = self.detail
                         self.remote_download_almost_done_notified = False
                     self.emit_alert(
                         "Mac download failed",
-                        f"Remote download failed with exit code {returncode}.",
+                        failure_message,
                         "error",
                     )
                     continue
@@ -2714,8 +4069,18 @@ def execute_relay_job(job: dict[str, object]) -> tuple[int, dict[str, object]]:
 
     protected_paths = {
         "/facebook-post-bootstrap",
+        "/facebook-feed-videos",
+        "/facebook-feed-video",
+        "/facebook-feed-video-delete",
         "/facebook-packages",
+        "/facebook-package-video",
+        "/facebook-package-import",
+        "/facebook-package-file-upload",
+        "/facebook-package-finalize",
         "/source-video-upload",
+        "/facebook-queue-clear",
+        "/facebook-queue-reset",
+        "/facebook-queue-morning-only",
         "/facebook-post-preflight",
         "/facebook-post-run",
         "/facebook-post-stop",
@@ -2723,6 +4088,8 @@ def execute_relay_job(job: dict[str, object]) -> tuple[int, dict[str, object]]:
         "/facebook-upload-run",
         "/quit-chrome",
         "/facebook-package-delete",
+        "/facebook-package-assign-page",
+        "/facebook-package-back-to-old",
         "/remote-run",
     }
     if request_path in protected_paths and not relay_control_password_ok(provided_password):
@@ -2731,10 +4098,115 @@ def execute_relay_job(job: dict[str, object]) -> tuple[int, dict[str, object]]:
     if request_path == "/facebook-post-bootstrap":
         chrome_name = str(query.get("chrome_name") or "").strip()
         page_name = str(query.get("page_name") or "").strip()
-        return HTTPStatus.OK, build_facebook_post_bootstrap_response(chrome_name, page_name)
+        profile_directory = str(query.get("profile_directory") or "").strip()
+        return HTTPStatus.OK, build_facebook_post_bootstrap_response(chrome_name, page_name, profile_directory)
+
+    if request_path == "/facebook-feed-videos":
+        return HTTPStatus.OK, {"ok": True, "videos": load_facebook_feed_videos()}
+
+    if request_path == "/facebook-feed-video":
+        file_name = str(query.get("file_name") or payload.get("file_name") or "").strip()
+        try:
+            video_path = source_video_path_for_name(file_name)
+        except ValueError as exc:
+            return HTTPStatus.BAD_REQUEST, {"ok": False, "message": str(exc)}
+        if not video_path.exists() or not video_path.is_file():
+            return HTTPStatus.NOT_FOUND, {"ok": False, "message": "Video not found."}
+        mime_type, _encoding = mimetypes.guess_type(video_path.name)
+        mime_type = mime_type or "application/octet-stream"
+        return HTTPStatus.OK, {
+            "ok": True,
+            "file_name": video_path.name,
+            "mime_type": mime_type,
+            "data_base64": base64.b64encode(video_path.read_bytes()).decode("ascii"),
+        }
+
+    if request_path == "/facebook-feed-video-delete":
+        file_name = str(payload.get("file_name") or query.get("file_name") or "").strip()
+        try:
+            deleted_any, last_error = delete_facebook_feed_video_mirrors(file_name)
+        except ValueError as exc:
+            return HTTPStatus.BAD_REQUEST, {"ok": False, "message": str(exc)}
+        if not deleted_any:
+            status = HTTPStatus.INTERNAL_SERVER_ERROR if last_error else HTTPStatus.NOT_FOUND
+            return status, {"ok": False, "message": last_error or "Video not found."}
+        return HTTPStatus.OK, {
+            "ok": True,
+            "message": f"Deleted {Path(file_name).name}.",
+            "file_name": Path(file_name).name,
+            "videos": load_facebook_feed_videos(),
+        }
 
     if request_path == "/facebook-packages":
         return HTTPStatus.OK, {"ok": True, "packages": load_package_cards()}
+
+    if request_path == "/facebook-package-import":
+        file_data_base64 = str(payload.get("file_data_base64") or "").strip()
+        source_package_name = str(payload.get("package_name") or "").strip()
+        assigned_page_id = str(payload.get("assigned_page_id") or "").strip()
+        if not file_data_base64:
+            return HTTPStatus.BAD_REQUEST, {"ok": False, "message": "Package archive is empty."}
+        try:
+            body = base64.b64decode(file_data_base64, validate=True)
+        except Exception:
+            return HTTPStatus.BAD_REQUEST, {"ok": False, "message": "Package archive is invalid."}
+        try:
+            result = import_package_archive_bytes(
+                body,
+                source_package_name=source_package_name,
+                assigned_page_id=assigned_page_id,
+            )
+        except ValueError as exc:
+            return HTTPStatus.BAD_REQUEST, {"ok": False, "message": str(exc)}
+        except Exception as exc:
+            return HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "message": str(exc)}
+        return HTTPStatus.OK, result
+
+    if request_path == "/facebook-package-file-upload":
+        file_data_base64 = str(payload.get("file_data_base64") or "").strip()
+        session_id = str(payload.get("session_id") or "").strip()
+        source_package_name = str(payload.get("package_name") or "").strip()
+        relative_path = str(payload.get("relative_path") or "").strip()
+        target_package_name = str(payload.get("target_package_name") or "").strip()
+        assigned_page_id = str(payload.get("assigned_page_id") or "").strip()
+        if not file_data_base64:
+            return HTTPStatus.BAD_REQUEST, {"ok": False, "message": "Package file is empty."}
+        try:
+            body = base64.b64decode(file_data_base64, validate=True)
+        except Exception:
+            return HTTPStatus.BAD_REQUEST, {"ok": False, "message": "Package file is invalid."}
+        try:
+            result = stage_imported_package_file(
+                body,
+                session_id=session_id,
+                source_package_name=source_package_name,
+                relative_path=relative_path,
+                target_package_name=target_package_name,
+                assigned_page_id=assigned_page_id,
+            )
+        except ValueError as exc:
+            return HTTPStatus.BAD_REQUEST, {"ok": False, "message": str(exc)}
+        except Exception as exc:
+            return HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "message": str(exc)}
+        return HTTPStatus.OK, result
+
+    if request_path == "/facebook-package-finalize":
+        session_id = str(payload.get("session_id") or "").strip()
+        source_package_name = str(payload.get("package_name") or "").strip()
+        target_package_name = str(payload.get("target_package_name") or "").strip()
+        assigned_page_id = str(payload.get("assigned_page_id") or "").strip()
+        try:
+            result = finalize_staged_package_transfer(
+                session_id=session_id,
+                target_package_name=target_package_name,
+                source_package_name=source_package_name,
+                assigned_page_id=assigned_page_id,
+            )
+        except ValueError as exc:
+            return HTTPStatus.BAD_REQUEST, {"ok": False, "message": str(exc)}
+        except Exception as exc:
+            return HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "message": str(exc)}
+        return HTTPStatus.OK, result
 
     if request_path == "/facebook-package-thumbnail":
         package_name = str(query.get("package_name") or payload.get("package_name") or "").strip()
@@ -2753,6 +4225,23 @@ def execute_relay_job(job: dict[str, object]) -> tuple[int, dict[str, object]]:
             "data_base64": base64.b64encode(thumbnail_path.read_bytes()).decode("ascii"),
         }
 
+    if request_path == "/facebook-package-video":
+        package_name = str(query.get("package_name") or payload.get("package_name") or "").strip()
+        try:
+            video_path = video_path_for_package(package_name)
+        except ValueError as exc:
+            return HTTPStatus.BAD_REQUEST, {"ok": False, "message": str(exc)}
+        if video_path is None:
+            return HTTPStatus.NOT_FOUND, {"ok": False, "message": "Video not found."}
+        mime_type, _encoding = mimetypes.guess_type(video_path.name)
+        mime_type = mime_type or "application/octet-stream"
+        return HTTPStatus.OK, {
+            "ok": True,
+            "file_name": video_path.name,
+            "mime_type": mime_type,
+            "data_base64": base64.b64encode(video_path.read_bytes()).decode("ascii"),
+        }
+
     if request_path == "/source-video-upload":
         file_name = str(payload.get("file_name") or "").strip()
         content_type = str(payload.get("content_type") or "").strip().lower()
@@ -2763,6 +4252,9 @@ def execute_relay_job(job: dict[str, object]) -> tuple[int, dict[str, object]]:
             body = base64.b64decode(file_data_base64, validate=True)
         except Exception:
             return HTTPStatus.BAD_REQUEST, {"ok": False, "message": "Upload body is invalid."}
+        duplicate_path = duplicate_source_video_path_for_bytes(body)
+        if duplicate_path is not None:
+            return HTTPStatus.OK, handle_duplicate_source_video(duplicate_path)
         target_name = sanitize_source_video_filename(file_name, content_type)
         target_path = unique_source_video_target(target_name)
         try:
@@ -2770,17 +4262,55 @@ def execute_relay_job(job: dict[str, object]) -> tuple[int, dict[str, object]]:
             target_path.write_bytes(body)
         except Exception as exc:
             return HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "message": str(exc)}
-        STATE.emit_alert(
-            "New video on Mac",
-            f"{target_path.name} was added to Drop Videos.",
+        return HTTPStatus.OK, handle_source_video_saved(target_path)
+
+    if request_path in {"/facebook-queue-clear", "/facebook-queue-reset", "/facebook-queue-morning-only"}:
+        chrome_name = str(payload.get("chrome_name") or "").strip()
+        requested_profile_directory = str(payload.get("profile_directory") or "").strip()
+        page_name = str(payload.get("page_name") or "").strip()
+        profile_item = find_profile_item(
+            profile_name=chrome_name,
+            profile_directory=requested_profile_directory,
         )
-        return HTTPStatus.OK, {
-            "ok": True,
-            "message": f"Saved {target_path.name} to Drop Videos on Mac.",
-            "file_name": target_path.name,
-            "saved_path": str(target_path),
-            "source_count": len(source_videos(ROOT_DIR)),
-        }
+        profile_directory = str((profile_item or {}).get("directory") or requested_profile_directory).strip()
+        effective_profile_name = str((profile_item or {}).get("name") or chrome_name or requested_profile_directory).strip()
+        try:
+            if request_path == "/facebook-queue-clear":
+                updated_state = facebook_timing.clear_queue(
+                    state_path=FACEBOOK_TIMING_STATE_PATH,
+                    profile_name=effective_profile_name or None,
+                    profile_directory=profile_directory or None,
+                    page_name=page_name or None,
+                )
+                message = "Queue memory cleared."
+            elif request_path == "/facebook-queue-reset":
+                updated_state = facebook_timing.reset_times(
+                    state_path=FACEBOOK_TIMING_STATE_PATH,
+                    profile_name=effective_profile_name or None,
+                    profile_directory=profile_directory or None,
+                    page_name=page_name or None,
+                )
+                message = "Queue times reset."
+            else:
+                enabled = bool(payload.get("morning_only"))
+                updated_state = facebook_timing.set_morning_only(
+                    enabled,
+                    state_path=FACEBOOK_TIMING_STATE_PATH,
+                    profile_name=effective_profile_name or None,
+                    profile_directory=profile_directory or None,
+                    page_name=page_name or None,
+                )
+                message = "Morning only enabled." if enabled else "Morning only disabled."
+            queue_info = facebook_timing.queue_status(
+                updated_state,
+                profile_name=effective_profile_name or None,
+                profile_directory=profile_directory or None,
+                page_name=page_name or None,
+                package_count=len(package_dirs(ROOT_DIR)),
+            )
+            return HTTPStatus.OK, {"ok": True, "message": message, "facebook_queue": queue_info}
+        except Exception as exc:
+            return HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "message": str(exc)}
 
     if request_path == "/facebook-post-preflight":
         try:
@@ -2807,6 +4337,7 @@ def execute_relay_job(job: dict[str, object]) -> tuple[int, dict[str, object]]:
                 str(payload.get("page_name") or ""),
                 str(payload.get("page_url") or ""),
                 str(payload.get("page_kind") or "page"),
+                str(payload.get("profile_directory") or ""),
             )
         except Exception as exc:
             return HTTPStatus.BAD_REQUEST, {"ok": False, "message": str(exc)}
@@ -2818,6 +4349,20 @@ def execute_relay_job(job: dict[str, object]) -> tuple[int, dict[str, object]]:
         }
 
     if request_path == "/quit-chrome":
+        chrome_name = str(payload.get("chrome_name") or "").strip()
+        profile_directory = str(payload.get("profile_directory") or "").strip()
+        profile_item = find_profile_item(
+            profile_name=chrome_name,
+            profile_directory=profile_directory,
+        )
+        effective_profile_directory = str((profile_item or {}).get("directory") or profile_directory).strip()
+        if effective_profile_directory:
+            closed_count = close_chrome_profile(effective_profile_directory)
+            return HTTPStatus.OK, {
+                "ok": True,
+                "message": f"Closed {closed_count} selected Chrome profile window/process item(s)." if closed_count else "Selected profile is already offline.",
+                "closed_count": closed_count,
+            }
         quit_google_chrome()
         return HTTPStatus.OK, {"ok": True, "message": "Google Chrome quit."}
 
@@ -2836,6 +4381,80 @@ def execute_relay_job(job: dict[str, object]) -> tuple[int, dict[str, object]]:
             "ok": True,
             "message": f"Deleted {package_name}.",
             "package_name": package_name,
+            "packages": load_package_cards(),
+        }
+
+    if request_path == "/facebook-package-assign-page":
+        package_names = [
+            str(item).strip()
+            for item in (payload.get("package_names") or [])
+            if str(item).strip()
+        ]
+        page_id = str(payload.get("page_id") or "").strip()
+        move_to_queue = bool(payload.get("move_to_queue", True))
+        if not package_names:
+            return HTTPStatus.BAD_REQUEST, {"ok": False, "message": "Choose at least one package."}
+        if not page_id:
+            return HTTPStatus.BAD_REQUEST, {"ok": False, "message": "Choose a saved upload page first."}
+        saved_pages_by_id = {
+            str(item.get("page_id") or "").strip(): item
+            for item in load_saved_facebook_upload_pages()
+            if str(item.get("page_id") or "").strip()
+        }
+        selected_page = saved_pages_by_id.get(page_id)
+        if selected_page is None:
+            return HTTPStatus.BAD_REQUEST, {"ok": False, "message": "Saved upload page not found."}
+        for package_name in package_names:
+            try:
+                package_path = package_path_for_name(package_name)
+            except ValueError as exc:
+                return HTTPStatus.BAD_REQUEST, {"ok": False, "message": str(exc)}
+            if not package_path.exists() or not package_path.is_dir():
+                return HTTPStatus.NOT_FOUND, {"ok": False, "message": f"Package not found: {package_name}"}
+        assignments = load_facebook_page_assignments()
+        queue_orders = load_facebook_page_queue_orders()
+        for package_name in package_names:
+            assignments[package_name] = page_id
+        if move_to_queue:
+            queue_orders = append_packages_to_facebook_page_queue_order(queue_orders, package_names, page_id)
+        else:
+            queue_orders = remove_packages_from_facebook_page_queue_orders(queue_orders, package_names)
+        persist_facebook_page_assignments(assignments)
+        persist_facebook_page_queue_orders(queue_orders)
+        action_verb = "Assigned" if move_to_queue else "Set page"
+        return HTTPStatus.OK, {
+            "ok": True,
+            "message": f"{action_verb} for {len(package_names)} package(s) to {str(selected_page.get('label') or page_id).strip()}.",
+            "packages": load_package_cards(),
+        }
+
+    if request_path == "/facebook-package-back-to-old":
+        package_names = [
+            str(item).strip()
+            for item in (payload.get("package_names") or [])
+            if str(item).strip()
+        ]
+        if not package_names:
+            return HTTPStatus.BAD_REQUEST, {"ok": False, "message": "Choose at least one package."}
+        for package_name in package_names:
+            try:
+                package_path = package_path_for_name(package_name)
+            except ValueError as exc:
+                return HTTPStatus.BAD_REQUEST, {"ok": False, "message": str(exc)}
+            if not package_path.exists() or not package_path.is_dir():
+                return HTTPStatus.NOT_FOUND, {"ok": False, "message": f"Package not found: {package_name}"}
+        assignments = load_facebook_page_assignments()
+        for package_name in package_names:
+            assignments.pop(package_name, None)
+        queue_orders = remove_packages_from_facebook_page_queue_orders(
+            load_facebook_page_queue_orders(),
+            package_names,
+        )
+        persist_facebook_page_assignments(assignments)
+        persist_facebook_page_queue_orders(queue_orders)
+        return HTTPStatus.OK, {
+            "ok": True,
+            "message": f"Moved {len(package_names)} package(s) back to old cards.",
             "packages": load_package_cards(),
         }
 
@@ -3364,10 +4983,81 @@ HTML_PAGE = HTML_PAGE.replace("__ROOT_DIR__", str(ROOT_DIR))
 
 class ReelsDashboardHandler(BaseHTTPRequestHandler):
     def _allowed_headers(self) -> str:
-        return "Content-Type, X-Soranin-File-Name, X-Soranin-Password"
+        return "Content-Type, X-Soranin-File-Name, X-Soranin-Password, X-Soranin-Session"
 
     def _request_control_password(self) -> str:
-        return str(self.headers.get("X-Soranin-Password") or "").strip()
+        header_value = str(self.headers.get("X-Soranin-Password") or "").strip()
+        if header_value:
+            return header_value
+        try:
+            parsed = urlparse(self.path)
+            return str((parse_qs(parsed.query).get("__control_password") or [""])[0]).strip()
+        except Exception:
+            return ""
+
+    def _request_control_session_token(self) -> str:
+        header_value = str(self.headers.get("X-Soranin-Session") or "").strip()
+        if header_value:
+            return header_value
+        try:
+            parsed = urlparse(self.path)
+            return str((parse_qs(parsed.query).get("__control_session") or [""])[0]).strip()
+        except Exception:
+            return ""
+
+    def _request_client_ip(self) -> str:
+        for header_name in ("CF-Connecting-IP", "X-Forwarded-For"):
+            header_value = str(self.headers.get(header_name) or "").strip()
+            if not header_value:
+                continue
+            return header_value.split(",", 1)[0].strip()
+        return str(self.client_address[0] or "").strip()
+
+    def _request_user_agent(self) -> str:
+        return str(self.headers.get("User-Agent") or "").strip()
+
+    def _control_session_payload(self) -> dict[str, object] | None:
+        if self._is_loopback_request():
+            return {"loopback": True}
+        return CONTROL_WEB_SESSIONS.get(
+            self._request_control_session_token(),
+            client_ip=self._request_client_ip(),
+            user_agent=self._request_user_agent(),
+        )
+
+    def _has_valid_control_auth(self) -> bool:
+        expected = control_password()
+        if not expected:
+            return True
+        if self._is_loopback_request():
+            return True
+        if self._control_session_payload() is not None:
+            return True
+        provided = self._request_control_password()
+        return bool(provided) and hmac.compare_digest(provided, expected)
+
+    def _auth_attempt_key(self) -> str:
+        return f"{self._request_client_ip()}|{self._request_user_agent()}"
+
+    def _auth_lockout_response(self, retry_after_seconds: int) -> None:
+        retry_after = max(1, int(retry_after_seconds or 0))
+        self._send_json(
+            {
+                "ok": False,
+                "message": f"Too many failed login attempts. Try again in {retry_after}s.",
+                "password_required": True,
+                "retry_after_seconds": retry_after,
+            },
+            HTTPStatus.TOO_MANY_REQUESTS,
+        )
+
+    def _issue_control_session(self, remember: bool) -> tuple[str, float]:
+        return CONTROL_WEB_SESSIONS.create(
+            client_ip=self._request_client_ip(),
+            user_agent=self._request_user_agent(),
+            ttl_seconds=CONTROL_SESSION_REMEMBER_TTL_SECONDS if remember else CONTROL_SESSION_TTL_SECONDS,
+            data={"remember": bool(remember)},
+        )
 
     def _is_loopback_request(self) -> bool:
         client_host = str(self.client_address[0] or "").strip()
@@ -3379,9 +5069,22 @@ class ReelsDashboardHandler(BaseHTTPRequestHandler):
             return True
         if self._is_loopback_request():
             return True
+        if self._control_session_payload() is not None:
+            return True
+        attempt_key = self._auth_attempt_key()
+        retry_after = CONTROL_AUTH_ATTEMPTS.remaining_lockout(attempt_key)
+        if retry_after > 0:
+            self._auth_lockout_response(retry_after)
+            return False
         provided = self._request_control_password()
         if provided and hmac.compare_digest(provided, expected):
+            CONTROL_AUTH_ATTEMPTS.record_success(attempt_key)
             return True
+        if provided:
+            retry_after = CONTROL_AUTH_ATTEMPTS.record_failure(attempt_key)
+            if retry_after > 0:
+                self._auth_lockout_response(retry_after)
+                return False
         self._send_json(
             {
                 "ok": False,
@@ -3409,14 +5112,28 @@ class ReelsDashboardHandler(BaseHTTPRequestHandler):
             return b""
         return self.rfile.read(length)
 
+    def _send_security_headers(self) -> None:
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Pragma", "no-cache")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("Cross-Origin-Opener-Policy", "same-origin")
+        self.send_header("Cross-Origin-Resource-Policy", "same-origin")
+        self.send_header("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+        self.send_header(
+            "Content-Security-Policy",
+            "default-src 'self'; img-src 'self' blob: data:; media-src 'self' blob: data:; "
+            "connect-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; "
+            "base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
+        )
+
     def _send_json(self, payload: dict[str, object], status: int = HTTPStatus.OK) -> None:
         body = json.dumps(payload).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", self._allowed_headers())
+        self._send_security_headers()
         self.end_headers()
         self.wfile.write(body)
 
@@ -3425,9 +5142,7 @@ class ReelsDashboardHandler(BaseHTTPRequestHandler):
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", self._allowed_headers())
+        self._send_security_headers()
         self.end_headers()
         self.wfile.write(body)
 
@@ -3435,49 +5150,156 @@ class ReelsDashboardHandler(BaseHTTPRequestHandler):
         if not file_path.exists() or not file_path.is_file():
             self.send_error(HTTPStatus.NOT_FOUND)
             return
-        body = file_path.read_bytes()
         content_type, _ = mimetypes.guess_type(file_path.name)
-        self.send_response(HTTPStatus.OK)
+        total_size = file_path.stat().st_size
+        range_header = str(self.headers.get("Range") or "").strip()
+        start = 0
+        end = max(total_size - 1, 0)
+        status = HTTPStatus.OK
+
+        if range_header.startswith("bytes="):
+            try:
+                byte_range = range_header.split("=", 1)[1].split(",", 1)[0].strip()
+                start_text, end_text = byte_range.split("-", 1)
+                if not start_text:
+                    suffix_length = int(end_text)
+                    if suffix_length <= 0:
+                        raise ValueError("Invalid suffix length.")
+                    start = max(total_size - suffix_length, 0)
+                else:
+                    start = int(start_text)
+                if end_text:
+                    end = int(end_text)
+                if start < 0 or start >= total_size or end < start:
+                    raise ValueError("Invalid byte range.")
+                end = min(end, total_size - 1)
+                status = HTTPStatus.PARTIAL_CONTENT
+            except Exception:
+                self.send_response(HTTPStatus.REQUESTED_RANGE_NOT_SATISFIABLE)
+                self.send_header("Content-Range", f"bytes */{total_size}")
+                self.send_header("Content-Length", "0")
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Accept-Ranges", "bytes")
+                self._send_security_headers()
+                self.end_headers()
+                return
+
+        content_length = max(end - start + 1, 0)
+        self.send_response(status)
         self.send_header("Content-Type", content_type or "application/octet-stream")
-        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Content-Length", str(content_length))
         self.send_header("Cache-Control", "no-store")
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", self._allowed_headers())
+        self.send_header("Accept-Ranges", "bytes")
+        if status == HTTPStatus.PARTIAL_CONTENT:
+            self.send_header("Content-Range", f"bytes {start}-{end}/{total_size}")
+        self._send_security_headers()
         self.end_headers()
-        self.wfile.write(body)
+        with file_path.open("rb") as handle:
+            if start:
+                handle.seek(start)
+            remaining = content_length
+            while remaining > 0:
+                chunk = handle.read(min(1024 * 64, remaining))
+                if not chunk:
+                    break
+                self.wfile.write(chunk)
+                remaining -= len(chunk)
 
     def _send_raw(self, body: bytes, content_type: str, status: int = HTTPStatus.OK) -> None:
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", self._allowed_headers())
+        self._send_security_headers()
         self.end_headers()
         self.wfile.write(body)
 
     def do_OPTIONS(self) -> None:
         self.send_response(HTTPStatus.NO_CONTENT)
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", self._allowed_headers())
         self.send_header("Content-Length", "0")
+        self._send_security_headers()
         self.end_headers()
+
+    def _handle_auth_login(self) -> None:
+        payload = self._read_json_body()
+        remember = bool(payload.get("remember"))
+        provided = str(payload.get("password") or "").strip()
+        expected = control_password()
+        attempt_key = self._auth_attempt_key()
+        retry_after = CONTROL_AUTH_ATTEMPTS.remaining_lockout(attempt_key)
+        if retry_after > 0:
+            self._auth_lockout_response(retry_after)
+            return
+        if expected and not self._is_loopback_request():
+            if not provided or not hmac.compare_digest(provided, expected):
+                retry_after = CONTROL_AUTH_ATTEMPTS.record_failure(attempt_key)
+                if retry_after > 0:
+                    self._auth_lockout_response(retry_after)
+                    return
+                self._send_json(
+                    {
+                        "ok": False,
+                        "message": "Enter the Mac control password to continue.",
+                        "password_required": True,
+                    },
+                    HTTPStatus.UNAUTHORIZED,
+                )
+                return
+        CONTROL_AUTH_ATTEMPTS.record_success(attempt_key)
+        session_token, expires_at = self._issue_control_session(remember)
+        self._send_json(
+            {
+                "ok": True,
+                "message": "Login OK.",
+                "session_token": session_token,
+                "expires_at": datetime.fromtimestamp(expires_at, tz=timezone.utc).isoformat(),
+                "password_required": bool(expected),
+            },
+            HTTPStatus.OK,
+        )
+
+    def _handle_auth_logout(self) -> None:
+        CONTROL_WEB_SESSIONS.delete(self._request_control_session_token())
+        self._send_json({"ok": True, "message": "Logged out."}, HTTPStatus.OK)
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
+        if parsed.path in {"/control", "/control/", "/control/index.html"}:
+            self._send_html(load_control_web_html())
+            return
         if parsed.path in {"/", "/index.html"}:
             self._send_html(HTML_PAGE)
             return
         if parsed.path == "/status":
-            self._send_json(STATE.snapshot())
+            snapshot = STATE.snapshot()
+            if control_password_required() and not self._has_valid_control_auth():
+                self._send_json(public_control_status_payload(snapshot), HTTPStatus.OK)
+            else:
+                self._send_json(snapshot)
             return
         if parsed.path == "/codex-chat-health":
             if not self._require_control_password():
                 return
             self._send_json(build_codex_chat_health_response(), HTTPStatus.OK)
+            return
+        if parsed.path == "/facebook-feed-videos":
+            if not self._require_control_password():
+                return
+            self._send_json({"ok": True, "videos": load_facebook_feed_videos()}, HTTPStatus.OK)
+            return
+        if parsed.path == "/facebook-feed-video":
+            if not self._require_control_password():
+                return
+            file_name = (parse_qs(parsed.query).get("file_name") or [""])[0]
+            try:
+                video_path = source_video_path_for_name(file_name)
+            except ValueError:
+                self._send_json({"ok": False, "message": "Invalid file name."}, HTTPStatus.BAD_REQUEST)
+                return
+            if not video_path.exists() or not video_path.is_file():
+                self._send_json({"ok": False, "message": "Video not found."}, HTTPStatus.NOT_FOUND)
+                return
+            self._send_file(video_path)
             return
         if parsed.path == "/facebook-post-bootstrap":
             if not self._require_control_password():
@@ -3485,14 +5307,112 @@ class ReelsDashboardHandler(BaseHTTPRequestHandler):
             query = parse_qs(parsed.query)
             chrome_name = (query.get("chrome_name") or [""])[0]
             page_name = (query.get("page_name") or [""])[0]
-            self._send_json(build_facebook_post_bootstrap_response(chrome_name, page_name))
+            profile_directory = (query.get("profile_directory") or [""])[0]
+            self._send_json(build_facebook_post_bootstrap_response(chrome_name, page_name, profile_directory))
             return
         if parsed.path == "/facebook-packages":
             if not self._require_control_password():
                 return
             self._send_json({"ok": True, "packages": load_package_cards()}, HTTPStatus.OK)
             return
+        if parsed.path == "/facebook-package-import":
+            if not self._require_control_password():
+                return
+            body = self._read_raw_body()
+            if not body:
+                self._send_json({"ok": False, "message": "Package archive is empty."}, HTTPStatus.BAD_REQUEST)
+                return
+            query = parse_qs(parsed.query)
+            source_package_name = (query.get("package_name") or [""])[0]
+            assigned_page_id = (query.get("assigned_page_id") or [""])[0]
+            if not source_package_name:
+                source_package_name = str(self.headers.get("X-Soranin-Package-Name") or "").strip()
+            if not assigned_page_id:
+                assigned_page_id = str(self.headers.get("X-Soranin-Assigned-Page-ID") or "").strip()
+            try:
+                result = import_package_archive_bytes(
+                    body,
+                    source_package_name=source_package_name,
+                    assigned_page_id=assigned_page_id,
+                )
+            except ValueError as exc:
+                self._send_json({"ok": False, "message": str(exc)}, HTTPStatus.BAD_REQUEST)
+                return
+            except Exception as exc:
+                self._send_json({"ok": False, "message": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+                return
+            self._send_json(result, HTTPStatus.OK)
+            return
+        if parsed.path == "/facebook-package-file-upload":
+            if not self._require_control_password():
+                return
+            body = self._read_raw_body()
+            if not body:
+                self._send_json({"ok": False, "message": "Package file is empty."}, HTTPStatus.BAD_REQUEST)
+                return
+            query = parse_qs(parsed.query)
+            session_id = (query.get("session_id") or [""])[0]
+            source_package_name = (query.get("package_name") or [""])[0]
+            relative_path = (query.get("relative_path") or [""])[0]
+            target_package_name = (query.get("target_package_name") or [""])[0]
+            assigned_page_id = (query.get("assigned_page_id") or [""])[0]
+            try:
+                result = stage_imported_package_file(
+                    body,
+                    session_id=session_id,
+                    source_package_name=source_package_name,
+                    relative_path=relative_path,
+                    target_package_name=target_package_name,
+                    assigned_page_id=assigned_page_id,
+                )
+            except ValueError as exc:
+                self._send_json({"ok": False, "message": str(exc)}, HTTPStatus.BAD_REQUEST)
+                return
+            except Exception as exc:
+                self._send_json({"ok": False, "message": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+                return
+            self._send_json(result, HTTPStatus.OK)
+            return
+        if parsed.path == "/facebook-package-finalize":
+            if not self._require_control_password():
+                return
+            query = parse_qs(parsed.query)
+            session_id = (query.get("session_id") or [""])[0]
+            source_package_name = (query.get("package_name") or [""])[0]
+            target_package_name = (query.get("target_package_name") or [""])[0]
+            assigned_page_id = (query.get("assigned_page_id") or [""])[0]
+            try:
+                result = finalize_staged_package_transfer(
+                    session_id=session_id,
+                    target_package_name=target_package_name,
+                    source_package_name=source_package_name,
+                    assigned_page_id=assigned_page_id,
+                )
+            except ValueError as exc:
+                self._send_json({"ok": False, "message": str(exc)}, HTTPStatus.BAD_REQUEST)
+                return
+            except Exception as exc:
+                self._send_json({"ok": False, "message": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+                return
+            self._send_json(result, HTTPStatus.OK)
+            return
+        if parsed.path == "/facebook-package-video":
+            if not self._require_control_password():
+                return
+            package_name = (parse_qs(parsed.query).get("package_name") or [""])[0]
+            try:
+                video_path = video_path_for_package(package_name)
+            except ValueError:
+                self._send_json({"ok": False, "message": "Invalid package name."}, HTTPStatus.BAD_REQUEST)
+                return
+            if video_path is None:
+                self._send_json({"ok": False, "message": "Video not found."}, HTTPStatus.NOT_FOUND)
+                return
+            self._send_file(video_path)
+            return
         if parsed.path == "/facebook-package-thumbnail":
+            if not self._require_control_password():
+                return
             package_name = (parse_qs(parsed.query).get("package_name") or [""])[0]
             try:
                 thumbnail_path = thumbnail_path_for_package(package_name)
@@ -3509,6 +5429,100 @@ class ReelsDashboardHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
         request_path = parsed.path
+
+        if request_path == "/auth/login":
+            self._handle_auth_login()
+            return
+
+        if request_path == "/auth/logout":
+            self._handle_auth_logout()
+            return
+
+        if request_path == "/facebook-package-file-upload":
+            if not self._require_control_password():
+                return
+            body = self._read_raw_body()
+            if not body:
+                self._send_json({"ok": False, "message": "Package file is empty."}, HTTPStatus.BAD_REQUEST)
+                return
+
+            query = parse_qs(parsed.query)
+            session_id = (query.get("session_id") or [""])[0]
+            source_package_name = (query.get("package_name") or [""])[0]
+            relative_path = (query.get("relative_path") or [""])[0]
+            target_package_name = (query.get("target_package_name") or [""])[0]
+            assigned_page_id = (query.get("assigned_page_id") or [""])[0]
+            try:
+                result = stage_imported_package_file(
+                    body,
+                    session_id=session_id,
+                    source_package_name=source_package_name,
+                    relative_path=relative_path,
+                    target_package_name=target_package_name,
+                    assigned_page_id=assigned_page_id,
+                )
+            except ValueError as exc:
+                self._send_json({"ok": False, "message": str(exc)}, HTTPStatus.BAD_REQUEST)
+                return
+            except Exception as exc:
+                self._send_json({"ok": False, "message": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+                return
+            self._send_json(result, HTTPStatus.OK)
+            return
+
+        if request_path == "/facebook-package-finalize":
+            if not self._require_control_password():
+                return
+            query = parse_qs(parsed.query)
+            session_id = (query.get("session_id") or [""])[0]
+            source_package_name = (query.get("package_name") or [""])[0]
+            target_package_name = (query.get("target_package_name") or [""])[0]
+            assigned_page_id = (query.get("assigned_page_id") or [""])[0]
+            try:
+                result = finalize_staged_package_transfer(
+                    session_id=session_id,
+                    target_package_name=target_package_name,
+                    source_package_name=source_package_name,
+                    assigned_page_id=assigned_page_id,
+                )
+            except ValueError as exc:
+                self._send_json({"ok": False, "message": str(exc)}, HTTPStatus.BAD_REQUEST)
+                return
+            except Exception as exc:
+                self._send_json({"ok": False, "message": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+                return
+            self._send_json(result, HTTPStatus.OK)
+            return
+
+        if request_path == "/facebook-package-import":
+            if not self._require_control_password():
+                return
+            body = self._read_raw_body()
+            if not body:
+                self._send_json({"ok": False, "message": "Package archive is empty."}, HTTPStatus.BAD_REQUEST)
+                return
+
+            query = parse_qs(parsed.query)
+            source_package_name = (query.get("package_name") or [""])[0]
+            assigned_page_id = (query.get("assigned_page_id") or [""])[0]
+            if not source_package_name:
+                source_package_name = str(self.headers.get("X-Soranin-Package-Name") or "").strip()
+            if not assigned_page_id:
+                assigned_page_id = str(self.headers.get("X-Soranin-Assigned-Page-ID") or "").strip()
+            try:
+                result = import_package_archive_bytes(
+                    body,
+                    source_package_name=source_package_name,
+                    assigned_page_id=assigned_page_id,
+                )
+            except ValueError as exc:
+                self._send_json({"ok": False, "message": str(exc)}, HTTPStatus.BAD_REQUEST)
+                return
+            except Exception as exc:
+                self._send_json({"ok": False, "message": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+                return
+            self._send_json(result, HTTPStatus.OK)
+            return
 
         if request_path == "/source-video-upload":
             if not self._require_control_password():
@@ -3531,22 +5545,7 @@ class ReelsDashboardHandler(BaseHTTPRequestHandler):
             except Exception as exc:
                 self._send_json({"ok": False, "message": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
                 return
-
-            STATE.emit_alert(
-                "New video on Mac",
-                f"{target_path.name} was added to Drop Videos.",
-            )
-
-            self._send_json(
-                {
-                    "ok": True,
-                    "message": f"Saved {target_path.name} to Drop Videos on Mac.",
-                    "file_name": target_path.name,
-                    "saved_path": str(target_path),
-                    "source_count": len(source_videos(ROOT_DIR)),
-                },
-                HTTPStatus.OK,
-            )
+            self._send_json(handle_source_video_saved(target_path), HTTPStatus.OK)
             return
 
         if request_path == "/codex-chat-proxy":
@@ -3600,14 +5599,19 @@ class ReelsDashboardHandler(BaseHTTPRequestHandler):
                 return
             payload = self._read_json_body()
             chrome_name = str(payload.get("chrome_name") or "").strip()
+            requested_profile_directory = str(payload.get("profile_directory") or "").strip()
             page_name = str(payload.get("page_name") or "").strip()
-            profile_item = find_profile_item(chrome_name) if chrome_name else None
-            profile_directory = str(profile_item.get("directory") or "") if profile_item else ""
+            profile_item = find_profile_item(
+                profile_name=chrome_name,
+                profile_directory=requested_profile_directory,
+            )
+            profile_directory = str((profile_item or {}).get("directory") or requested_profile_directory).strip()
+            effective_profile_name = str((profile_item or {}).get("name") or chrome_name or requested_profile_directory).strip()
             try:
                 if request_path == "/facebook-queue-clear":
                     updated_state = facebook_timing.clear_queue(
                         state_path=FACEBOOK_TIMING_STATE_PATH,
-                        profile_name=chrome_name or None,
+                        profile_name=effective_profile_name or None,
                         profile_directory=profile_directory or None,
                         page_name=page_name or None,
                     )
@@ -3615,7 +5619,7 @@ class ReelsDashboardHandler(BaseHTTPRequestHandler):
                 elif request_path == "/facebook-queue-reset":
                     updated_state = facebook_timing.reset_times(
                         state_path=FACEBOOK_TIMING_STATE_PATH,
-                        profile_name=chrome_name or None,
+                        profile_name=effective_profile_name or None,
                         profile_directory=profile_directory or None,
                         page_name=page_name or None,
                     )
@@ -3625,14 +5629,14 @@ class ReelsDashboardHandler(BaseHTTPRequestHandler):
                     updated_state = facebook_timing.set_morning_only(
                         enabled,
                         state_path=FACEBOOK_TIMING_STATE_PATH,
-                        profile_name=chrome_name or None,
+                        profile_name=effective_profile_name or None,
                         profile_directory=profile_directory or None,
                         page_name=page_name or None,
                     )
                     message = "Morning only enabled." if enabled else "Morning only disabled."
                 queue_info = facebook_timing.queue_status(
                     updated_state,
-                    profile_name=chrome_name or None,
+                    profile_name=effective_profile_name or None,
                     profile_directory=profile_directory or None,
                     page_name=page_name or None,
                     package_count=len(package_dirs(ROOT_DIR)),
@@ -3709,6 +5713,7 @@ class ReelsDashboardHandler(BaseHTTPRequestHandler):
                     str(payload.get("page_name") or ""),
                     str(payload.get("page_url") or ""),
                     str(payload.get("page_kind") or "page"),
+                    str(payload.get("profile_directory") or ""),
                 )
             except Exception as exc:
                 self._send_json(
@@ -3732,6 +5737,25 @@ class ReelsDashboardHandler(BaseHTTPRequestHandler):
             return
         if request_path == "/quit-chrome":
             if not self._require_control_password():
+                return
+            payload = self._read_json_body()
+            chrome_name = str(payload.get("chrome_name") or "").strip()
+            profile_directory = str(payload.get("profile_directory") or "").strip()
+            profile_item = find_profile_item(
+                profile_name=chrome_name,
+                profile_directory=profile_directory,
+            )
+            effective_profile_directory = str((profile_item or {}).get("directory") or profile_directory).strip()
+            if effective_profile_directory:
+                closed_count = close_chrome_profile(effective_profile_directory)
+                self._send_json(
+                    {
+                        "ok": True,
+                        "message": f"Closed {closed_count} selected Chrome profile window/process item(s)." if closed_count else "Selected profile is already offline.",
+                        "closed_count": closed_count,
+                    },
+                    HTTPStatus.OK,
+                )
                 return
             quit_google_chrome()
             self._send_json({"ok": True, "message": "Google Chrome quit."}, HTTPStatus.OK)
@@ -3758,6 +5782,124 @@ class ReelsDashboardHandler(BaseHTTPRequestHandler):
                     "ok": True,
                     "message": f"Deleted {package_name}.",
                     "package_name": package_name,
+                    "packages": load_package_cards(),
+                },
+                HTTPStatus.OK,
+            )
+            return
+        if request_path == "/facebook-feed-video-delete":
+            if not self._require_control_password():
+                return
+            payload = self._read_json_body()
+            file_name = str(payload.get("file_name") or "").strip()
+            try:
+                deleted_any, last_error = delete_facebook_feed_video_mirrors(file_name)
+            except ValueError as exc:
+                self._send_json({"ok": False, "message": str(exc)}, HTTPStatus.BAD_REQUEST)
+                return
+            if not deleted_any:
+                status = HTTPStatus.INTERNAL_SERVER_ERROR if last_error else HTTPStatus.NOT_FOUND
+                self._send_json({"ok": False, "message": last_error or "Video not found."}, status)
+                return
+            self._send_json(
+                {
+                    "ok": True,
+                    "message": f"Deleted {Path(file_name).name}.",
+                    "file_name": Path(file_name).name,
+                    "videos": load_facebook_feed_videos(),
+                },
+                HTTPStatus.OK,
+            )
+            return
+        if request_path == "/facebook-package-assign-page":
+            if not self._require_control_password():
+                return
+            payload = self._read_json_body()
+            package_names = [
+                str(item).strip()
+                for item in (payload.get("package_names") or [])
+                if str(item).strip()
+            ]
+            page_id = str(payload.get("page_id") or "").strip()
+            move_to_queue = bool(payload.get("move_to_queue", True))
+            if not package_names:
+                self._send_json({"ok": False, "message": "Choose at least one package."}, HTTPStatus.BAD_REQUEST)
+                return
+            if not page_id:
+                self._send_json({"ok": False, "message": "Choose a saved upload page first."}, HTTPStatus.BAD_REQUEST)
+                return
+            saved_pages_by_id = {
+                str(item.get("page_id") or "").strip(): item
+                for item in load_saved_facebook_upload_pages()
+                if str(item.get("page_id") or "").strip()
+            }
+            selected_page = saved_pages_by_id.get(page_id)
+            if selected_page is None:
+                self._send_json({"ok": False, "message": "Saved upload page not found."}, HTTPStatus.BAD_REQUEST)
+                return
+            for package_name in package_names:
+                try:
+                    package_path = package_path_for_name(package_name)
+                except ValueError as exc:
+                    self._send_json({"ok": False, "message": str(exc)}, HTTPStatus.BAD_REQUEST)
+                    return
+                if not package_path.exists() or not package_path.is_dir():
+                    self._send_json({"ok": False, "message": f"Package not found: {package_name}"}, HTTPStatus.NOT_FOUND)
+                    return
+            assignments = load_facebook_page_assignments()
+            queue_orders = load_facebook_page_queue_orders()
+            for package_name in package_names:
+                assignments[package_name] = page_id
+            if move_to_queue:
+                queue_orders = append_packages_to_facebook_page_queue_order(queue_orders, package_names, page_id)
+            else:
+                queue_orders = remove_packages_from_facebook_page_queue_orders(queue_orders, package_names)
+            persist_facebook_page_assignments(assignments)
+            persist_facebook_page_queue_orders(queue_orders)
+            action_verb = "Assigned" if move_to_queue else "Set page"
+            self._send_json(
+                {
+                    "ok": True,
+                    "message": f"{action_verb} for {len(package_names)} package(s) to {str(selected_page.get('label') or page_id).strip()}.",
+                    "packages": load_package_cards(),
+                },
+                HTTPStatus.OK,
+            )
+            return
+        if request_path == "/facebook-package-back-to-old":
+            if not self._require_control_password():
+                return
+            payload = self._read_json_body()
+            package_names = [
+                str(item).strip()
+                for item in (payload.get("package_names") or [])
+                if str(item).strip()
+            ]
+            if not package_names:
+                self._send_json({"ok": False, "message": "Choose at least one package."}, HTTPStatus.BAD_REQUEST)
+                return
+            for package_name in package_names:
+                try:
+                    package_path = package_path_for_name(package_name)
+                except ValueError as exc:
+                    self._send_json({"ok": False, "message": str(exc)}, HTTPStatus.BAD_REQUEST)
+                    return
+                if not package_path.exists() or not package_path.is_dir():
+                    self._send_json({"ok": False, "message": f"Package not found: {package_name}"}, HTTPStatus.NOT_FOUND)
+                    return
+            assignments = load_facebook_page_assignments()
+            for package_name in package_names:
+                assignments.pop(package_name, None)
+            queue_orders = remove_packages_from_facebook_page_queue_orders(
+                load_facebook_page_queue_orders(),
+                package_names,
+            )
+            persist_facebook_page_assignments(assignments)
+            persist_facebook_page_queue_orders(queue_orders)
+            self._send_json(
+                {
+                    "ok": True,
+                    "message": f"Moved {len(package_names)} package(s) back to old cards.",
                     "packages": load_package_cards(),
                 },
                 HTTPStatus.OK,
@@ -3849,6 +5991,10 @@ def main() -> int:
     ROOT_DIR.mkdir(parents=True, exist_ok=True)
     threading.Thread(
         target=refresh_tailscale_control_server_urls,
+        daemon=True,
+    ).start()
+    threading.Thread(
+        target=facebook_page_metrics_worker_loop,
         daemon=True,
     ).start()
     relay_base_url = control_relay_base_url()

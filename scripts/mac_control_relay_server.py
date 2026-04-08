@@ -6,11 +6,12 @@ import hashlib
 import json
 import os
 import platform
+import secrets
 import threading
 import time
 import uuid
 from contextlib import contextmanager
-from datetime import timedelta
+from datetime import datetime, timedelta
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -25,6 +26,11 @@ PORT = 8788
 CLIENT_STALE_SECONDS = 20.0
 JOB_TIMEOUT_SECONDS = 180.0
 SHARED_QUEUE_LOCK_TIMEOUT_SECONDS = 8.0
+CONTROL_AUTH_WINDOW_SECONDS = 600.0
+CONTROL_AUTH_LOCKOUT_SECONDS = 900.0
+CONTROL_AUTH_MAX_FAILURES = 8
+CONTROL_SESSION_TTL_SECONDS = 12 * 60 * 60.0
+CONTROL_SESSION_REMEMBER_TTL_SECONDS = 30 * 24 * 60 * 60.0
 
 
 def _relay_store_path() -> Path:
@@ -56,6 +62,113 @@ def load_control_web_html() -> str:
         return CONTROL_WEB_HTML_PATH.read_text(encoding="utf-8")
     except Exception:
         return """<!doctype html><html><body><h1>Soranin Control</h1><p>Web control page is missing.</p></body></html>"""
+
+
+class AuthAttemptTracker:
+    def __init__(self, *, window_seconds: float, lockout_seconds: float, max_failures: int) -> None:
+        self.window_seconds = max(60.0, float(window_seconds))
+        self.lockout_seconds = max(60.0, float(lockout_seconds))
+        self.max_failures = max(3, int(max_failures))
+        self.lock = threading.Lock()
+        self.state: dict[str, dict[str, object]] = {}
+
+    def _prune(self, record: dict[str, object], now: float) -> list[float]:
+        raw_failures = record.get("failures")
+        failures = raw_failures if isinstance(raw_failures, list) else []
+        kept = [float(value) for value in failures if now - float(value) <= self.window_seconds]
+        record["failures"] = kept
+        return kept
+
+    def remaining_lockout(self, key: str) -> int:
+        now = time.time()
+        with self.lock:
+            record = self.state.get(key)
+            if not isinstance(record, dict):
+                return 0
+            locked_until = float(record.get("locked_until") or 0.0)
+            if locked_until <= now:
+                self._prune(record, now)
+                if not record.get("failures"):
+                    self.state.pop(key, None)
+                else:
+                    record["locked_until"] = 0.0
+                return 0
+            return max(1, int(locked_until - now + 0.999))
+
+    def record_failure(self, key: str) -> int:
+        now = time.time()
+        with self.lock:
+            record = self.state.setdefault(key, {"failures": [], "locked_until": 0.0})
+            locked_until = float(record.get("locked_until") or 0.0)
+            if locked_until > now:
+                return max(1, int(locked_until - now + 0.999))
+            failures = self._prune(record, now)
+            failures.append(now)
+            record["failures"] = failures
+            if len(failures) >= self.max_failures:
+                record["failures"] = []
+                record["locked_until"] = now + self.lockout_seconds
+                return max(1, int(self.lockout_seconds + 0.999))
+            return 0
+
+    def record_success(self, key: str) -> None:
+        with self.lock:
+            self.state.pop(key, None)
+
+
+class WebSessionStore:
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.sessions: dict[str, dict[str, object]] = {}
+
+    def create(self, *, client_ip: str, user_agent: str, ttl_seconds: float, data: dict[str, object] | None = None) -> tuple[str, float]:
+        token = secrets.token_urlsafe(32)
+        expires_at = time.time() + max(300.0, float(ttl_seconds))
+        session = {
+            "token": token,
+            "client_ip": str(client_ip or "").strip(),
+            "user_agent": str(user_agent or "").strip(),
+            "expires_at": expires_at,
+            "data": dict(data or {}),
+        }
+        with self.lock:
+            self.sessions[token] = session
+        return token, expires_at
+
+    def get(self, token: str, *, client_ip: str, user_agent: str) -> dict[str, object] | None:
+        now = time.time()
+        trimmed_token = str(token or "").strip()
+        if not trimmed_token:
+            return None
+        with self.lock:
+            session = self.sessions.get(trimmed_token)
+            if not isinstance(session, dict):
+                return None
+            if float(session.get("expires_at") or 0.0) <= now:
+                self.sessions.pop(trimmed_token, None)
+                return None
+            expected_ip = str(session.get("client_ip") or "").strip()
+            expected_ua = str(session.get("user_agent") or "").strip()
+            if expected_ip and expected_ip != str(client_ip or "").strip():
+                return None
+            if expected_ua and expected_ua != str(user_agent or "").strip():
+                return None
+            return dict(session.get("data") or {})
+
+    def delete(self, token: str) -> None:
+        trimmed_token = str(token or "").strip()
+        if not trimmed_token:
+            return
+        with self.lock:
+            self.sessions.pop(trimmed_token, None)
+
+
+RELAY_AUTH_ATTEMPTS = AuthAttemptTracker(
+    window_seconds=CONTROL_AUTH_WINDOW_SECONDS,
+    lockout_seconds=CONTROL_AUTH_LOCKOUT_SECONDS,
+    max_failures=CONTROL_AUTH_MAX_FAILURES,
+)
+RELAY_WEB_SESSIONS = WebSessionStore()
 
 
 @contextmanager
@@ -102,11 +215,64 @@ class RelayStore:
         clients = self.data.setdefault("clients", {})
         client = clients.setdefault(token, {})
         client.setdefault("jobs", [])
+        client.setdefault("events", [])
+        client.setdefault("last_snapshot_alert_id", 0)
         return client
+
+    def _normalize_alert(self, raw: object) -> dict | None:
+        if not isinstance(raw, dict):
+            return None
+        try:
+            alert_id = int(raw.get("id") or 0)
+        except Exception:
+            alert_id = 0
+        if alert_id <= 0:
+            return None
+        try:
+            created_at = float(raw.get("created_at") or time.time())
+        except Exception:
+            created_at = time.time()
+        return {
+            "id": alert_id,
+            "title": str(raw.get("title") or "").strip(),
+            "message": str(raw.get("message") or "").strip(),
+            "level": str(raw.get("level") or "info").strip().lower() or "info",
+            "created_at": created_at,
+        }
+
+    def _extract_new_alert_events(self, snapshot: dict, last_alert_id: int) -> list[dict]:
+        candidates: list[dict] = []
+        raw_alerts = snapshot.get("alerts")
+        if isinstance(raw_alerts, list):
+            for raw in raw_alerts:
+                alert = self._normalize_alert(raw)
+                if alert is not None and int(alert.get("id") or 0) > last_alert_id:
+                    candidates.append(alert)
+        latest_alert = self._normalize_alert(snapshot.get("latest_alert"))
+        if latest_alert is not None and int(latest_alert.get("id") or 0) > last_alert_id:
+            candidates.append(latest_alert)
+
+        deduped: dict[int, dict] = {}
+        for alert in candidates:
+            deduped[int(alert["id"])] = alert
+        return [deduped[key] for key in sorted(deduped)]
 
     def update_heartbeat(self, token: str, snapshot: dict) -> dict:
         with self.lock:
             client = self._client(token)
+            last_alert_id = int(client.get("last_snapshot_alert_id") or 0)
+            new_alerts = self._extract_new_alert_events(snapshot, last_alert_id)
+            if new_alerts:
+                events = list(client.get("events") or [])
+                for alert in new_alerts:
+                    events.append({
+                        "id": int(alert["id"]),
+                        "type": "mac_alert",
+                        "alert": alert,
+                        "created_at": float(alert.get("created_at") or time.time()),
+                    })
+                client["events"] = events[-128:]
+                client["last_snapshot_alert_id"] = max(int(alert["id"]) for alert in new_alerts)
             client["last_seen_at"] = time.time()
             client["snapshot"] = snapshot
             self._save()
@@ -119,7 +285,20 @@ class RelayStore:
                 "last_seen_at": client.get("last_seen_at"),
                 "snapshot": dict(client.get("snapshot") or {}),
                 "jobs": list(client.get("jobs") or []),
+                "events": list(client.get("events") or []),
             }
+
+    def next_event_after(self, token: str, after_id: int) -> dict | None:
+        with self.lock:
+            client = self._client(token)
+            for event in client.get("events") or []:
+                try:
+                    event_id = int(event.get("id") or 0)
+                except Exception:
+                    event_id = 0
+                if event_id > after_id:
+                    return dict(event)
+            return None
 
     def list_clients(self) -> list[dict]:
         with self.lock:
@@ -128,12 +307,14 @@ class RelayStore:
             for token, client in clients.items():
                 snapshot = client.get("snapshot")
                 jobs = client.get("jobs")
+                events = client.get("events")
                 rows.append(
                     {
                         "token": str(token or "").strip(),
                         "last_seen_at": client.get("last_seen_at"),
                         "snapshot": dict(snapshot) if isinstance(snapshot, dict) else {},
                         "jobs": list(jobs) if isinstance(jobs, list) else [],
+                        "events": list(events) if isinstance(events, list) else [],
                     }
                 )
             return rows
@@ -256,15 +437,14 @@ def _is_allowed_fixed_slot(candidate: object, morning_only: bool) -> bool:
 
 
 def _shared_queue_status(page_id: str, *, queue_secret: str = "", package_count: int = 0) -> dict[str, object]:
-    with _shared_queue_guard(page_id, queue_secret):
-        state_path = _shared_queue_state_path(page_id, queue_secret)
-        identity = _shared_queue_identity(page_id)
-        state = facebook_timing.load_state(state_path)
-        return facebook_timing.queue_status(
-            state,
-            package_count=max(0, int(package_count)),
-            **identity,
-        )
+    state_path = _shared_queue_state_path(page_id, queue_secret)
+    identity = _shared_queue_identity(page_id)
+    state = facebook_timing.load_state(state_path)
+    return facebook_timing.queue_status(
+        state,
+        package_count=max(0, int(package_count)),
+        **identity,
+    )
 
 
 def _shared_queue_reserve(
@@ -274,6 +454,7 @@ def _shared_queue_reserve(
     package_name: str,
     reservation_key: str = "",
     requested_schedule_at: str = "",
+    allow_near_slot: bool = False,
 ) -> dict[str, object]:
     with _shared_queue_guard(page_id, queue_secret):
         state_path = _shared_queue_state_path(page_id, queue_secret)
@@ -301,9 +482,12 @@ def _shared_queue_reserve(
         morning_only = bool(profile_state.get("morning_only"))
         reserved_slots = facebook_timing._all_reserved_slots(state, now=now)
         reserved_keys = {facebook_timing.serialize_dt(slot) for slot in reserved_slots}
-        earliest = facebook_timing.current_minute(
-            now + timedelta(minutes=max(10, facebook_timing.MIN_SCHEDULE_LEAD_MINUTES))
-        )
+        if allow_near_slot:
+            earliest = facebook_timing.current_minute(now)
+        else:
+            earliest = facebook_timing.current_minute(
+                now + timedelta(minutes=max(10, facebook_timing.MIN_SCHEDULE_LEAD_MINUTES))
+            )
 
         summary = ""
         decision: facebook_timing.PublishDecision | None = None
@@ -600,12 +784,27 @@ def relay_portal_clients_payload() -> list[dict[str, object]]:
                 "source_count": _safe_int(snapshot.get("source_count")),
                 "pending_jobs": pending_jobs,
                 "control_url": f"/client/{token}/control",
-                "status_url": f"/client/{token}/status",
-                "relay_client_url": str(snapshot.get("relay_client_url") or f"/client/{token}").strip(),
             }
         )
     rows.sort(key=lambda row: (not bool(row.get("online")), str(row.get("title") or "").lower(), str(row.get("token") or "").lower()))
     return rows
+
+
+def relay_public_client_status_payload(snapshot: dict[str, object], client: dict[str, object]) -> dict[str, object]:
+    return {
+        "ok": True,
+        "status": str(snapshot.get("status") or "").strip(),
+        "detail": str(snapshot.get("detail") or "").strip(),
+        "running": bool(snapshot.get("running")),
+        "remote_running": bool(snapshot.get("remote_running")),
+        "task_kind": str(snapshot.get("task_kind") or "").strip(),
+        "mac_user_name": str(snapshot.get("mac_user_name") or "").strip(),
+        "mac_device_name": str(snapshot.get("mac_device_name") or "").strip(),
+        "mac_display_name": str(snapshot.get("mac_display_name") or "").strip(),
+        "password_required": bool(snapshot.get("password_required")),
+        "relay_online": now_is_recent(client.get("last_seen_at"), CLIENT_STALE_SECONDS),
+        "relay_last_seen_at": client.get("last_seen_at"),
+    }
 
 
 def relay_portal_html() -> str:
@@ -926,7 +1125,6 @@ def relay_portal_html() -> str:
             <div class="detail">${escapeHtml(detail)}<br>${escapeHtml(formatLastSeen(client.last_seen_at))}</div>
             <div class="actions">
               <a class="button" href="${escapeHtml(client.control_url)}">Open Control</a>
-              <a class="button secondary" href="${escapeHtml(client.status_url)}">Status JSON</a>
             </div>
           </article>
         `;
@@ -956,26 +1154,169 @@ def relay_portal_html() -> str:
 class RelayHandler(BaseHTTPRequestHandler):
     server_version = "SoraninMacRelay/0.1"
 
+    def _allowed_headers(self) -> str:
+        return "Content-Type, X-Soranin-Password, X-Soranin-File-Name, X-Soranin-Session"
+
+    def _request_client_ip(self) -> str:
+        for header_name in ("CF-Connecting-IP", "X-Forwarded-For"):
+            header_value = str(self.headers.get(header_name) or "").strip()
+            if not header_value:
+                continue
+            return header_value.split(",", 1)[0].strip()
+        return str(self.client_address[0] or "").strip()
+
+    def _request_user_agent(self) -> str:
+        return str(self.headers.get("User-Agent") or "").strip()
+
+    def _request_control_session_token(self) -> str:
+        header_value = str(self.headers.get("X-Soranin-Session") or "").strip()
+        if header_value:
+            return header_value
+        try:
+            parsed = urlparse(self.path)
+            return str((parse_qs(parsed.query).get("__control_session") or [""])[0]).strip()
+        except Exception:
+            return ""
+
+    def _relay_session_payload(self, client_token: str) -> dict[str, object] | None:
+        payload = RELAY_WEB_SESSIONS.get(
+            self._request_control_session_token(),
+            client_ip=self._request_client_ip(),
+            user_agent=self._request_user_agent(),
+        )
+        if not isinstance(payload, dict):
+            return None
+        if str(payload.get("client_token") or "").strip() != str(client_token or "").strip():
+            return None
+        return payload
+
+    def _auth_attempt_key(self, client_token: str) -> str:
+        return f"{client_token}|{self._request_client_ip()}|{self._request_user_agent()}"
+
+    def _auth_lockout_response(self, retry_after_seconds: int) -> None:
+        retry_after = max(1, int(retry_after_seconds or 0))
+        self._send_json(
+            {
+                "ok": False,
+                "message": f"Too many failed login attempts. Try again in {retry_after}s.",
+                "password_required": True,
+                "retry_after_seconds": retry_after,
+            },
+            HTTPStatus.TOO_MANY_REQUESTS,
+        )
+
+    def _issue_control_session(self, *, client_token: str, remember: bool) -> tuple[str, float]:
+        return RELAY_WEB_SESSIONS.create(
+            client_ip=self._request_client_ip(),
+            user_agent=self._request_user_agent(),
+            ttl_seconds=CONTROL_SESSION_REMEMBER_TTL_SECONDS if remember else CONTROL_SESSION_TTL_SECONDS,
+            data={
+                "client_token": str(client_token or "").strip(),
+                "remember": bool(remember),
+            },
+        )
+
+    def _client_password_required(self, client: dict[str, object]) -> bool:
+        snapshot = client.get("snapshot") if isinstance(client, dict) else {}
+        snapshot = snapshot if isinstance(snapshot, dict) else {}
+        return bool(snapshot.get("password_required"))
+
+    def _verify_client_password(
+        self,
+        client_token: str,
+        client: dict[str, object],
+        provided_password: str,
+        *,
+        timeout_seconds: float = 30.0,
+    ) -> tuple[int, dict[str, object]]:
+        if not now_is_recent(client.get("last_seen_at"), CLIENT_STALE_SECONDS):
+            return HTTPStatus.SERVICE_UNAVAILABLE, {
+                "ok": False,
+                "message": "This Mac is offline. Open Soranin on the Mac first.",
+            }
+        if not self._client_password_required(client):
+            return HTTPStatus.OK, {"ok": True, "password_required": False}
+        password = str(provided_password or "").strip()
+        if not password:
+            return HTTPStatus.UNAUTHORIZED, {
+                "ok": False,
+                "message": "Enter the Mac control password to continue.",
+                "password_required": True,
+            }
+        job_id = STORE.enqueue_job(
+            client_token,
+            "/auth/verify",
+            {"password": password},
+            {},
+        )
+        status, body = wait_for_job_result(client_token, job_id, timeout_seconds)
+        payload = body if isinstance(body, dict) else {"ok": False, "message": "Relay auth verification failed."}
+        return status, payload
+
+    def _require_client_auth(self, client_token: str, client: dict[str, object]) -> bool:
+        if not self._client_password_required(client):
+            return True
+        if self._relay_session_payload(client_token) is not None:
+            return True
+        attempt_key = self._auth_attempt_key(client_token)
+        retry_after = RELAY_AUTH_ATTEMPTS.remaining_lockout(attempt_key)
+        if retry_after > 0:
+            self._auth_lockout_response(retry_after)
+            return False
+        provided_password = self._request_control_password()
+        if not provided_password:
+            self._send_json(
+                {
+                    "ok": False,
+                    "message": "Enter the Mac control password to continue.",
+                    "password_required": True,
+                },
+                HTTPStatus.UNAUTHORIZED,
+            )
+            return False
+        status, payload = self._verify_client_password(client_token, client, provided_password)
+        if 200 <= int(status) < 300 and bool(payload.get("ok")):
+            RELAY_AUTH_ATTEMPTS.record_success(attempt_key)
+            return True
+        if int(status) == HTTPStatus.UNAUTHORIZED:
+            retry_after = RELAY_AUTH_ATTEMPTS.record_failure(attempt_key)
+            if retry_after > 0:
+                self._auth_lockout_response(retry_after)
+                return False
+        self._send_json(payload, int(status))
+        return False
+
+    def _send_security_headers(self) -> None:
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Pragma", "no-cache")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("Cross-Origin-Opener-Policy", "same-origin")
+        self.send_header("Cross-Origin-Resource-Policy", "same-origin")
+        self.send_header("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+        self.send_header(
+            "Content-Security-Policy",
+            "default-src 'self'; img-src 'self' blob: data:; media-src 'self' blob: data:; "
+            "connect-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; "
+            "base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
+        )
+
     def _send_json(self, payload: dict, status: int = HTTPStatus.OK) -> None:
         body = json.dumps(payload).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Soranin-Password, X-Soranin-File-Name")
+        self._send_security_headers()
         self.end_headers()
-        if self.command != "HEAD":
-            self.wfile.write(body)
+        self.wfile.write(body)
 
     def _send_html(self, html: str, status: int = HTTPStatus.OK) -> None:
         body = html.encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Soranin-Password, X-Soranin-File-Name")
+        self._send_security_headers()
         self.end_headers()
         self.wfile.write(body)
 
@@ -997,14 +1338,7 @@ class RelayHandler(BaseHTTPRequestHandler):
         return self.rfile.read(length)
 
     def _request_control_password(self) -> str:
-        header_value = str(self.headers.get("X-Soranin-Password") or "").strip()
-        if header_value:
-            return header_value
-        try:
-            parsed = urlparse(self.path)
-            return str((parse_qs(parsed.query).get("__control_password") or [""])[0]).strip()
-        except Exception:
-            return ""
+        return str(self.headers.get("X-Soranin-Password") or "").strip()
 
     def _send_bytes(self, body: bytes, content_type: str, status: int = HTTPStatus.OK, file_name: str | None = None) -> None:
         total_size = len(body)
@@ -1034,10 +1368,8 @@ class RelayHandler(BaseHTTPRequestHandler):
                 self.send_header("Content-Range", f"bytes */{total_size}")
                 self.send_header("Content-Length", "0")
                 self.send_header("Cache-Control", "no-store")
-                self.send_header("Access-Control-Allow-Origin", "*")
-                self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-                self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Soranin-Password")
                 self.send_header("Accept-Ranges", "bytes")
+                self._send_security_headers()
                 self.end_headers()
                 return
 
@@ -1051,48 +1383,67 @@ class RelayHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Range", f"bytes {start}-{end}/{total_size}")
         if file_name:
             self.send_header("Content-Disposition", f'inline; filename="{file_name}"')
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Soranin-Password")
+        self._send_security_headers()
         self.end_headers()
-        if self.command != "HEAD":
-            self.wfile.write(payload)
-
-    def _send_proxied_binary(
-        self,
-        body: bytes,
-        *,
-        content_type: str,
-        status: int,
-        file_name: str | None = None,
-        content_length: str = "",
-        content_range: str = "",
-        accept_ranges: str = "",
-    ) -> None:
-        self.send_response(status)
-        self.send_header("Content-Type", content_type or "application/octet-stream")
-        effective_length = str(content_length or len(body))
-        self.send_header("Content-Length", effective_length)
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Soranin-Password")
-        self.send_header("Accept-Ranges", accept_ranges or "bytes")
-        if content_range:
-            self.send_header("Content-Range", content_range)
-        if file_name:
-            self.send_header("Content-Disposition", f'inline; filename="{file_name}"')
-        self.end_headers()
-        if self.command != "HEAD" and body:
-            self.wfile.write(body)
+        self.wfile.write(payload)
 
     def do_OPTIONS(self) -> None:
         self.send_response(HTTPStatus.NO_CONTENT)
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Soranin-Password, X-Soranin-File-Name")
         self.send_header("Content-Length", "0")
+        self._send_security_headers()
         self.end_headers()
+
+    def _handle_client_auth_login(self, client_token: str, client: dict[str, object]) -> None:
+        if not now_is_recent(client.get("last_seen_at"), CLIENT_STALE_SECONDS):
+            self._send_json(
+                {"ok": False, "message": "This Mac is offline. Open Soranin on the Mac first."},
+                HTTPStatus.SERVICE_UNAVAILABLE,
+            )
+            return
+        attempt_key = self._auth_attempt_key(client_token)
+        retry_after = RELAY_AUTH_ATTEMPTS.remaining_lockout(attempt_key)
+        if retry_after > 0:
+            self._auth_lockout_response(retry_after)
+            return
+        payload = self._read_json_body()
+        provided_password = str(payload.get("password") or "").strip()
+        remember = bool(payload.get("remember"))
+        password_required = self._client_password_required(client)
+        status, body = self._verify_client_password(client_token, client, provided_password)
+        if not (200 <= int(status) < 300 and bool((body or {}).get("ok"))):
+            if int(status) == HTTPStatus.UNAUTHORIZED:
+                retry_after = RELAY_AUTH_ATTEMPTS.record_failure(attempt_key)
+                if retry_after > 0:
+                    self._auth_lockout_response(retry_after)
+                    return
+            self._send_json(
+                {
+                    "ok": False,
+                    "message": str((body or {}).get("message") or "Enter the Mac control password to continue.").strip(),
+                    "password_required": password_required,
+                },
+                int(status),
+            )
+            return
+        RELAY_AUTH_ATTEMPTS.record_success(attempt_key)
+        session_token, expires_at = self._issue_control_session(
+            client_token=client_token,
+            remember=remember,
+        )
+        self._send_json(
+            {
+                "ok": True,
+                "message": "Login OK.",
+                "session_token": session_token,
+                "expires_at": datetime.fromtimestamp(expires_at).isoformat(),
+                "password_required": password_required,
+            },
+            HTTPStatus.OK,
+        )
+
+    def _handle_client_auth_logout(self) -> None:
+        RELAY_WEB_SESSIONS.delete(self._request_control_session_token())
+        self._send_json({"ok": True, "message": "Logged out."}, HTTPStatus.OK)
 
     def do_GET(self) -> None:
         parsed_path = urlparse(self.path).path
@@ -1109,7 +1460,7 @@ class RelayHandler(BaseHTTPRequestHandler):
                     "ok": True,
                     "service": "mac-control-relay",
                     "port": PORT,
-                    "clients": relay_portal_clients_payload(),
+                    "client_count": len(relay_portal_clients_payload()),
                 },
                 HTTPStatus.OK,
             )
@@ -1127,40 +1478,83 @@ class RelayHandler(BaseHTTPRequestHandler):
         snapshot = snapshot if isinstance(snapshot, dict) else {}
 
         if tail == "/status":
-            payload = dict(snapshot)
-            payload.setdefault("ok", True)
-            payload["relay_online"] = now_is_recent(client.get("last_seen_at"), CLIENT_STALE_SECONDS)
-            payload["relay_last_seen_at"] = client.get("last_seen_at")
+            if not bool(snapshot.get("password_required")):
+                payload = dict(snapshot)
+                payload.setdefault("ok", True)
+                payload["relay_online"] = now_is_recent(client.get("last_seen_at"), CLIENT_STALE_SECONDS)
+                payload["relay_last_seen_at"] = client.get("last_seen_at")
+            elif self._relay_session_payload(token) is not None:
+                payload = dict(snapshot)
+                payload.setdefault("ok", True)
+                payload["relay_online"] = now_is_recent(client.get("last_seen_at"), CLIENT_STALE_SECONDS)
+                payload["relay_last_seen_at"] = client.get("last_seen_at")
+            elif self._request_control_password():
+                if not self._require_client_auth(token, client):
+                    return
+                payload = dict(snapshot)
+                payload.setdefault("ok", True)
+                payload["relay_online"] = now_is_recent(client.get("last_seen_at"), CLIENT_STALE_SECONDS)
+                payload["relay_last_seen_at"] = client.get("last_seen_at")
+            else:
+                payload = relay_public_client_status_payload(snapshot, client)
             self._send_json(payload, HTTPStatus.OK)
             return
 
+        if tail == "/alerts/poll":
+            if not self._require_client_auth(token, client):
+                return
+            query = extract_query_dict(self.path)
+            try:
+                after_id = max(0, int(query.get("after_id") or 0))
+            except Exception:
+                after_id = 0
+            try:
+                timeout_seconds = float(query.get("timeout") or 25.0)
+            except Exception:
+                timeout_seconds = 25.0
+            timeout_seconds = max(0.0, min(timeout_seconds, 30.0))
+            deadline = time.time() + timeout_seconds
+            while True:
+                event = STORE.next_event_after(token, after_id)
+                if isinstance(event, dict):
+                    self._send_json({"ok": True, "event": event}, HTTPStatus.OK)
+                    return
+                if time.time() >= deadline:
+                    self._send_json({"ok": True, "event": None}, HTTPStatus.OK)
+                    return
+                time.sleep(0.35)
+
         if tail == "/facebook-post-bootstrap":
+            if not self._require_client_auth(token, client):
+                return
             if not now_is_recent(client.get("last_seen_at"), CLIENT_STALE_SECONDS):
                 self._send_json(
                     {"ok": False, "message": "This Mac is offline. Open Soranin on the Mac first."},
                     HTTPStatus.SERVICE_UNAVAILABLE,
                 )
                 return
-            payload = {"__control_password": self._request_control_password()}
-            job_id = STORE.enqueue_job(token, "/facebook-post-bootstrap", payload, extract_query_dict(self.path))
+            job_id = STORE.enqueue_job(token, "/facebook-post-bootstrap", {}, extract_query_dict(self.path))
             status, body = wait_for_job_result(token, job_id, 30.0)
             self._send_json(body, status)
             return
 
         if tail == "/facebook-feed-videos":
+            if not self._require_client_auth(token, client):
+                return
             if not now_is_recent(client.get("last_seen_at"), CLIENT_STALE_SECONDS):
                 self._send_json(
                     {"ok": False, "message": "This Mac is offline. Open Soranin on the Mac first."},
                     HTTPStatus.SERVICE_UNAVAILABLE,
                 )
                 return
-            payload = {"__control_password": self._request_control_password()}
-            job_id = STORE.enqueue_job(token, "/facebook-feed-videos", payload, {})
+            job_id = STORE.enqueue_job(token, "/facebook-feed-videos", {}, {})
             status, body = wait_for_job_result(token, job_id, 30.0)
             self._send_json(body, status)
             return
 
         if tail == "/facebook-feed-video":
+            if not self._require_client_auth(token, client):
+                return
             if not now_is_recent(client.get("last_seen_at"), CLIENT_STALE_SECONDS):
                 self._send_json(
                     {"ok": False, "message": "This Mac is offline. Open Soranin on the Mac first."},
@@ -1168,49 +1562,41 @@ class RelayHandler(BaseHTTPRequestHandler):
                 )
                 return
             query = extract_query_dict(self.path)
-            payload = {
-                "__control_password": self._request_control_password(),
-                "__relay_method": self.command,
-            }
-            range_header = str(self.headers.get("Range") or "").strip()
-            if range_header:
-                payload["__relay_range"] = range_header
-            job_id = STORE.enqueue_job(token, "/facebook-feed-video", payload, query)
+            job_id = STORE.enqueue_job(token, "/facebook-feed-video", {}, query)
             status, body = wait_for_job_result(token, job_id, 180.0)
-            if (200 <= status < 300) and isinstance(body, dict):
-                encoded = str(body.get("data_base64") or "")
+            if (200 <= status < 300) and isinstance(body, dict) and body.get("data_base64"):
                 try:
-                    raw = base64.b64decode(encoded, validate=True) if encoded else b""
+                    raw = base64.b64decode(str(body.get("data_base64") or ""), validate=True)
                 except Exception:
                     self._send_json({"ok": False, "message": "Invalid video payload from Mac."}, HTTPStatus.BAD_GATEWAY)
                     return
-                self._send_proxied_binary(
+                self._send_bytes(
                     raw,
-                    content_type=str(body.get("mime_type") or "application/octet-stream"),
-                    status=status,
-                    file_name=str(body.get("file_name") or "").strip() or None,
-                    content_length=str(body.get("content_length") or ""),
-                    content_range=str(body.get("content_range") or "").strip(),
-                    accept_ranges=str(body.get("accept_ranges") or "").strip(),
+                    str(body.get("mime_type") or "application/octet-stream"),
+                    status,
+                    str(body.get("file_name") or "").strip() or None,
                 )
                 return
             self._send_json(body, status)
             return
 
         if tail == "/facebook-packages":
+            if not self._require_client_auth(token, client):
+                return
             if not now_is_recent(client.get("last_seen_at"), CLIENT_STALE_SECONDS):
                 self._send_json(
                     {"ok": False, "message": "This Mac is offline. Open Soranin on the Mac first."},
                     HTTPStatus.SERVICE_UNAVAILABLE,
                 )
                 return
-            payload = {"__control_password": self._request_control_password()}
-            job_id = STORE.enqueue_job(token, "/facebook-packages", payload, {})
+            job_id = STORE.enqueue_job(token, "/facebook-packages", {}, {})
             status, body = wait_for_job_result(token, job_id, 30.0)
             self._send_json(body, status)
             return
 
         if tail == "/facebook-package-thumbnail":
+            if not self._require_client_auth(token, client):
+                return
             if not now_is_recent(client.get("last_seen_at"), CLIENT_STALE_SECONDS):
                 self._send_json(
                     {"ok": False, "message": "This Mac is offline. Open Soranin on the Mac first."},
@@ -1218,8 +1604,7 @@ class RelayHandler(BaseHTTPRequestHandler):
                 )
                 return
             query = extract_query_dict(self.path)
-            payload = {"__control_password": self._request_control_password()}
-            job_id = STORE.enqueue_job(token, "/facebook-package-thumbnail", payload, query)
+            job_id = STORE.enqueue_job(token, "/facebook-package-thumbnail", {}, query)
             status, body = wait_for_job_result(token, job_id, 60.0)
             if (200 <= status < 300) and isinstance(body, dict) and body.get("data_base64"):
                 try:
@@ -1238,6 +1623,8 @@ class RelayHandler(BaseHTTPRequestHandler):
             return
 
         if tail == "/facebook-package-video":
+            if not self._require_client_auth(token, client):
+                return
             if not now_is_recent(client.get("last_seen_at"), CLIENT_STALE_SECONDS):
                 self._send_json(
                     {"ok": False, "message": "This Mac is offline. Open Soranin on the Mac first."},
@@ -1245,39 +1632,25 @@ class RelayHandler(BaseHTTPRequestHandler):
                 )
                 return
             query = extract_query_dict(self.path)
-            payload = {
-                "__control_password": self._request_control_password(),
-                "__relay_method": self.command,
-            }
-            range_header = str(self.headers.get("Range") or "").strip()
-            if range_header:
-                payload["__relay_range"] = range_header
-            job_id = STORE.enqueue_job(token, "/facebook-package-video", payload, query)
+            job_id = STORE.enqueue_job(token, "/facebook-package-video", {}, query)
             status, body = wait_for_job_result(token, job_id, 180.0)
-            if (200 <= status < 300) and isinstance(body, dict):
-                encoded = str(body.get("data_base64") or "")
+            if (200 <= status < 300) and isinstance(body, dict) and body.get("data_base64"):
                 try:
-                    raw = base64.b64decode(encoded, validate=True) if encoded else b""
+                    raw = base64.b64decode(str(body.get("data_base64") or ""), validate=True)
                 except Exception:
                     self._send_json({"ok": False, "message": "Invalid video payload from Mac."}, HTTPStatus.BAD_GATEWAY)
                     return
-                self._send_proxied_binary(
+                self._send_bytes(
                     raw,
-                    content_type=str(body.get("mime_type") or "application/octet-stream"),
-                    status=status,
-                    file_name=str(body.get("file_name") or "").strip() or None,
-                    content_length=str(body.get("content_length") or ""),
-                    content_range=str(body.get("content_range") or "").strip(),
-                    accept_ranges=str(body.get("accept_ranges") or "").strip(),
+                    str(body.get("mime_type") or "application/octet-stream"),
+                    status,
+                    str(body.get("file_name") or "").strip() or None,
                 )
                 return
             self._send_json(body, status)
             return
 
         self._send_json({"ok": False, "message": "Not found."}, HTTPStatus.NOT_FOUND)
-
-    def do_HEAD(self) -> None:
-        self.do_GET()
 
     def do_POST(self) -> None:
         parsed_path = urlparse(self.path).path
@@ -1328,6 +1701,7 @@ class RelayHandler(BaseHTTPRequestHandler):
                     package_name=str(payload.get("package_name") or "").strip(),
                     reservation_key=str(payload.get("reservation_key") or "").strip(),
                     requested_schedule_at=str(payload.get("requested_schedule_at") or "").strip(),
+                    allow_near_slot=bool(payload.get("allow_near_slot")),
                 )
             except Exception as exc:
                 self._send_json({"ok": False, "message": str(exc)}, HTTPStatus.BAD_REQUEST)
@@ -1395,6 +1769,16 @@ class RelayHandler(BaseHTTPRequestHandler):
             self._send_json({"ok": False, "message": "Client token is required."}, HTTPStatus.NOT_FOUND)
             return
 
+        client = STORE.client_status(token)
+
+        if tail == "/auth/login":
+            self._handle_client_auth_login(token, client)
+            return
+
+        if tail == "/auth/logout":
+            self._handle_client_auth_logout()
+            return
+
         if tail == "/heartbeat":
             payload = self._read_json_body()
             snapshot = payload.get("snapshot") if isinstance(payload.get("snapshot"), dict) else {}
@@ -1427,7 +1811,8 @@ class RelayHandler(BaseHTTPRequestHandler):
             return
 
         if tail == "/source-video-upload":
-            client = STORE.client_status(token)
+            if not self._require_client_auth(token, client):
+                return
             if not now_is_recent(client.get("last_seen_at"), CLIENT_STALE_SECONDS):
                 self._send_json(
                     {"ok": False, "message": "This Mac is offline. Open Soranin on the Mac first."},
@@ -1443,7 +1828,6 @@ class RelayHandler(BaseHTTPRequestHandler):
             if not requested_name:
                 requested_name = str(self.headers.get("X-Soranin-File-Name") or "").strip()
             payload = {
-                "__control_password": self._request_control_password(),
                 "file_name": requested_name,
                 "content_type": str(self.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower(),
                 "file_data_base64": base64.b64encode(body).decode("ascii"),
@@ -1467,7 +1851,8 @@ class RelayHandler(BaseHTTPRequestHandler):
             "/facebook-package-assign-page",
             "/facebook-package-back-to-old",
         }:
-            client = STORE.client_status(token)
+            if not self._require_client_auth(token, client):
+                return
             if not now_is_recent(client.get("last_seen_at"), CLIENT_STALE_SECONDS):
                 self._send_json(
                     {"ok": False, "message": "This Mac is offline. Open Soranin on the Mac first."},
@@ -1475,7 +1860,6 @@ class RelayHandler(BaseHTTPRequestHandler):
                 )
                 return
             payload = self._read_json_body()
-            payload["__control_password"] = self._request_control_password()
             timeout_seconds = (
                 150.0
                 if tail == "/facebook-post-preflight"
@@ -1493,7 +1877,8 @@ class RelayHandler(BaseHTTPRequestHandler):
             return
 
         if tail == "/facebook-package-delete":
-            client = STORE.client_status(token)
+            if not self._require_client_auth(token, client):
+                return
             if not now_is_recent(client.get("last_seen_at"), CLIENT_STALE_SECONDS):
                 self._send_json(
                     {"ok": False, "message": "This Mac is offline. Open Soranin on the Mac first."},
@@ -1501,7 +1886,6 @@ class RelayHandler(BaseHTTPRequestHandler):
                 )
                 return
             payload = self._read_json_body()
-            payload["__control_password"] = self._request_control_password()
             job_id = STORE.enqueue_job(token, "/facebook-package-delete", payload, {})
             status, body = wait_for_job_result(token, job_id, 90.0)
             self._send_json(body, status)
